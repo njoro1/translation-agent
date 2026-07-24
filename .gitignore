@@ -1,1 +1,16 @@
+.env
 implementation_plan.md
+
+# Local model files (downloaded/placed by the user)
+models/
+*.gguf
+__pycache__/
+
+# PyInstaller build artifacts
+dist/
+build/
+*.spec
+
+# Runtime debug log (written next to the exe)
+debug.log
+

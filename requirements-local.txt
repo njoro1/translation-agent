@@ -1,0 +1,12 @@
+# Optional tooling to RUN a local llama.cpp server on your machine.
+#
+# This tool does NOT launch the model itself — it only connects to a llama.cpp
+# server you start separately (see README "Local model (offline)"). Install this
+# only if you want the convenience of `python -m llama_cpp.server` to serve your
+# GGUF; any OpenAI-compatible llama.cpp build works.
+#
+# NOTE: the default target model, Hy-MT2-1.8B-1.25Bit-GGUF, is a 1.25-bit STQ
+# quantization that needs the llama.cpp STQ kernel (PR #22836). A recent
+# llama-cpp-python build includes it; if translations come out as garbage, build
+# llama.cpp from source (or grab a release `llama-server`) and run that instead.
+llama-cpp-python[server]

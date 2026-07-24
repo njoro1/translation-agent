@@ -1,5 +1,0 @@
-PyQt6
-websockets
-pyaudio
-numpy
-python-dotenv

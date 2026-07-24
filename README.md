@@ -1,103 +1,234 @@
-# Real-Time Context-Aware Video Translation & Dubbing System
+# YouTube Subtitle Translator
 
-## Overview
-This project is a cross-platform AI system that enables real-time translation and dubbing of video and audio content.
+A command-line tool that takes a YouTube URL, fetches the video's
+**original-language** subtitles (manual if available, auto-generated as fallback),
+translates them **faithfully into English** using an OpenAI-compatible LLM, and
+writes an SRT file named after the video while preserving the original timing.
 
-It runs as a background service on both Windows and Android, capturing system audio from any source (e.g. YouTube, local media, livestreams) and providing:
+## Install
 
-- Live translated subtitles (overlay)
-- Real-time AI-generated voice dubbing
-- Context-aware translation across continuous speech
+```bash
+pip install -r requirements.txt
+cp .env.example .env        # then edit .env and fill in your credentials
+```
 
-The system is designed as a streaming pipeline, preserving meaning, tone, and domain context rather than translating isolated sentences.
+## Configure (`.env`)
 
-## Core Features
-- System-level audio capture (Windows + Android)
-- Real-time speech-to-text (Chinese initially)
-- Context-aware translation (Chinese → English)
-- Live subtitle overlay (non-intrusive UI layer)
-- AI voice dubbing with buffered playback
-- Background service execution
+| Variable         | Required | Meaning                                                        |
+| ---------------- | -------- | ------------------------------------------------------------- |
+| `OPENAI_API_KEY` | yes      | API key for your OpenAI-compatible endpoint.                  |
+| `OPENAI_MODEL`   | yes      | Model used for translation (e.g. `gpt-4o-mini`).              |
+| `OPENAI_BASE_URL`| no       | Base URL for any OpenAI-compatible API; leave blank for OpenAI, or `https://openrouter.ai/api/v1` for OpenRouter. |
 
-## Key Differentiators
-- Maintains rolling context across video streams
-- Works across any application (not tied to a single platform like YouTube)
-- Streaming-first design for low latency
-- Modular architecture for multilingual expansion
-- Designed for efficient token usage under constrained budgets
+## Usage
 
-## System Architecture
+```bash
+python translate.py "<youtube_url>"
+python translate.py "<youtube_url>" --model gpt-4o --out my_subs.srt --batch 30
+```
 
-Audio Capture (Device)
-        ↓
-Chunking / Streaming Layer
-        ↓
-Speech-to-Text (ASR)
-        ↓
-Context Manager
-        ↓
-Translation Engine (MiMo)
-        ↓
-   ┌───────────────┬───────────────┐
-   ↓               ↓
-Subtitle Renderer  Text-to-Speech (TTS)
-   ↓               ↓
-Overlay UI         Audio Playback
+- Output is written to `<video_title>.srt` in the current directory by default.
+- `--out` overrides the output path.
+- `--model` overrides `OPENAI_MODEL`.
+- `--batch` sets how many subtitle cues are sent per translation call (default 40).
 
-## Tech Stack
+## GUI (Windows)
 
-### Core AI Backend (Shared)
-- Python (FastAPI)
-- WebSockets (real-time streaming)
-- Whisper / Faster-Whisper (ASR)
-- MiMo API (translation + reasoning)
-- Coqui TTS / Edge TTS
+A modern desktop frontend built with **PySide6 + QML** wraps the same CLI. The
+interface is now split cleanly into a declarative QML view layer and a Python
+`QObject` bridge that streams pipeline output back into the UI:
 
-### Android Client
-- Kotlin
-- MediaProjection API (audio capture)
-- Foreground service
-- Overlay UI (WindowManager)
+```bash
+pip install -r requirements-gui.txt   # installs PySide6
+python main.py
+```
 
-### Windows Client
-- Python (or C# optional)
-- WASAPI loopback (audio capture)
-- PyQt / Electron (overlay UI)
-- SoundDevice / PyAudio (audio playback)
+`python gui.py` still works as a compatibility launcher, but it now forwards to the
+same PySide6 entry point.
 
-## Streaming Design
-- Audio processed in small chunks (1–2 seconds)
-- Incremental transcription
-- Context-aware translation using rolling memory
-- Subtitle updates streamed in real time
-- TTS buffered for smooth playback
+The frontend exposes the same options as the command line: choose a YouTube URL or
+a local file, set the output SRT path and batch size, pick the translation backend
+(cloud API or a local llama.cpp server), and — for local files — the SenseVoiceSmall
+ASR language and binary/model paths. **Run Translation** executes the pipeline on a
+background worker and streams stdout/stderr into the log pane in real time;
+**Open Output Folder** opens the generated subtitle location when done. The ASR
+binary/model paths default to `./gguf/*.gguf` and the binaries on PATH (override
+via the fields or the `FUNASR_*` env vars).
 
-## Roadmap
+### Building a Windows executable
 
-### Phase 1
-- Audio capture (Windows + Android)
-- Speech-to-text pipeline
-- Basic subtitle overlay
+Package the GUI as a standalone `.exe` (no Python install needed to run it) with
+PyInstaller:
 
-### Phase 2
-- Context-aware translation (MiMo integration)
-- Streaming subtitles
+```bash
+pip install pyinstaller
+build_exe.bat          # or run the pyinstaller command inside it directly
+```
 
-### Phase 3
-- Real-time voice dubbing
-- Latency optimization
+This produces `dist/TranslationAgent.exe`. The PyInstaller build bundles the QML
+files from `ui/qml`, and at runtime the app writes a rotating `debug.log` in the
+**same directory as the exe** (startup info, the exact `argv` each run uses,
+pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder so
+`debug.log` and any relative model paths resolve correctly.
 
-### Phase 4
-- Multilingual expansion
-- Edge/on-device inference exploration
+## How it works
 
-## Challenges
-- Maintaining low latency across pipeline stages
-- OS-specific audio capture constraints
-- Synchronization of subtitles and dubbed audio
-- Efficient context window management
+1. The video id is parsed from the URL.
+2. `yt-dlp` supplies YouTube's declared original language. The output filename
+   uses YouTube's **English-localized title** (fetched via the Innertube player
+   API with `hl=en`); when a video has no English title, it falls back to the
+   original title.
+3. `youtube-transcript-api` resolves the original-language track:
+   manual subtitles first, auto-generated captions if no manual track exists.
+   If the video has no subtitles at all, the tool exits with a clear message.
+4. Cues are translated in batches via the LLM, using numbered items so cue
+   order and count stay aligned with the original timestamps. The translator
+   follows a **foreignization** philosophy (see `src/translate.py`): it preserves
+   the original author's voice, cultural context, honorifics, and period
+   register, and never sanitizes, domesticates, or injects modern target-culture
+   slang. The source language (from YouTube) is injected into the system prompt.
+5. The translated text is written back into the original SRT cues, keeping
+   `start`/`end` times intact.
 
-## Vision
-To create a universal AI layer that allows users to understand any audio or video content in real time, regardless of language.
+## Notes
 
-Future versions will support multiple languages and explore on-device deployment within mobile and desktop ecosystems.
+- Target language is fixed to English.
+- The "original language" is YouTube's declared video language; if that is wrong
+  for a given video, results may reflect a different source language.
+- Auto-generated captions are accepted when no manual subtitles exist (lower
+  fidelity, but wider coverage).
+
+## Local video / audio (no subtitles)
+
+Instead of a YouTube URL you can point at a **local file that has no subtitles at
+all**. The audio is transcribed with Alibaba's **SenseVoiceSmall** ASR (via the
+FunASR GGUF CPU runtime — no Python or GPU needed at runtime), timed with its
+built-in VAD, then translated into English by the same LLM pipeline.
+
+```bash
+python translate.py --file my_video.mp4
+python translate.py --file clip.mkv --asr-lang ja --out ja_subs.srt
+```
+
+### 1. Install ffmpeg
+Required to extract a 16 kHz mono WAV from any container (mp4/mkv/webm/mov/mp3/…).
+Download from ffmpeg.org and put it on your PATH.
+
+### 2. Get the SenseVoiceSmall GGUF runtime + models
+Grab the prebuilt binaries (`llama-funasr-sensevoice`, `llama-funasr-vad`) for your
+OS from the FunASR GitHub releases (tags `runtime-llamacpp-v*`), and the models:
+
+```bash
+# Option A — download script (fetches the GGUF model + VAD into ./gguf)
+bash download-funasr-model.sh sensevoice ./gguf
+
+# Option B — manual, from Hugging Face
+huggingface-cli download FunAudioLLM/SenseVoiceSmall-GGUF --include "sensevoice-small-q8.gguf" --local-dir ./gguf
+huggingface-cli download FunAudioLLM/fsmn-vad-GGUF --include "fsmn-vad.gguf" --local-dir ./gguf
+```
+
+Use `sensevoice-small-q8.gguf` (~235 MB) — same accuracy as `f16` at half the size.
+On Windows the binaries are `.exe`; put them on PATH or pass their full path.
+
+### 3. Point the tool at them
+Either via environment variables (no flags needed):
+
+```bash
+FUNASR_SENSEVOICE_BIN=./bin/llama-funasr-sensevoice \
+FUNASR_VAD_BIN=./bin/llama-funasr-vad \
+FUNASR_MODEL=./gguf/sensevoice-small-q8.gguf \
+FUNASR_VAD_MODEL=./gguf/fsmn-vad.gguf \
+  python translate.py --file my_video.mp4
+```
+
+…or via flags (`--asr-bin`, `--asr-vad-bin`, `--asr-model`, `--asr-vad-model`).
+Defaults if neither is set: the binaries resolved from PATH, and `./gguf/*.gguf`.
+
+| Flag              | Env var                 | Default                          | Meaning                                  |
+| ----------------- | ----------------------- | -------------------------------- | ---------------------------------------- |
+| `--asr-bin`       | `FUNASR_SENSEVOICE_BIN` | `llama-funasr-sensevoice` (PATH) | Path to the sensevoice binary.           |
+| `--asr-vad-bin`   | `FUNASR_VAD_BIN`        | `llama-funasr-vad` (PATH)        | Path to the VAD binary.                  |
+| `--asr-model`     | `FUNASR_MODEL`          | `./gguf/sensevoice-small-q8.gguf`| SenseVoiceSmall GGUF model.              |
+| `--asr-vad-model` | `FUNASR_VAD_MODEL`      | `./gguf/fsmn-vad.gguf`           | fsmn-vad GGUF model.                     |
+| `--asr-lang`      | —                       | `auto`                           | Force `auto`/`zh`/`en`/`ja`/`ko`/`yue`.  |
+| `--asr-no-tags`   | —                       | off                              | Disable per-segment alignment (slower fallback). |
+
+### How timing works
+The VAD pass yields per-speech-segment start/end times; the ASR pass is run with
+`--keep-tags`, which makes SenseVoice emit a language/emotion/event/itn tag group
+**per segment**. The tool splits the transcript on those tags and verifies the
+segment count matches the VAD pass, so each line of text is bound to its real time
+range. If the counts ever disagree it falls back to transcribing each segment
+individually (robust, slightly slower). The original `start`/`end` times are never
+altered — only the `text` is replaced by the translation.
+
+English-source audio skips translation (the ASR text is written as-is). Translation
+can still use your local llama.cpp server via `--local`, exactly as with YouTube.
+
+## Local model (offline)
+
+You can run translations against a **llama.cpp server you start yourself** instead
+of a cloud API, so no network round-trips leave your machine. This tool does **not**
+launch or manage the model process — it just points its existing OpenAI-compatible
+client at a server already running on your computer.
+
+Start your llama.cpp server (any OpenAI-compatible build works — `llama-server`, or
+`llama-cpp-python`'s server). For the default target model you'll need a build that
+includes the STQ kernel; see the note below.
+
+```bash
+# Example with llama-cpp-python (install once: pip install -r requirements-local.txt)
+python -m llama_cpp.server --model models/Hy-MT2-1.8B-1.25Bit.gguf --n_ctx 4096
+# -> listens on http://127.0.0.1:8080/v1
+```
+
+Then point the translator at it. Either with the `--local` flag:
+
+```bash
+python translate.py "<youtube_url>" --local
+python translate.py "<youtube_url>" --local --local-port 8080 --local-model-name Hy-MT2-1.8B
+```
+
+…or purely via environment variables (no flag needed):
+
+```bash
+OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_API_KEY=sk-local OPENAI_MODEL=Hy-MT2-1.8B \
+  python translate.py "<youtube_url>"
+```
+
+A missing API key is accepted for local (localhost) endpoints — any placeholder works.
+If the server isn't running, the tool fails fast with a clear message instead of a
+cryptic connection error.
+
+Relevant flags (only used with `--local`):
+
+| Flag                | Default        | Meaning                                                        |
+| ------------------- | -------------- | ------------------------------------------------------------- |
+| `--local`           | off            | Use a llama.cpp server already running on this machine.       |
+| `--local-host`      | `127.0.0.1`    | Host of the running llama.cpp server.                         |
+| `--local-port`      | `8080`         | Port of the running llama.cpp server.                         |
+| `--local-model-name`| `Hy-MT2-1.8B`  | Model id sent to the local server.                            |
+
+Notes:
+- **STQ kernel:** the default target model, `Hy-MT2-1.8B-1.25Bit-GGUF`, is a 1.25-bit
+  **STQ** quantization that needs the llama.cpp STQ kernel (PR #22836). A recent
+  `llama-cpp-python` build includes it. If translations come out as garbage, build
+  llama.cpp from source (or grab a release `llama-server`) and run that instead.
+- **Sampling:** the model card suggests `temperature 0.7, top_p 0.6, top_k 20,
+  repetition_penalty 1.05`. For the cloud path the translator intentionally uses a low
+  `temperature 0.3` for translation fidelity. When the model is detected as Hy-MT2
+  (model name contains `hy-mt2` / `hy_mt2`, which the local default `Hy-MT2-1.8B` does),
+  it instead follows the
+  [hy-mt2-translator skill](https://skillhub.cn/skills/hy-mt2-translator): no system
+  prompt, the skill's own Chinese instruction wording, and a low `temperature 0.1` (kept
+  low so the numbered-item protocol parses deterministically). It also applies the
+  model-card `top_p` / `top_k` / `repetition_penalty` via `extra_body`, and — crucially —
+  folds the project's **foreignization philosophy** into the prompt as a `style`, so the
+  local model preserves the author's voice, culture, and honorifics exactly like the
+  cloud path's system prompt. The skill's "context" mode is used when the source language
+  is known (passed as background); our numbered-item protocol is kept so cue
+  count/order stay aligned. If a backend rejects the llama.cpp-only params
+  (`top_k` / `repeat_penalty`), they are dropped and the batch is retried plainly.
+- Target language stays English; the original `start`/`end` times and cue count are
+  preserved exactly as with the cloud path.
+

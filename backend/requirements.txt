@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-websockets
-faster_whisper
-numpy
-soundfile
-pydantic
-python-dotenv
