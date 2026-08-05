@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "views"
+import "components"
 
 ApplicationWindow {
     id: window
@@ -13,6 +14,8 @@ ApplicationWindow {
     visible: true
     title: "Translation Agent"
     color: "#050816"
+
+    property string currentView: "dashboard"
 
     Rectangle {
         anchors.fill: parent
@@ -59,12 +62,6 @@ ApplicationWindow {
                     font.pixelSize: 18
                     font.bold: true
                 }
-
-                Label {
-                    text: "PySide6 + QML desktop frontend"
-                    color: "#94a3b8"
-                    font.pixelSize: 12
-                }
             }
 
             Item {
@@ -106,7 +103,50 @@ ApplicationWindow {
         }
     }
 
-    DashboardView {
+    RowLayout {
         anchors.fill: parent
+        spacing: 0
+
+        Sidebar {
+            Layout.fillHeight: true
+            currentView: window.currentView
+            onViewRequested: (view) => window.currentView = view
+        }
+
+        StackView {
+            id: stackView
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            initialItem: dashboardView
+
+            // Instant view switching — replaces the default swipe/slide animations
+            pushEnter: Transition {}
+            pushExit: Transition {}
+            popEnter: Transition {}
+            popExit: Transition {}
+            replaceEnter: Transition {}
+            replaceExit: Transition {}
+        }
+    }
+
+    Component {
+        id: dashboardView
+        DashboardView {}
+    }
+
+    Component {
+        id: settingsView
+        SettingsView {}
+    }
+
+    Connections {
+        target: window
+        function onCurrentViewChanged() {
+            if (currentView === "settings") {
+                stackView.replace(settingsView)
+            } else {
+                stackView.replace(dashboardView)
+            }
+        }
     }
 }

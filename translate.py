@@ -65,37 +65,90 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="Hy-MT2-1.8B",
         help="Model id sent to the local server (default Hy-MT2-1.8B).",
     )
-    # --- local ASR (SenseVoiceSmall GGUF runtime) flags ---
+    parser.add_argument(
+        "--local-model",
+        help="Path to a translation GGUF. When given, the app auto-starts its "
+        "bundled CPU llama-server against this file (host/port above); when "
+        "omitted, it connects to a server you started yourself, as before.",
+    )
+    # --- local ASR (FunASR + SenseVoiceSmall) flags ---
     parser.add_argument(
         "--asr-bin",
-        help="Path to the llama-funasr-sensevoice binary (else "
-        "FUNASR_SENSEVOICE_BIN env var, else 'llama-funasr-sensevoice' on PATH).",
+        default=os.environ.get("FUNASR_SENSEVOICE_BIN"),
+        help="Path to llama-funasr-sensevoice binary.",
     )
     parser.add_argument(
         "--asr-vad-bin",
-        help="Path to the llama-funasr-vad binary (else FUNASR_VAD_BIN env var, "
-        "else 'llama-funasr-vad' on PATH).",
+        default=os.environ.get("FUNASR_VAD_BIN"),
+        help="Path to llama-funasr-vad binary.",
     )
     parser.add_argument(
         "--asr-model",
-        help="Path to the SenseVoiceSmall GGUF model (else FUNASR_MODEL env var, "
-        "else ./gguf/sensevoice-small-q8.gguf).",
+        default=os.environ.get("FUNASR_MODEL"),
+        help="Path to sensevoice-small-q8.gguf.",
     )
     parser.add_argument(
         "--asr-vad-model",
-        help="Path to the fsmn-vad GGUF model (else FUNASR_VAD_MODEL env var, "
-        "else ./gguf/fsmn-vad.gguf).",
+        default=os.environ.get("FUNASR_VAD_MODEL"),
+        help="Path to fsmn-vad.gguf.",
     )
     parser.add_argument(
         "--asr-lang",
         default="auto",
-        help="Force ASR language: auto, zh, en, ja, ko, yue (default auto).",
+        help="Source language: auto, zh, en, ja, ko, yue.",
+    )
+    parser.add_argument(
+        "--asr-threads",
+        type=int,
+        default=int(os.environ.get("FUNASR_THREADS", "4")),
+        help="CPU threads for FunASR.",
+    )
+    parser.add_argument(
+        "--asr-max-segment-ms",
+        type=int,
+        default=int(os.environ.get("FUNASR_MAX_SEGMENT_MS", "7000")),
+        help="Maximum ASR audio segment length before post-splitting into cues.",
+    )
+    parser.add_argument(
+        "--asr-max-end-silence-ms",
+        type=int,
+        default=int(os.environ.get("FUNASR_MAX_END_SILENCE_MS", "250")),
+        help="Trailing silence allowed before VAD closes a speech segment.",
+    )
+    parser.add_argument(
+        "--asr-speech-noise-threshold",
+        type=float,
+        default=float(os.environ.get("FUNASR_SPEECH_NOISE_THRES", "0.55")),
+        help="FunASR VAD speech/noise threshold.",
+    )
+    parser.add_argument(
+        "--asr-noise-db",
+        type=float,
+        default=float(os.environ.get("FUNASR_NOISE_DB", "-35")),
+        help="ffmpeg silencedetect noise threshold in dB.",
+    )
+    parser.add_argument(
+        "--asr-min-silence-s",
+        type=float,
+        default=float(os.environ.get("FUNASR_MIN_SILENCE_S", "0.20")),
+        help="Minimum silence duration for ffmpeg silence detection.",
+    )
+    parser.add_argument(
+        "--asr-max-cue-duration-ms",
+        type=int,
+        default=int(os.environ.get("FUNASR_MAX_CUE_DURATION_MS", "3000")),
+        help="Preferred maximum subtitle cue duration.",
+    )
+    parser.add_argument(
+        "--asr-max-cue-chars",
+        type=int,
+        default=int(os.environ.get("FUNASR_MAX_CUE_CHARS", "70")),
+        help="Preferred maximum subtitle cue character count.",
     )
     parser.add_argument(
         "--asr-no-tags",
         action="store_true",
-        help="Disable --keep-tags (per-segment alignment falls back to "
-        "per-segment transcription).",
+        help="Do not request SenseVoice tag output.",
     )
     return parser.parse_args(argv)
 
@@ -173,18 +226,27 @@ def main(argv: list[str] | None = None) -> int:
     # Fetch cues from either a YouTube URL or a local file (same output shape).
     if args.file:
         try:
-            from src.local_asr import transcribe_local_file, resolve_asr_config
+            from src import local_asr
 
-            sb, vb, mp, vmp = resolve_asr_config(args)
-            fetched = transcribe_local_file(
+            cues, source_language = local_asr.transcribe_local_file(
                 args.file,
-                sensevoice_bin=sb,
-                vad_bin=vb,
-                model_path=mp,
-                vad_model_path=vmp,
-                language=args.asr_lang,
-                keep_tags=not args.asr_no_tags,
+                asr_bin=args.asr_bin,
+                asr_vad_bin=args.asr_vad_bin,
+                asr_model=args.asr_model,
+                asr_vad_model=args.asr_vad_model,
+                asr_lang=args.asr_lang,
+                threads=args.asr_threads,
+                max_segment_ms=args.asr_max_segment_ms,
+                max_end_silence_ms=args.asr_max_end_silence_ms,
+                speech_noise_thres=args.asr_speech_noise_threshold,
+                noise_db=args.asr_noise_db,
+                min_silence_s=args.asr_min_silence_s,
+                max_cue_duration_ms=args.asr_max_cue_duration_ms,
+                max_cue_chars=args.asr_max_cue_chars,
+                no_tags=args.asr_no_tags,
             )
+            stem = os.path.splitext(os.path.basename(args.file))[0]
+            fetched = (cues, sanitize_filename(stem), source_language)
         except (RuntimeError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -197,6 +259,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.local:
         base_url = f"http://{args.local_host}:{args.local_port}/v1"
+        if args.local_model:
+            try:
+                from src.local_server import ensure_local_server
+
+                _proc, how = ensure_local_server(
+                    args.local_model,
+                    args.local_host,
+                    args.local_port,
+                )
+                print(f"[local] llama-server ({how}) serving {args.local_model}\n", flush=True)
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
         try:
             _check_local_ready(base_url)
         except RuntimeError as exc:

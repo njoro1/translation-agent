@@ -1,3 +1,248 @@
+# FunASR-Only Restoration Instructions
+
+Filename: `FUNASR_ONLY_MIGRATION.md`
+
+This document replaces all previous Whisper-based local ASR instructions.
+
+The project must use **FunASR + SenseVoiceSmall only** for local transcription.
+
+Do **not** keep Whisper.cpp as a fallback. Do not keep Whisper binaries, Whisper models, Whisper CLI flags, Whisper GUI labels, or Whisper build checks.
+
+---
+
+## 1. Goal
+
+The local subtitle path must no longer produce giant text blocks.
+
+The current bad local output looks like this:
+
+```srt
+2
+00:00:05,775 --> 00:00:18,449
+lottieLE, in short, can help me record and let AI understand my life. lottieLE has two main modes: Story Mode and AI Mode. Story Mode is very simple to use—just enable Story Mode, and it will record according to the frequency I set.
+```
+
+The desired output should be paced more like the YouTube route:
+
+```srt
+1
+00:00:00,000 --> 00:00:01,041
+Recently, I received a
+
+2
+00:00:01,041 --> 00:00:03,000
+Seeming rather novel little gadget
+
+3
+00:00:03,000 --> 00:00:03,500
+Actually,
+
+4
+00:00:03,500 --> 00:00:05,916
+It is a multimodal AI wearable device
+```
+
+The YouTube example does not need to be matched exactly, but the local output must move from:
+
+```text
+19 huge paragraph cues
+```
+
+to something like:
+
+```text
+many short phrase-sized cues
+average cue duration around 2-4 seconds
+no cue should normally exceed 6-7 seconds
+```
+
+For the provided sample video, the YouTube reference has about **59 cues**. The old local output has **19 cues**. The new FunASR-only output should aim for approximately:
+
+```text
+Minimum cue count:      35-45+
+Preferred cue count:      45-60+
+Average cue duration:     under 3.5 seconds
+Maximum cue duration:     normally under 6 seconds
+```
+
+Exact cue count is not sacred. The important requirement is:
+
+> Local subtitles must not appear as large text blocks.
+
+---
+
+## 2. Root cause
+
+SenseVoiceSmall is fast and suitable for an old CPU-only laptop, but it does not provide YouTube-quality native timestamps.
+
+The old FunASR implementation relied too much on coarse VAD segments. When VAD produced a small number of long speech segments, the app created one subtitle cue per long VAD segment.
+
+That caused the local SRT to contain long blocks of text.
+
+The fix is not Whisper. The fix is:
+
+1. Restore FunASR + SenseVoiceSmall.
+2. Make VAD segmentation more aggressive.
+3. Use ffmpeg silence detection as a fallback/refiner.
+4. Force maximum ASR segment length.
+5. Split recognized text into shorter subtitle cues.
+6. Distribute timing proportionally inside each ASR segment.
+7. Remove Whisper completely.
+
+---
+
+## 3. Non-negotiable constraints
+
+### 3.1 No Whisper
+
+Remove all Whisper-related things from the active project:
+
+- `vendor/whisper/`
+- `whisper-cli.exe`
+- `ggml-large-v3-turbo-q5_0.bin`
+- `WHISPER_CLI_BIN`
+- `WHISPER_MODEL`
+- Whisper labels in the GUI
+- Whisper download URLs
+- Whisper build preflight checks
+- Whisper fallback logic
+- Whisper documentation
+
+Do not reintroduce Whisper as an optional backend.
+
+### 3.2 CPU-only
+
+The solution must remain usable on an old laptop with no GPU.
+
+Therefore:
+
+- Do not add PyTorch.
+- Do not add a heavy ML stack.
+- Use the bundled FunASR GGML/llama.cpp-style binaries.
+- Keep thread counts conservative.
+
+### 3.3 Preserve pipeline invariants
+
+The existing translation pipeline expects:
+
+```python
+Cue(start: float, end: float, text: str)
+```
+
+The local ASR module must return:
+
+```python
+(list[Cue], source_language_name_or_None)
+```
+
+The translation pipeline must still receive the original cue order and count.
+
+Do not merge, drop, or reorder cues after translation.
+
+---
+
+## 4. Required repository state
+
+### 4.1 FunASR binaries
+
+The following binaries must exist:
+
+```text
+vendor/funasr/llama-funasr-sensevoice.exe
+vendor/funasr/llama-funasr-vad.exe
+```
+
+Keep any DLLs that came with them in the same directory.
+
+The other FunASR binaries may remain, but only these two are required:
+
+```text
+llama-funasr-sensevoice.exe
+llama-funasr-vad.exe
+```
+
+If missing, restore them from the FunASR GitHub release runtime package that matches the project’s existing `vendor/funasr` artifacts.
+
+### 4.2 FunASR models
+
+The project needs:
+
+```text
+gguf/sensevoice-small-q8.gguf
+gguf/fsmn-vad.gguf
+```
+
+Old copies may exist in:
+
+```text
+dist/gguf/sensevoice-small-q8.gguf
+dist/gguf/fsmn-vad.gguf
+```
+
+If they exist there, move or copy them:
+
+```bat
+mkdir gguf 2>nul
+copy dist\gguf\sensevoice-small-q8.gguf gguf\
+copy dist\gguf\fsmn-vad.gguf gguf\
+```
+
+If missing, download them using the existing helper:
+
+```bash
+bash vendor/funasr/download-funasr-model.sh
+```
+
+If that script is unavailable, use the same FunASR model URLs that were used during the original FunASR era.
+
+### 4.3 Remove Whisper artifacts
+
+Delete or stop using:
+
+```text
+vendor/whisper/
+gguf/ggml-large-v3-turbo-q5_0.bin
+dist/gguf/ggml-large-v3-turbo-q5_0.bin
+```
+
+Also remove any Whisper references from:
+
+```text
+translate.py
+src/local_asr.py
+backend/bridge.py
+ui/qml/views/SettingsView.qml
+ui/qml/views/DashboardView.qml
+build_exe.bat
+README.md
+CLAUDE.md
+PROJECT.md
+```
+
+---
+
+## 5. Replace `src/local_asr.py`
+
+Replace the current Whisper-based `src/local_asr.py` with a FunASR-only implementation.
+
+The new module must:
+
+1. Extract audio to 16 kHz mono WAV using ffmpeg.
+2. Try FunASR FSMN-VAD.
+3. Use aggressive VAD settings.
+4. Use ffmpeg `silencedetect` as fallback/refinement.
+5. Split long speech regions into shorter ASR segments.
+6. Transcribe segments with SenseVoiceSmall.
+7. Strip SenseVoice tags.
+8. Detect source language if `auto`.
+9. Split long recognized text into shorter subtitle cues.
+10. Return normal `Cue` objects.
+
+Below is the reference implementation.
+
+Replace the entire contents of `src/local_asr.py` with this:
+
+```python
 """
 Local ASR backend: FunASR + SenseVoiceSmall only.
 
@@ -28,11 +273,6 @@ import wave
 from pathlib import Path
 
 from .srt_io import Cue
-
-# Hide console windows spawned by subprocess on Windows.
-_SUBPROCESS_CREATION_FLAGS = 0
-if os.name == "nt":
-    _SUBPROCESS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 DEFAULT_SENSEVOICE_MODEL = os.path.join("gguf", "sensevoice-small-q8.gguf")
@@ -80,7 +320,6 @@ def _run(cmd: list[str], timeout: int = 3600) -> subprocess.CompletedProcess:
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
-        creationflags=_SUBPROCESS_CREATION_FLAGS,
     )
     if p.returncode != 0:
         raise RuntimeError(
@@ -231,7 +470,6 @@ def _cut_wav(wav_path: Path, start: float, end: float, out_path: Path) -> None:
     _run(cmd)
 
 
-
 def _help_text(exe: str) -> str:
     if exe in _HELP_CACHE:
         return _HELP_CACHE[exe]
@@ -246,7 +484,6 @@ def _help_text(exe: str) -> str:
                 encoding="utf-8",
                 errors="replace",
                 timeout=30,
-                creationflags=_SUBPROCESS_CREATION_FLAGS,
             )
             candidate = (p.stdout or "") + (p.stderr or "")
             if candidate.strip():
@@ -312,7 +549,6 @@ def _ffmpeg_silences(
         encoding="utf-8",
         errors="replace",
         timeout=3600,
-        creationflags=_SUBPROCESS_CREATION_FLAGS,
     )
 
     output = (p.stderr or "") + (p.stdout or "")
@@ -362,7 +598,6 @@ def _speech_from_silences(
         return [(0.0, duration)]
 
     return speech
-
 
 
 def _split_long_segments(
@@ -518,7 +753,6 @@ def _parse_vad_output(raw: str, duration: float) -> list[tuple[float, float]]:
     return final
 
 
-
 def _binary_vad(
     wav_path: Path,
     duration: float,
@@ -540,7 +774,8 @@ def _binary_vad(
     base_cmd = [
         vad_bin,
         "-m", str(vad_model),
-        "-a", str(wav_path),
+        "-i", str(wav_path),
+        "-t", str(int(threads)),
     ]
 
     tune_sets: list[list[str]] = []
@@ -588,7 +823,6 @@ def _binary_vad(
                     encoding="utf-8",
                     errors="replace",
                     timeout=3600,
-                    creationflags=_SUBPROCESS_CREATION_FLAGS,
                 )
 
                 raw = p.stdout or ""
@@ -613,7 +847,6 @@ def _binary_vad(
                         pass
 
     return []
-
 
 
 def _prepare_segments(
@@ -724,7 +957,6 @@ def _parse_sensevoice_output(raw: str, keep_tags: bool = False) -> tuple[str, st
     return text, lang
 
 
-
 def _run_sensevoice(
     asr_bin: str,
     model_path: str,
@@ -741,7 +973,8 @@ def _run_sensevoice(
         cmd = [
             asr_bin,
             "-m", str(model_path),
-            "-a", str(chunk_path),
+            "-i", str(chunk_path),
+            "-t", str(int(threads)),
         ]
 
         if use_lang and lang and lang.lower() != "auto" and lang_flag:
@@ -778,7 +1011,6 @@ def _run_sensevoice(
                         encoding="utf-8",
                         errors="replace",
                         timeout=3600,
-                        creationflags=_SUBPROCESS_CREATION_FLAGS,
                     )
 
                     raw = p.stdout or ""
@@ -854,7 +1086,6 @@ def _split_text(text: str, max_chars: int) -> list[str]:
             return out
 
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
-
 
 
 def _segment_to_cues(
@@ -973,7 +1204,6 @@ def transcribe_local_file(
                 threads = 4
         else:
             threads = max(2, min(4, os.cpu_count() or 2))
-
 
     if max_segment_ms is None:
         max_segment_ms = int(os.environ.get("FUNASR_MAX_SEGMENT_MS", "7000"))
@@ -1120,4 +1350,929 @@ def transcribe_local_file(
         source_language = _lang_name(detected_lang)
 
     return cues, source_language
+```
 
+---
+
+## 6. Update `translate.py`
+
+The CLI must no longer mention Whisper.
+
+Remove any Whisper-specific flags, help text, defaults, or environment variables.
+
+The local ASR flags should now be FunASR-only.
+
+### 6.1 Required CLI flags
+
+Use these flags:
+
+```text
+--asr-bin
+--asr-vad-bin
+--asr-model
+--asr-vad-model
+--asr-lang
+--asr-threads
+--asr-max-segment-ms
+--asr-max-end-silence-ms
+--asr-speech-noise-threshold
+--asr-noise-db
+--asr-min-silence-s
+--asr-max-cue-duration-ms
+--asr-max-cue-chars
+--asr-no-tags
+```
+
+Recommended argparse block:
+
+```python
+parser.add_argument(
+    "--asr-bin",
+    default=os.environ.get("FUNASR_SENSEVOICE_BIN"),
+    help="Path to llama-funasr-sensevoice binary.",
+)
+
+parser.add_argument(
+    "--asr-vad-bin",
+    default=os.environ.get("FUNASR_VAD_BIN"),
+    help="Path to llama-funasr-vad binary.",
+)
+
+parser.add_argument(
+    "--asr-model",
+    default=os.environ.get("FUNASR_MODEL"),
+    help="Path to sensevoice-small-q8.gguf.",
+)
+
+parser.add_argument(
+    "--asr-vad-model",
+    default=os.environ.get("FUNASR_VAD_MODEL"),
+    help="Path to fsmn-vad.gguf.",
+)
+
+parser.add_argument(
+    "--asr-lang",
+    default="auto",
+    help="Source language: auto, zh, en, ja, ko, yue.",
+)
+
+parser.add_argument(
+    "--asr-threads",
+    type=int,
+    default=int(os.environ.get("FUNASR_THREADS", "4")),
+    help="CPU threads for FunASR.",
+)
+
+parser.add_argument(
+    "--asr-max-segment-ms",
+    type=int,
+    default=int(os.environ.get("FUNASR_MAX_SEGMENT_MS", "7000")),
+    help="Maximum ASR audio segment length before post-splitting into cues.",
+)
+
+parser.add_argument(
+    "--asr-max-end-silence-ms",
+    type=int,
+    default=int(os.environ.get("FUNASR_MAX_END_SILENCE_MS", "250")),
+    help="Trailing silence allowed before VAD closes a speech segment.",
+)
+
+parser.add_argument(
+    "--asr-speech-noise-threshold",
+    type=float,
+    default=float(os.environ.get("FUNASR_SPEECH_NOISE_THRES", "0.55")),
+    help="FunASR VAD speech/noise threshold.",
+)
+
+parser.add_argument(
+    "--asr-noise-db",
+    type=float,
+    default=float(os.environ.get("FUNASR_NOISE_DB", "-35")),
+    help="ffmpeg silencedetect noise threshold in dB.",
+)
+
+parser.add_argument(
+    "--asr-min-silence-s",
+    type=float,
+    default=float(os.environ.get("FUNASR_MIN_SILENCE_S", "0.20")),
+    help="Minimum silence duration for ffmpeg silence detection.",
+)
+
+parser.add_argument(
+    "--asr-max-cue-duration-ms",
+    type=int,
+    default=int(os.environ.get("FUNASR_MAX_CUE_DURATION_MS", "3000")),
+    help="Preferred maximum subtitle cue duration.",
+)
+
+parser.add_argument(
+    "--asr-max-cue-chars",
+    type=int,
+    default=int(os.environ.get("FUNASR_MAX_CUE_CHARS", "70")),
+    help="Preferred maximum subtitle cue character count.",
+)
+
+parser.add_argument(
+    "--asr-no-tags",
+    action="store_true",
+    help="Do not request SenseVoice tag output.",
+)
+```
+
+### 6.2 Call the local ASR module
+
+The local-file branch should call:
+
+```python
+from src import local_asr
+
+cues, source_language = local_asr.transcribe_local_file(
+    args.file,
+    asr_bin=args.asr_bin,
+    asr_vad_bin=args.asr_vad_bin,
+    asr_model=args.asr_model,
+    asr_vad_model=args.asr_vad_model,
+    asr_lang=args.asr_lang,
+    threads=args.asr_threads,
+    max_segment_ms=args.asr_max_segment_ms,
+    max_end_silence_ms=args.asr_max_end_silence_ms,
+    speech_noise_thres=args.asr_speech_noise_threshold,
+    noise_db=args.asr_noise_db,
+    min_silence_s=args.asr_min_silence_s,
+    max_cue_duration_ms=args.asr_max_cue_duration_ms,
+    max_cue_chars=args.asr_max_cue_chars,
+    no_tags=args.asr_no_tags,
+)
+```
+
+Remove any code path that calls Whisper.
+
+---
+
+## 7. Recommended timing defaults
+
+These defaults are chosen to avoid large blocks while remaining usable on an old CPU.
+
+```text
+FUNASR_THREADS=4
+FUNASR_MAX_SEGMENT_MS=7000
+FUNASR_MAX_END_SILENCE_MS=250
+FUNASR_SPEECH_NOISE_THRES=0.55
+FUNASR_NOISE_DB=-35
+FUNASR_MIN_SILENCE_S=0.20
+FUNASR_MAX_CUE_DURATION_MS=3000
+FUNASR_MAX_CUE_CHARS=70
+```
+
+Meaning:
+
+- FunASR/VAD should try to keep speech segments under about 7 seconds.
+- Subtitle cues are then split to target about 3 seconds each.
+- Long text is split on punctuation and proportionally timed.
+
+### 7.1 If output still has large blocks
+
+Use more aggressive values:
+
+```text
+--asr-max-segment-ms 5000
+--asr-max-end-silence-ms 200
+--asr-max-cue-duration-ms 2600
+--asr-max-cue-chars 60
+```
+
+Or environment variables:
+
+```text
+FUNASR_MAX_SEGMENT_MS=5000
+FUNASR_MAX_END_SILENCE_MS=200
+FUNASR_MAX_CUE_DURATION_MS=2600
+FUNASR_MAX_CUE_CHARS=60
+```
+
+### 7.2 If performance is too slow
+
+Use slightly larger ASR segments but keep cue display short:
+
+```text
+--asr-max-segment-ms 9000
+--asr-max-cue-duration-ms 3200
+```
+
+This reduces the number of SenseVoice process launches while still preventing giant subtitle cues.
+
+### 7.3 If words are being cut mid-speech
+
+Increase:
+
+```text
+--asr-max-segment-ms
+--asr-min-silence-s
+```
+
+Example:
+
+```text
+--asr-max-segment-ms 8000
+--asr-min-silence-s 0.30
+```
+
+### 7.4 If background music prevents silence detection
+
+Try:
+
+```text
+--asr-noise-db -30
+```
+
+If quiet speech is being missed, try:
+
+```text
+--asr-noise-db -40
+```
+
+---
+
+## 8. Update `backend/bridge.py`
+
+The GUI bridge must be rewired from Whisper to FunASR.
+
+### 8.1 Remove Whisper state
+
+Remove or replace any references to:
+
+```text
+whisper
+WHISPER_CLI_BIN
+WHISPER_MODEL
+ggml-large-v3-turbo-q5_0.bin
+```
+
+Do not keep Whisper properties.
+
+### 8.2 Restore and wire FunASR properties
+
+The bridge already contains dead legacy properties:
+
+```python
+asrBin
+asrVadBin
+asrVadModel
+```
+
+These must no longer be dead code.
+
+Ensure these properties exist and are persisted via `QSettings`:
+
+```text
+asr/bin
+asr/vadBin
+asr/model
+asr/vadModel
+asr/lang
+asr/threads
+asr/maxSegmentMs
+asr/maxEndSilenceMs
+asr/speechNoiseThreshold
+asr/noiseDb
+asr/minSilenceS
+asr/maxCueDurationMs
+asr/maxCueChars
+asr/noTags
+```
+
+Recommended QObject property names:
+
+```python
+asrBin
+asrVadBin
+asrModel
+asrVadModel
+asrLang
+asrThreads
+asrMaxSegmentMs
+asrMaxEndSilenceMs
+asrSpeechNoiseThreshold
+asrNoiseDb
+asrMinSilenceS
+asrMaxCueDurationMs
+asrMaxCueChars
+asrNoTags
+```
+
+### 8.3 Build FunASR argv
+
+In `_build_run_config()`, the local-file branch must include:
+
+```python
+argv += ["--file", self.filePath]
+
+argv += ["--asr-bin", self.localPath(self.asrBin)]
+argv += ["--asr-vad-bin", self.localPath(self.asrVadBin)]
+argv += ["--asr-model", self.localPath(self.asrModel)]
+argv += ["--asr-vad-model", self.localPath(self.asrVadModel)]
+
+argv += ["--asr-lang", self.asrLang]
+argv += ["--asr-threads", str(self.asrThreads)]
+argv += ["--asr-max-segment-ms", str(self.asrMaxSegmentMs)]
+argv += ["--asr-max-end-silence-ms", str(self.asrMaxEndSilenceMs)]
+argv += ["--asr-speech-noise-threshold", str(self.asrSpeechNoiseThreshold)]
+argv += ["--asr-noise-db", str(self.asrNoiseDb)]
+argv += ["--asr-min-silence-s", str(self.asrMinSilenceS)]
+argv += ["--asr-max-cue-duration-ms", str(self.asrMaxCueDurationMs)]
+argv += ["--asr-max-cue-chars", str(self.asrMaxCueChars)]
+
+if self.asrNoTags:
+    argv += ["--asr-no-tags"]
+```
+
+Only add paths if they are non-empty.
+
+### 8.4 Update model download URLs
+
+Remove the Whisper model URL.
+
+The downloader must fetch the two FunASR models:
+
+```text
+sensevoice-small-q8.gguf
+fsmn-vad.gguf
+```
+
+Use the same URLs that appear in:
+
+```text
+vendor/funasr/download-funasr-model.sh
+```
+
+Do not invent new model URLs if the script already contains the correct ones.
+
+After download, set:
+
+```text
+asrModel     -> gguf/sensevoice-small-q8.gguf
+asrVadModel  -> gguf/fsmn-vad.gguf
+```
+
+---
+
+## 9. Update QML
+
+Update:
+
+```text
+ui/qml/views/DashboardView.qml
+ui/qml/views/SettingsView.qml
+```
+
+Remove all Whisper wording.
+
+The Local ASR section should say something like:
+
+```text
+Local ASR: FunASR + SenseVoiceSmall
+```
+
+The settings page should expose:
+
+```text
+SenseVoice binary
+VAD binary
+SenseVoice model
+VAD model
+ASR language
+ASR threads
+Max segment ms
+Max end silence ms
+Speech/noise threshold
+Noise dB
+Minimum silence seconds
+Max cue duration ms
+Max cue chars
+No tags
+```
+
+Recommended default values in the UI:
+
+```text
+ASR language:             auto
+ASR threads:              4
+Max segment ms:           7000
+Max end silence ms:       250
+Speech/noise threshold:   0.55
+Noise dB:                 -35
+Minimum silence seconds:  0.20
+Max cue duration ms:      3000
+Max cue chars:            70
+No tags:                  unchecked
+```
+
+The one-click ASR model download button must download FunASR models, not Whisper.
+
+---
+
+## 10. Update `build_exe.bat`
+
+The standalone build must no longer require Whisper.
+
+### 10.1 Remove Whisper checks
+
+Remove lines similar to:
+
+```bat
+if not exist vendor\whisper\Release\whisper-cli.exe ...
+```
+
+Remove Whisper data bundling similar to:
+
+```bat
+--add-data "vendor\whisper\Release;vendor/whisper/Release"
+```
+
+### 10.2 Add FunASR checks
+
+Add:
+
+```bat
+if not exist vendor\funasr\llama-funasr-sensevoice.exe (
+    echo Missing vendor\funasr\llama-funasr-sensevoice.exe
+    echo Place the FunASR SenseVoice runtime binary there before building.
+    exit /b 1
+)
+
+if not exist vendor\funasr\llama-funasr-vad.exe (
+    echo Missing vendor\funasr\llama-funasr-vad.exe
+    echo Place the FunASR VAD runtime binary there before building.
+    exit /b 1
+)
+```
+
+### 10.3 Bundle FunASR binaries
+
+Add to the PyInstaller command:
+
+```bat
+--add-data "vendor\funasr;vendor/funasr"
+```
+
+Do not bundle Whisper.
+
+Models may remain downloaded at runtime instead of embedded, because `sensevoice-small-q8.gguf` is large.
+
+If you choose to bundle models, add:
+
+```bat
+--add-data "gguf\sensevoice-small-q8.gguf;gguf"
+--add-data "gguf\fsmn-vad.gguf;gguf"
+```
+
+But this is optional and will increase exe size substantially.
+
+---
+
+## 11. Environment variables
+
+The FunASR-only backend should respect these environment variables:
+
+```text
+FUNASR_SENSEVOICE_BIN
+FUNASR_VAD_BIN
+FUNASR_MODEL
+FUNASR_VAD_MODEL
+FUNASR_THREADS
+FUNASR_MAX_SEGMENT_MS
+FUNASR_MAX_END_SILENCE_MS
+FUNASR_SPEECH_NOISE_THRES
+FUNASR_NOISE_DB
+FUNASR_MIN_SILENCE_S
+FUNASR_MAX_CUE_DURATION_MS
+FUNASR_MAX_CUE_CHARS
+FUNASR_FORCE_FFMPEG_VAD
+FUNASR_VAD_UNITS
+FUNASR_OUTPUT_FLAG
+FUNASR_ASR_OUTPUT_FLAG
+FUNASR_VAD_OUTPUT_FLAG
+```
+
+Remove all Whisper environment variables from documentation and code:
+
+```text
+WHISPER_CLI_BIN
+WHISPER_MODEL
+```
+
+### 11.1 Useful debugging variables
+
+If FunASR VAD output is unusable:
+
+```text
+FUNASR_FORCE_FFMPEG_VAD=1
+```
+
+If VAD output is in seconds instead of milliseconds:
+
+```text
+FUNASR_VAD_UNITS=s
+```
+
+If VAD output is in milliseconds:
+
+```text
+FUNASR_VAD_UNITS=ms
+```
+
+If a FunASR binary requires a specific output flag:
+
+```text
+FUNASR_OUTPUT_FLAG=-o
+```
+
+or separately:
+
+```text
+FUNASR_ASR_OUTPUT_FLAG=-o
+FUNASR_VAD_OUTPUT_FLAG=-o
+```
+
+---
+
+## 12. Manual smoke test
+
+Before testing the GUI, test the CLI.
+
+### 12.1 Basic run
+
+```bat
+python translate.py --file "path\to\video.mp4"
+```
+
+This should now use FunASR.
+
+### 12.2 Explicit FunASR settings
+
+```bat
+python translate.py --file "path\to\video.mp4" ^
+  --asr-lang auto ^
+  --asr-threads 4 ^
+  --asr-max-segment-ms 7000 ^
+  --asr-max-end-silence-ms 250 ^
+  --asr-speech-noise-threshold 0.55 ^
+  --asr-noise-db -35 ^
+  --asr-min-silence-s 0.20 ^
+  --asr-max-cue-duration-ms 3000 ^
+  --asr-max-cue-chars 70
+```
+
+### 12.3 More aggressive cue splitting
+
+```bat
+python translate.py --file "path\to\video.mp4" ^
+  --asr-max-segment-ms 5000 ^
+  --asr-max-end-silence-ms 200 ^
+  --asr-max-cue-duration-ms 2600 ^
+  --asr-max-cue-chars 60
+```
+
+---
+
+## 13. Acceptance test using the provided sample subtitles
+
+You provided two reference files:
+
+```text
+当我把生活变成了开放世界 RPG…… - Copy.txt
+当我把生活变成了开放世界 RPG……-youtube option - Copy.txt
+```
+
+The first is the bad local output. The second is the desired YouTube-style pacing.
+
+Rename them locally if useful:
+
+```text
+samples/local_old.srt
+samples/youtube_reference.srt
+```
+
+Then compare new local output against these targets.
+
+### 13.1 Old local output characteristics
+
+The old local file has about:
+
+```text
+19 cues
+average duration around 7 seconds
+some cues over 10 seconds
+large paragraph-style text blocks
+```
+
+This is unacceptable.
+
+### 13.2 YouTube reference characteristics
+
+The YouTube reference has about:
+
+```text
+59 cues
+average duration around 2 seconds
+short phrase-style lines
+```
+
+This is the visual target.
+
+### 13.3 New local output requirements
+
+For the same source media, the new FunASR-only output should satisfy:
+
+```text
+Cue count:          at least 35, preferably 45+
+Average cue length: under 3.5 seconds
+Maximum cue length: normally under 6 seconds
+No cue should contain multiple full sentences when punctuation allows splitting.
+```
+
+If the new output still contains cues like:
+
+```srt
+2
+00:00:05,775 --> 00:00:18,449
+lottieLE, in short, can help me record and let AI understand my life. lottieLE has two main modes: Story Mode and AI Mode. Story Mode is very simple to use—just enable Story Mode, and it will record according to the frequency I set.
+```
+
+the fix is not complete.
+
+---
+
+## 14. Simple SRT inspection script
+
+Create `tools/check_srt.py`:
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.srt_io import read_srt
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python tools/check_srt.py output.srt")
+        raise SystemExit(1)
+
+    path = Path(sys.argv[1])
+    cues = read_srt(path)
+
+    if not cues:
+        print("No cues found.")
+        return
+
+    durations = [c.end - c.start for c in cues]
+
+    print(f"file: {path}")
+    print(f"cues: {len(cues)}")
+    print(f"average duration: {sum(durations) / len(durations):.3f}s")
+    print(f"max duration: {max(durations):.3f}s")
+    print(f"min duration: {min(durations):.3f}s")
+
+    long_cues = [c for c in cues if (c.end - c.start) > 6.0]
+    print(f"cues longer than 6s: {len(long_cues)}")
+
+    for c in long_cues[:10]:
+        print(f"  {c.start:.3f} -> {c.end:.3f}: {c.text[:80]}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Run:
+
+```bat
+python tools\check_srt.py output.srt
+```
+
+Target:
+
+```text
+cues: 45+
+average duration: under 3.5s
+max duration: under 6s
+cues longer than 6s: few or zero
+```
+
+---
+
+## 15. Troubleshooting
+
+### 15.1 SenseVoice binary not found
+
+Error:
+
+```text
+FunASR SenseVoice binary not found
+```
+
+Fix:
+
+- Confirm `vendor/funasr/llama-funasr-sensevoice.exe` exists.
+- Confirm all DLLs are beside it.
+- Or set:
+
+```text
+FUNASR_SENSEVOICE_BIN=C:\path\to\llama-funasr-sensevoice.exe
+```
+
+---
+
+### 15.2 VAD model not found
+
+Error:
+
+```text
+fsmn-vad.gguf not found
+```
+
+Fix:
+
+```bat
+mkdir gguf 2>nul
+copy dist\gguf\fsmn-vad.gguf gguf\
+```
+
+Or download it again using the FunASR model script.
+
+---
+
+### 15.3 SenseVoice model not found
+
+Error:
+
+```text
+sensevoice-small-q8.gguf not found
+```
+
+Fix:
+
+```bat
+mkdir gguf 2>nul
+copy dist\gguf\sensevoice-small-q8.gguf gguf\
+```
+
+Or download it again.
+
+---
+
+### 15.4 Still too few cues
+
+Try:
+
+```bat
+--asr-max-segment-ms 5000
+--asr-max-end-silence-ms 200
+--asr-max-cue-duration-ms 2600
+--asr-max-cue-chars 60
+```
+
+Also try:
+
+```bat
+set FUNASR_FORCE_FFMPEG_VAD=1
+python translate.py --file video.mp4
+```
+
+---
+
+### 15.5 Cues are too fragmented
+
+Try:
+
+```bat
+--asr-max-segment-ms 9000
+--asr-max-end-silence-ms 400
+--asr-max-cue-duration-ms 3500
+--asr-max-cue-chars 85
+```
+
+---
+
+### 15.6 Timing is acceptable but text is cut mid-sentence
+
+Increase:
+
+```bat
+--asr-max-segment-ms
+--asr-min-silence-s
+```
+
+Example:
+
+```bat
+--asr-max-segment-ms 8000
+--asr-min-silence-s 0.30
+```
+
+---
+
+### 15.7 Background music causes bad segmentation
+
+Try:
+
+```bat
+--asr-noise-db -30
+```
+
+If quiet speech is lost:
+
+```bat
+--asr-noise-db -40
+```
+
+---
+
+### 15.8 FunASR binary flags differ
+
+The FunASR runtime CLI can vary by release.
+
+Check:
+
+```bat
+vendor\funasr\llama-funasr-sensevoice.exe --help
+vendor\funasr\llama-funasr-vad.exe --help
+```
+
+The implementation probes common flags, but if your build requires a special output flag, set:
+
+```text
+FUNASR_OUTPUT_FLAG=-o
+```
+
+or separately:
+
+```text
+FUNASR_ASR_OUTPUT_FLAG=-o
+FUNASR_VAD_OUTPUT_FLAG=-o
+```
+
+---
+
+## 16. Documentation updates
+
+Update all documentation so FunASR is the only local ASR direction.
+
+### 16.1 `README.md`
+
+Replace Whisper local ASR documentation with:
+
+- FunASR + SenseVoiceSmall local transcription.
+- Required binaries:
+  - `vendor/funasr/llama-funasr-sensevoice.exe`
+  - `vendor/funasr/llama-funasr-vad.exe`
+- Required models:
+  - `gguf/sensevoice-small-q8.gguf`
+  - `gguf/fsmn-vad.gguf`
+- FunASR CLI flags.
+- FunASR environment variables.
+- No mention of Whisper.
+
+### 16.2 `CLAUDE.md`
+
+Update invariants:
+
+```text
+Local ASR is FunASR + SenseVoiceSmall only.
+Whisper.cpp is not used and must not be reintroduced.
+Local cue timing is produced by VAD + silence refinement + proportional cue splitting.
+```
+
+### 16.3 `PROJECT.md`
+
+Update the ASR backend drift section.
+
+The new state should be:
+
+```text
+Direction A — FunASR + SenseVoiceSmall: live/default
+Direction B — whisper.cpp: removed, not optional, not a fallback
+```
+
+Remove wording that describes Whisper as the current implementation.
+
+---
+
+## 17. Definition of done
+
+The task is complete when:
+
+1. `python translate.py --file video.mp4` uses FunASR.
+2. No Whisper binary, model, flag, env var, or GUI label remains.
+3. `vendor/funasr` binaries are used.
+4. `gguf/sensevoice-small-q8.gguf` and `gguf/fsmn-vad.gguf` are used.
+5. Local SRT output no longer contains giant paragraph cues.
+6. For the provided sample, local cue count is much closer to the YouTube reference than the old 19-cue output.
+7. Average cue duration is usually under 3.5 seconds.
+8. No cue normally exceeds 6 seconds.
+9. The GUI settings expose FunASR binaries/models and timing controls.
+10. The standalone build bundles FunASR, not Whisper.
+11. Documentation matches the implementation.

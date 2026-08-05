@@ -1,4 +1,6 @@
+PySide6>=6.6.0
 youtube-transcript-api
 yt-dlp
 openai
 python-dotenv
+imageio-ffmpeg>=0.5

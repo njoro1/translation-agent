@@ -150,31 +150,57 @@ Defaults if neither is set: the binaries resolved from PATH, and `./gguf/*.gguf`
 | `--asr-vad-bin`   | `FUNASR_VAD_BIN`        | `llama-funasr-vad` (PATH)        | Path to the VAD binary.                  |
 | `--asr-model`     | `FUNASR_MODEL`          | `./gguf/sensevoice-small-q8.gguf`| SenseVoiceSmall GGUF model.              |
 | `--asr-vad-model` | `FUNASR_VAD_MODEL`      | `./gguf/fsmn-vad.gguf`           | fsmn-vad GGUF model.                     |
-| `--asr-lang`      | —                       | `auto`                           | Force `auto`/`zh`/`en`/`ja`/`ko`/`yue`.  |
-| `--asr-no-tags`   | —                       | off                              | Disable per-segment alignment (slower fallback). |
+| `--asr-lang`      | —                       | `auto`                           | Source language (`auto`/`zh`/`en`/`ja`/`ko`/`yue`). |
+| `--asr-threads`   | `FUNASR_THREADS`        | `4`                              | CPU threads for FunASR.                  |
+| `--asr-max-segment-ms` | `FUNASR_MAX_SEGMENT_MS` | `7000`                       | Max ASR audio segment before cue splitting. |
+| `--asr-max-end-silence-ms` | `FUNASR_MAX_END_SILENCE_MS` | `250`                    | Trailing silence before VAD closes a segment. |
+| `--asr-speech-noise-threshold` | `FUNASR_SPEECH_NOISE_THRES` | `0.55`          | FunASR VAD speech/noise threshold.       |
+| `--asr-noise-db`  | `FUNASR_NOISE_DB`        | `-35`                            | ffmpeg silencedetect noise threshold (dB). |
+| `--asr-min-silence-s` | `FUNASR_MIN_SILENCE_S` | `0.20`                          | Min silence for ffmpeg silence detection. |
+| `--asr-max-cue-duration-ms` | `FUNASR_MAX_CUE_DURATION_MS` | `3000`                | Preferred max subtitle cue duration.     |
+| `--asr-max-cue-chars` | `FUNASR_MAX_CUE_CHARS` | `70`                            | Preferred max subtitle cue character count. |
+| `--asr-no-tags`   | —                       | off                              | Do not request SenseVoice tag output.    |
 
 ### How timing works
-The VAD pass yields per-speech-segment start/end times; the ASR pass is run with
-`--keep-tags`, which makes SenseVoice emit a language/emotion/event/itn tag group
-**per segment**. The tool splits the transcript on those tags and verifies the
-segment count matches the VAD pass, so each line of text is bound to its real time
-range. If the counts ever disagree it falls back to transcribing each segment
-individually (robust, slightly slower). The original `start`/`end` times are never
-altered — only the `text` is replaced by the translation.
+Audio is extracted to a 16 kHz mono WAV, then a **FunASR VAD pass** yields speech
+segments (AGGRESSIVE settings keep them short), refined/fallback via **ffmpeg
+silencedetect**, and long speech regions are split into ≤ ~7-second ASR segments.
+Each segment is transcribed by **SenseVoiceSmall**. Long recognized text is then
+split into **short subtitle cues** on punctuation (target ~3 s / ~70 chars each)
+and timed proportionally inside the segment's start/end range — so local output is
+a series of short, phrase-sized cues instead of one giant paragraph block. Use
+`tools/check_srt.py output.srt` to verify cue count/duration. The original
+`start`/`end` times are never altered afterwards — only the `text` is replaced by
+the translation.
 
 English-source audio skips translation (the ASR text is written as-is). Translation
 can still use your local llama.cpp server via `--local`, exactly as with YouTube.
 
 ## Local model (offline)
 
-You can run translations against a **llama.cpp server you start yourself** instead
-of a cloud API, so no network round-trips leave your machine. This tool does **not**
-launch or manage the model process — it just points its existing OpenAI-compatible
-client at a server already running on your computer.
+You can translate without a cloud API by pointing the translator at a local
+llama.cpp server. The app bundles a **CPU-only `llama-server`** (in `vendor/llama/`)
+and, when you supply a local GGUF via `--local-model` (or pick/download one in the
+GUI Settings), it **auto-starts** the server for you — no manual server setup and
+no GPU needed. If you prefer to run your own server, just omit `--local-model` and
+the tool will connect to the host/port you give it, exactly as before.
 
-Start your llama.cpp server (any OpenAI-compatible build works — `llama-server`, or
-`llama-cpp-python`'s server). For the default target model you'll need a build that
-includes the STQ kernel; see the note below.
+### Auto-started server (recommended)
+
+Pick or download the GGUF in Settings, then run with `--local-model`:
+
+```bash
+python translate.py "<youtube_url>" --local --local-model models/Hy-MT2-1.8B-1.25Bit.gguf
+python translate.py "<youtube_url>" --local --local-port 8080 \
+  --local-model-name Hy-MT2-1.8B --local-model models/Hy-MT2-1.8B-1.25Bit.gguf
+```
+
+The app starts its bundled CPU `llama-server` against that file, waits until it is
+ready, translates, and tears the server down when the app exits.
+
+### Connected to an existing server
+
+If you already run a llama.cpp server yourself (any OpenAI-compatible build):
 
 ```bash
 # Example with llama-cpp-python (install once: pip install -r requirements-local.txt)
@@ -182,7 +208,7 @@ python -m llama_cpp.server --model models/Hy-MT2-1.8B-1.25Bit.gguf --n_ctx 4096
 # -> listens on http://127.0.0.1:8080/v1
 ```
 
-Then point the translator at it. Either with the `--local` flag:
+Then just use `--local` (no `--local-model`):
 
 ```bash
 python translate.py "<youtube_url>" --local
@@ -204,16 +230,17 @@ Relevant flags (only used with `--local`):
 
 | Flag                | Default        | Meaning                                                        |
 | ------------------- | -------------- | ------------------------------------------------------------- |
-| `--local`           | off            | Use a llama.cpp server already running on this machine.       |
-| `--local-host`      | `127.0.0.1`    | Host of the running llama.cpp server.                         |
-| `--local-port`      | `8080`         | Port of the running llama.cpp server.                         |
+| `--local`           | off            | Use a llama.cpp server (auto-started or already running).     |
+| `--local-host`      | `127.0.0.1`    | Host of the llama.cpp server.                                  |
+| `--local-port`      | `8080`         | Port of the llama.cpp server.                                  |
 | `--local-model-name`| `Hy-MT2-1.8B`  | Model id sent to the local server.                            |
+| `--local-model`     | —              | Path to a GGUF; when given the app auto-starts bundled CPU `llama-server` against it. |
 
 Notes:
 - **STQ kernel:** the default target model, `Hy-MT2-1.8B-1.25Bit-GGUF`, is a 1.25-bit
-  **STQ** quantization that needs the llama.cpp STQ kernel (PR #22836). A recent
-  `llama-cpp-python` build includes it. If translations come out as garbage, build
-  llama.cpp from source (or grab a release `llama-server`) and run that instead.
+  **STQ** quantization that needs the llama.cpp STQ kernel (PR #22836). The bundled
+  `llama-server` is a recent release build that includes it. If translations come out as
+  garbage, your local copy may be stale — use a recent `llama-server`.
 - **Sampling:** the model card suggests `temperature 0.7, top_p 0.6, top_k 20,
   repetition_penalty 1.05`. For the cloud path the translator intentionally uses a low
   `temperature 0.3` for translation fidelity. When the model is detected as Hy-MT2

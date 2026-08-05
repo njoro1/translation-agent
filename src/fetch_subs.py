@@ -12,6 +12,7 @@ Strategy:
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import urllib.request
@@ -19,6 +20,11 @@ import urllib.request
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 
 from .srt_io import Cue
+
+# Hide console windows spawned by subprocess on Windows.
+_SUBPROCESS_CREATION_FLAGS = 0
+if os.name == "nt":
+    _SUBPROCESS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 # Public web-client Innertube key YouTube ships in its pages; used only to ask
 # for the English-localized title (hl=en). If it ever stops working, the code
@@ -55,6 +61,7 @@ def _yt_dlp_metadata(url: str) -> tuple[str | None, str | None]:
             errors="replace",
             timeout=60,
             check=True,
+            creationflags=_SUBPROCESS_CREATION_FLAGS,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return None, None

@@ -14,7 +14,13 @@ Rectangle {
     border.color: "#27272a"
     border.width: 1
 
+    // Size this card to the height of its content so it never collapses
+    // (a bare Rectangle has implicitHeight 0 and would clip/overlap children).
+    implicitHeight: outerColumn.implicitHeight + 36
+    Layout.fillWidth: true
+
     ColumnLayout {
+        id: outerColumn
         anchors.fill: parent
         anchors.margins: 18
         spacing: 14
