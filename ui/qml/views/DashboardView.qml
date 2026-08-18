@@ -97,20 +97,24 @@ Item {
                         spacing: 10
 
                         Label {
-                            text: "Source"
+                            text: "Pipeline"
                             color: "#94a3b8"
                             font.pixelSize: 11
                         }
 
                         Label {
-                            text: appBridge.mode === "youtube" ? "YouTube URL" : "Local media file"
+                            text: {
+                                if (appBridge.pipelineMode === "youtube") return "YouTube \u2192 Cloud"
+                                if (appBridge.pipelineMode === "local_hybrid") return "Local \u2192 Local + AI fallback"
+                                return "Local \u2192 Local only (offline)"
+                            }
                             color: "#f8fafc"
                             font.pixelSize: 14
                             font.bold: true
                         }
 
                         Label {
-                            text: "Backend"
+                            text: "Translation"
                             color: "#94a3b8"
                             font.pixelSize: 11
                         }
@@ -120,6 +124,16 @@ Item {
                             color: "#f8fafc"
                             font.pixelSize: 14
                             font.bold: true
+                        }
+
+                        Label {
+                            visible: appBridge.backend === "local"
+                            text: appBridge.cloudRescueEnabled
+                                ? "Cloud rescue enabled"
+                                : "No cloud fallback"
+                            color: "#6366f1"
+                            font.pixelSize: 11
+                            font.italic: true
                         }
 
                         Label {
@@ -146,6 +160,22 @@ Item {
                             color: "#f8fafc"
                             font.pixelSize: 14
                             font.bold: true
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            visible: appBridge.backend === "local"
+                            text: {
+                                if (appBridge.localModelReady && appBridge.asrModelReady)
+                                    return "\u2713 Local models found"
+                                if (!appBridge.localModelReady && appBridge.asrModelReady)
+                                    return "\u26a0 Translation model missing"
+                                if (appBridge.localModelReady && !appBridge.asrModelReady)
+                                    return "\u26a0 ASR models missing"
+                                return "\u26a0 Local models not found"
+                            }
+                            color: (appBridge.localModelReady && appBridge.asrModelReady) ? "#22c55e" : "#f59e0b"
+                            font.pixelSize: 11
                         }
                     }
                 }
@@ -179,35 +209,77 @@ Item {
 
                     Card {
                         Layout.fillWidth: true
-                        title: "Source"
-                        subtitle: "Choose an existing YouTube subtitle track or transcribe a local media file before translation."
+                        title: "Pipeline Mode"
+                        subtitle: "Pick one of three distinct flows. Each mode controls source, translation backend, and cloud fallback automatically."
 
-                        RowLayout {
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: 12
+                            spacing: 8
 
                             StyledRadioButton {
-                                checked: appBridge.mode === "youtube"
-                                text: "YouTube URL"
-                                onClicked: appBridge.mode = "youtube"
+                                checked: appBridge.pipelineMode === "youtube"
+                                text: "YouTube \u2192 Cloud"
+                                onClicked: appBridge.pipelineMode = "youtube"
+                            }
+
+                            Label {
+                                visible: appBridge.pipelineMode === "youtube"
+                                Layout.fillWidth: true
+                                text: "Fetches the video's original-language subtitles from YouTube and translates them with a cloud OpenAI-compatible model."
+                                color: "#64748b"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                leftPadding: 26
                             }
 
                             StyledRadioButton {
-                                checked: appBridge.mode === "file"
-                                text: "Local file"
-                                onClicked: appBridge.mode = "file"
+                                checked: appBridge.pipelineMode === "local_hybrid"
+                                text: "Local file \u2192 Local + AI fallback"
+                                onClicked: appBridge.pipelineMode = "local_hybrid"
+                            }
+
+                            Label {
+                                visible: appBridge.pipelineMode === "local_hybrid"
+                                Layout.fillWidth: true
+                                text: "Transcribes the local media with SenseVoiceSmall, translates with a local GGUF model, and falls back to the cloud for any cues that fail locally."
+                                color: "#64748b"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                leftPadding: 26
+                            }
+
+                            StyledRadioButton {
+                                checked: appBridge.pipelineMode === "local_offline"
+                                text: "Local file \u2192 Local only (offline)"
+                                onClicked: appBridge.pipelineMode = "local_offline"
+                            }
+
+                            Label {
+                                visible: appBridge.pipelineMode === "local_offline"
+                                Layout.fillWidth: true
+                                text: "Fully offline. Transcribes locally and translates with a local GGUF model only. No cloud fallback."
+                                color: "#64748b"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                leftPadding: 26
                             }
                         }
+                    }
+
+                    Card {
+                        Layout.fillWidth: true
+                        title: "Source Input"
+                        subtitle: "Configure the input for the selected pipeline mode."
 
                         Label {
-                            visible: appBridge.mode === "youtube"
+                            visible: appBridge.pipelineMode === "youtube"
                             text: "YouTube video URL"
                             color: "#cbd5e1"
                             font.pixelSize: 12
                         }
 
                         CustomTextField {
-                            visible: appBridge.mode === "youtube"
+                            visible: appBridge.pipelineMode === "youtube"
                             Layout.fillWidth: true
                             placeholderText: "https://youtube.com/watch?v=..."
                             text: appBridge.url
@@ -215,14 +287,14 @@ Item {
                         }
 
                         Label {
-                            visible: appBridge.mode === "file"
+                            visible: appBridge.pipelineMode !== "youtube"
                             text: "Local video or audio file"
                             color: "#cbd5e1"
                             font.pixelSize: 12
                         }
 
                         RowLayout {
-                            visible: appBridge.mode === "file"
+                            visible: appBridge.pipelineMode !== "youtube"
                             Layout.fillWidth: true
                             spacing: 10
 
@@ -240,14 +312,14 @@ Item {
                         }
 
                         Label {
-                            visible: appBridge.mode === "file"
+                            visible: appBridge.pipelineMode !== "youtube"
                             text: "Spoken language"
                             color: "#cbd5e1"
                             font.pixelSize: 12
                         }
 
                         Label {
-                            visible: appBridge.mode === "file"
+                            visible: appBridge.pipelineMode !== "youtube"
                             Layout.fillWidth: true
                             text: "Used by local transcription and as the translation source language."
                             color: "#64748b"
@@ -256,7 +328,7 @@ Item {
                         }
 
                         ComboBox {
-                            visible: appBridge.mode === "file"
+                            visible: appBridge.pipelineMode !== "youtube"
                             Layout.fillWidth: true
                             model: [
                                 { label: "Auto-detect", code: "auto" },
@@ -336,7 +408,13 @@ Item {
                                 spacing: 10
 
                                 PrimaryButton {
-                                    text: appBridge.isRunning ? "Running..." : "Run Translation"
+                                    text: appBridge.isRunning ? "Running..." : (
+                                        appBridge.backend === "local" && !appBridge.localModelReady && !appBridge.localModelDownloading && !appBridge.localModelDownloadPending
+                                            ? "Download model & Run"
+                                            : appBridge.backend === "local" && appBridge.localModelDownloadPending
+                                                ? "Downloading model..."
+                                                : "Run Translation"
+                                    )
                                     enabled: !appBridge.isRunning
                                     onClicked: appBridge.runTranslation()
                                 }

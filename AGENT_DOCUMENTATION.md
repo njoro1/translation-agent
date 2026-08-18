@@ -367,13 +367,26 @@ No spaces around `=`.
 | `FUNASR_MODEL` | `local_asr.py` | `./gguf/sensevoice-small-q8.gguf` | SenseVoice GGUF |
 | `FUNASR_VAD_MODEL` | `local_asr.py` | `./gguf/fsmn-vad.gguf` | VAD GGUF |
 | `FUNASR_THREADS` | `local_asr.py` | `4` | CPU threads |
-| `FUNASR_MAX_SEGMENT_MS` | `local_asr.py` | `7000` | Max ASR segment ms |
+| `FUNASR_MAX_SEGMENT_MS` | `local_asr.py` | `6000` | Max ASR segment ms |
 | `FUNASR_MAX_END_SILENCE_MS` | `local_asr.py` | `250` | Max trailing silence ms |
 | `FUNASR_SPEECH_NOISE_THRES` | `local_asr.py` | `0.55` | VAD speech threshold |
 | `FUNASR_NOISE_DB` | `local_asr.py` | `-35` | ffmpeg silence noise floor |
-| `FUNASR_MIN_SILENCE_S` | `local_asr.py` | `0.20` | Min silence duration |
-| `FUNASR_MAX_CUE_DURATION_MS` | `local_asr.py` | `3000` | Max cue duration |
-| `FUNASR_MAX_CUE_CHARS` | `local_asr.py` | `70` | Max cue chars |
+| `FUNASR_MIN_SILENCE_S` | `local_asr.py` | `0.25` | Min silence duration |
+| `FUNASR_MAX_CUE_DURATION_MS` | `local_asr.py` | `3200` | Max cue duration |
+| `FUNASR_MAX_CUE_CHARS` | `local_asr.py` | `70` | Max cue chars (non-CJK) |
+| `FUNASR_MAX_CUE_CHARS_CJK` | `local_asr.py` | `48` | Max cue chars (CJK) |
+| `FUNASR_KEEP_TAGS` | `local_asr.py` | `0` | If `1`, keep ASR tags |
+| `TRANSLATION_GLOSSARY` | `translate.py` | unset | Glossary file path |
+| `TRANSLATION_MEMORY_MODE` | `translate.py` | `auto` | `auto` \| `on` \| `off` |
+| `TRANSLATION_MEMORY_DB` | `translate.py` | `./cache/translation_memory.sqlite3` | TM database path |
+| `HY_MT2_MAX_BATCH_CUES` | `translate.py` | `12` | Hy-MT2 max batch cues |
+| `HY_MT2_MAX_BATCH_CHARS_CJK` | `translate.py` | `700` | Hy-MT2 max batch chars (CJK) |
+| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `translate.py` | `1000` | Hy-MT2 max batch chars (non-CJK) |
+| `LLAMA_SERVER_THREADS` | `local_server.py` | `0` | Local server threads |
+| `LLAMA_SERVER_MLOCK` | `local_server.py` | `0` | Enable mlock (1 = on) |
+| `CLOUD_RESCUE_ENABLED` | `translate.py` | `0` | Enable cloud rescue (1 = on) |
+| `CLOUD_RESCUE_MODEL` | `translate.py` | unset | Cloud rescue model |
+| `CLOUD_RESCUE_BATCH` | `translate.py` | `10` | Cloud rescue batch size |
 | `FUNASR_VAD_UNITS` | `local_asr.py` | `ms` | VAD output time units |
 | `FUNASR_OUTPUT_FLAG` | `local_asr.py` | auto-detect | VAD/ASR output file flag |
 | `FFMPEG_BIN` | `local_asr.py` | ffmpeg on PATH | ffmpeg binary path |
@@ -386,7 +399,20 @@ No spaces around `=`.
 
 ## 15. Testing & Validation
 
-There is **no automated test suite** currently.
+Run the automated unit test suite (no network / keys / binaries required):
+
+```bash
+python -m pytest -q
+```
+
+Tests live in `tests/` and cover:
+- `test_srt_io.py` — timestamp format/parse, SRT roundtrip, filename sanitization.
+- `test_translate_parsing.py` — `_numbered_block`, `_parse_numbered`, `_is_hy_mt2`.
+- `test_batching.py` — `chunk_texts`, `estimate_text_weight`, `is_cjk_language`.
+- `test_glossary.py` — glossary file parsing, formatting, hashing.
+- `test_translation_memory.py` — TM put/get, key separation, graceful failure.
+- `test_subtitle_quality.py` — CPS/duration/char/line thresholds, report building.
+- `test_local_asr_splitting.py` — `_split_text` and `_segment_to_cues`.
 
 **Manual validation checklist:**
 1. YouTube URL with manual subtitles → SRT with correct timestamps and translated English text.
@@ -394,13 +420,12 @@ There is **no automated test suite** currently.
 3. Local video with no subtitles → FunASR transcription → English translation.
 4. Local model path (`--local --local-model model.gguf`) → server auto-starts → translation succeeds.
 5. Existing server path (`--local` without `--local-model`) → connects to running server.
-6. GUI mode: run translation, verify log streaming, verify "Open Output Folder" works after success.
-7. `python tools/check_srt.py output.srt` → verify average/max cue durations are reasonable.
-
-**Recommended pytest targets when adding tests:**
-- `src/srt_io.py`: `sanitize_filename`, `write_srt` + `read_srt` roundtrip, `_format_timestamp` / `_parse_timestamp`.
-- `src/translate.py`: `_parse_numbered`, `_numbered_block`, `build_system_prompt`.
-- `src/fetch_subs.py`: `extract_video_id`.
+6. Local Hy-MT2: confirm effective batch is reduced and cue count matches.
+7. Local media CJK: confirm ASR tags are stripped and cues are shorter for CJK.
+8. Cloud rescue: enabled from a forced local failure; only failed cues re-translated; no rescue when disabled.
+9. GUI mode: run translation, verify log streaming, verify "Open Output Folder" works after success.
+10. `python tools/check_srt.py output.srt` → verify average/max cue durations are reasonable.
+11. Frozen build: `build_exe.bat`, run `TranslationAgent.exe`, verify vendor binaries + QML + logs.
 
 ---
 
@@ -411,14 +436,20 @@ There is **no automated test suite** currently.
 | **Cue** | One subtitle entry: `start`, `end`, `text`. In code: `src.srt_io.Cue`. |
 | **Foreignization** | Translation philosophy: preserve source culture/voice/honorifics; do not domesticate. |
 | **Numbered-item protocol** | Batch translation method: cues are numbered `1.` ... `N.` sent to LLM, which must return same numbers. |
-| **Hy-MT2** | Tencent's 1.8B-parameter translation model; 1.25-bit STQ quantized GGUF. |
+| **Hy-MT2** | Tencent's 1.8B-parameter translation model; Q8_0-quantized GGUF (`Hy-MT2-1.8B-Q8_0.gguf`). |
 | **SenseVoiceSmall** | FunASR's small ASR model (GGUF). |
 | **FunASR VAD** | Voice Activity Detection model (`fsmn-vad.gguf`) used to segment audio. |
 | **llama-server** | llama.cpp's OpenAI-compatible HTTP server (`llama-server.exe`). |
-| **STQ** | 1.25-bit quantization kernel for llama.cpp (PR #22836). |
+| **STQ** | 1.25-bit quantization kernel for llama.cpp (PR #22836); no longer used now that the default model is Q8_0. |
 | **AppBridge** | `backend.bridge.AppBridge`; the single QObject exposed to QML. |
 | **RunConfig** | `backend.models.run_config.RunConfig`; argv + env for one pipeline run. |
 | **TranslationWorker** | `backend.controllers.translation.TranslationWorker`; QRunnable that runs `translate.main()` off the UI thread. |
+| **Translation memory (TM)** | SQLite cache of exact source→target lines, keyed by language/model/glossary hash. |
+| **Glossary** | Plain-text source→target term list injected into prompts for consistent terminology. |
+| **Cloud rescue** | Optional re-translation of only the failed local cues via a cloud model. |
+| **Dynamic batching** | Character/count-aware splitting of cue batches so small CPU models stay reliable. |
+| **Fallback ladder** | Retry → split-in-half → per-item fallback used when a numbered batch fails. |
+| **Quality report** | JSON diagnostics of CPS / duration / char-count / line-count / empty cues. |
 | **_MEIPASS** | PyInstaller's temp extraction directory (when frozen). |
 | **QSettings** | Qt's persistent settings (registry on Windows). |
 
@@ -427,7 +458,7 @@ There is **no automated test suite** currently.
 ## 17. Contact / References
 
 - **GitHub:** `https://github.com/njoro1/translation-agent`
-- **Hy-MT2 model:** `https://huggingface.co/tencent/Hy-MT2-1.8B-1.25Bit-GGUF`
+- **Hy-MT2 model:** `https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF`
 - **SenseVoiceSmall GGUF:** `https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF`
 - **fsmn-vad GGUF:** `https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF`
 - **FunASR runtime:** GitHub releases tagged `runtime-llamacpp-v*`
@@ -454,7 +485,7 @@ There is **no automated test suite** currently.
 |-------|----------|---------|
 | Single git commit | High | `9d2a21a` predates QML migration; most current work is uncommitted. |
 | `vendor/` untracked | Medium | Binaries exist locally but are not committed or gitignored. Decide policy. |
-| No tests | High | No `tests/`, `pytest.ini`, `tox.ini`. Strong candidate: `srt_io`, `_parse_numbered`, `sanitize_filename`. |
+| Tests | Low | `pytest` suite in `tests/` now covers SRT, parsing, batching, glossary, translation memory, quality, and ASR splitting. |
 | `SectionCard.qml` deleted | Low | Tracked in old commit but absent from disk; not referenced by current QML. |
 | `last_completed_task.txt` present | Low | Appears to be a work artifact. |
 | `_test_meipass` dir | Low | Appears to be a PyInstaller test artifact. |
@@ -540,7 +571,7 @@ To expose a new field to QML, add it to `AppBridge` in `backend/bridge.py` as a 
 | `--local` | off | No | Use llama.cpp server |
 | `--local-host` | `127.0.0.1` | No | Server host |
 | `--local-port` | `8080` | No | Server port |
-| `--local-model-name` | `Hy-MT2-1.8B` | No | Model id for local server |
+| `--local-model-name` | `Hy-MT2-1.8B-Q8_0` | No | Model id for local server |
 | `--local-model` | -- | No | Auto-start bundled server against this GGUF |
 | `--asr-bin` | `FUNASR_SENSEVOICE_BIN` / PATH | No | SenseVoice binary |
 | `--asr-vad-bin` | `FUNASR_VAD_BIN` / PATH | No | VAD binary |
@@ -618,7 +649,7 @@ The GUI is **not** a subprocess wrapper -- it calls the CLI logic in-process wit
 |------|-----|
 | `sensevoice-small-q8.gguf` | `https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf` |
 | `fsmn-vad.gguf` | `https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/main/fsmn-vad.gguf` |
-| `Hy-MT2-1.8B-1.25Bit.gguf` | `https://huggingface.co/tencent/Hy-MT2-1.8B-1.25Bit-GGUF/resolve/main/Hy-MT2-1.8B-1.25Bit.gguf` |
+| `Hy-MT2-1.8B-Q8_0.gguf` | `https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf` |
 
 **Logging:**
 - `setup_logging(base_dir)` creates a rotating `debug.log` (1 MB, 3 backups) in `base_dir`.
@@ -662,13 +693,15 @@ class RunConfig:
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `FUNASR_THREADS` | `4` | CPU threads |
-| `FUNASR_MAX_SEGMENT_MS` | `7000` | Max ASR segment length |
+| `FUNASR_MAX_SEGMENT_MS` | `6000` | Max ASR segment length |
 | `FUNASR_MAX_END_SILENCE_MS` | `250` | Trailing silence before VAD closes |
 | `FUNASR_SPEECH_NOISE_THRES` | `0.55` | VAD speech/noise threshold |
 | `FUNASR_NOISE_DB` | `-35` | ffmpeg silencedetect noise floor |
-| `FUNASR_MIN_SILENCE_S` | `0.20` | Min silence for ffmpeg silence detection |
-| `FUNASR_MAX_CUE_DURATION_MS` | `3000` | Max subtitle cue duration |
-| `FUNASR_MAX_CUE_CHARS` | `70` | Max subtitle cue character count |
+| `FUNASR_MIN_SILENCE_S` | `0.25` | Min silence for ffmpeg silence detection |
+| `FUNASR_MAX_CUE_DURATION_MS` | `3200` | Max subtitle cue duration |
+| `FUNASR_MAX_CUE_CHARS` | `70` | Max subtitle cue character count (non-CJK) |
+| `FUNASR_MAX_CUE_CHARS_CJK` | `48` | Max subtitle cue character count (CJK) |
+| `FUNASR_KEEP_TAGS` | `0` | If `1`, keep ASR tags |
 | `FUNASR_VAD_UNITS` | `ms` | Units in VAD output (`ms` / `s`) |
 | `FUNASR_OUTPUT_FLAG` | auto-detect | CLI flag for VAD/ASR output file |
 | `FUNASR_SENSEVOICE_BIN` | `llama-funasr-sensevoice` (PATH) | SenseVoice binary path |
@@ -688,9 +721,15 @@ class RunConfig:
 **Key types / functions:**
 - `resolve_llama_server(name="llama-server") -> str | None`
   - Searches bundled paths then PATH.
-- `start_server(model_path, host, port, n_ctx, n_gpu_layers) -> Popen`
+- `start_server(model_path, host, port, n_ctx, n_gpu_layers, *, threads=0, mlock=False) -> Popen`
   - Starts hidden background process (`CREATE_NO_WINDOW`).
   - Registers in `_ACTIVE` dict keyed by `(abs_model_path, host, port)`.
+  - Optional `threads` > 0 adds `-t <n>`; `mlock=True` adds `--mlock`. Uses
+    `_start_with_fallback_flags` to retry without optional flags if rejected.
+- `_start_with_fallback_flags(base_cmd, optional_flags, key) -> Popen`
+  - Tries optional flags; if the process exits within ~2s, retries without them.
+- `warmup_local_server(base_url, model, *, timeout=30.0) -> bool`
+  - Sends a tiny chat completion to initialize the model/caches. Never fatal.
 - `ensure_local_server(model_path, host, port, ...) -> (Popen | None, str)`
   - If already alive → returns `(None, "reuse")`.
   - Otherwise starts, polls `/health` every 1s up to `timeout` (default 180s).
@@ -728,6 +767,8 @@ When the model name matches `_is_hy_mt2(model)` (contains `hy-mt2` or `hy_mt2`),
 - The user message uses the skill's Chinese instruction wording + `_HY_MT2_STYLE` (a Chinese foreignization directive).
 - The skill's "context" mode is used when the source language is known; "basic" otherwise.
 - The numbered-item protocol is still enforced.
+- **Dynamic batching** (see `src/batching.py`): Hy-MT2 uses ≤ 12 cues / ≤ 700 (CJK) or 1000 (non-CJK) chars per request, with a `retry → split → per-item` fallback ladder.
+- **Preferred model file:** `./gguf/Hy-MT2-1.8B-Q8_0.gguf`. See `resolve_local_model_path` in `backend/bridge.py`.
 
 ---
 
@@ -752,5 +793,68 @@ When the model name matches `_is_hy_mt2(model)` (contains `hy-mt2` or `hy_mt2`),
 | `OPENAI_API_KEY` | Yes (remote) | -- | API key |
 | `OPENAI_BASE_URL` | No | None | Override endpoint |
 | `OPENAI_MODEL` | Yes | -- | Model id |
+
+---
+
+## 4. Module Reference (New)
+
+### 4.13 `src/batching.py`
+
+**Responsibility:** Split lists of cue texts into model-safe request batches, respecting cue-count and character limits (CJK-aware).
+
+**Key types / functions:**
+- `estimate_text_weight(text: str) -> int` — returns 2 for CJK text, 1 otherwise (rough "width" weight).
+- `is_cjk_language(text: str) -> bool` — True if CJK char ratio > 25 %.
+- `chunk_texts(texts, *, max_cues, max_chars_cjk, max_chars_non_cjk) -> list[list[int]]` — returns batches of indices.
+
+---
+
+### 4.14 `src/glossary.py`
+
+**Responsibility:** Parse an optional `source→target` glossary file and format it into the system prompt.
+
+**Key functions:**
+- `load_glossary(path) -> list[tuple[str, str]]`
+  - Supports `.csv`, `.tsv`, and blank/`#` comment-aware plain-text (`source<TAB>target`) files.
+- `format_glossary(entries) -> str` — renders bullet list for the prompt.
+- `glossary_fingerprint(entries) -> str` — sha1 of normalized entries (used by TM cache key).
+
+**Environment variable:** `TRANSLATION_GLOSSARY` (path, optional; no-op when unset).
+
+---
+
+### 4.15 `src/translation_memory.py`
+
+**Responsibility:** SQLite-backed store of previously translated source strings.
+
+**Key functions:**
+- `get_translation(conn, source, lang, *, model, fingerprint) -> str | None`
+- `add_translation(conn, source, target, lang, *, model, fingerprint) -> None`
+- `open_memory_db(path) -> sqlite3.Connection` (auto-migrates; no-op on error).
+
+**Cache key** = sha1(source + lang + model_id + glossary_fingerprint). Lookup is exact-match only.
+
+**Environment variables:** `TRANSLATION_MEMORY_MODE` (`auto`/`on`/`off`), `TRANSLATION_MEMORY_DB`.
+
+---
+
+### 4.16 `src/subtitle_quality.py`
+
+**Responsibility:** Post-translation quality diagnostics for the generated SRT.
+
+**Key functions:**
+- `analyze_quality(cues) -> QualityReport` — computes CPS, max duration, max chars, line count, empty-cue count.
+- `QualityReport.to_dict() / to_json()` — serialisable summary.
+
+---
+
+### 4.17 `src/rescue.py`
+
+**Responsibility:** Optional cloud re-translation of only the cues that failed local translation.
+
+**Key function:** `rescue_translations(failed_items, settings, model) -> list[tuple[str, str]]`.
+Guarded by `CLOUD_RESCUE_ENABLED`; never runs when disabled or when `settings` lacks a cloud API key.
+
+---
 
 ```

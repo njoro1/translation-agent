@@ -28,6 +28,12 @@ def sanitize_filename(title: str) -> str:
     return cleaned or "subtitles"
 
 
+def output_path_for(input_path_or_title: str, ext: str = ".srt") -> str:
+    """Return a sanitized output path with the given extension."""
+    base = sanitize_filename(input_path_or_title)
+    return base + ext
+
+
 def _format_timestamp(seconds: float) -> str:
     """Format seconds as SRT timestamp: HH:MM:SS,mmm."""
     if seconds < 0:

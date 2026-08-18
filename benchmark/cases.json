@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "id": "ja-short-dialogue",
+      "type": "local_media",
+      "media": "benchmark/media/ja_short_dialogue.mp4",
+      "asr_lang": "ja",
+      "reference_srt": "benchmark/ref/ja_short_dialogue.srt",
+      "notes": "Short Japanese dialogue, clean audio. Add your own media file to benchmark/media/."
+    },
+    {
+      "id": "zh-noisy",
+      "type": "local_media",
+      "media": "benchmark/media/zh_noisy.mp4",
+      "asr_lang": "zh",
+      "reference_srt": null,
+      "notes": "Chinese audio with background noise. Add your own media file to benchmark/media/."
+    },
+    {
+      "id": "ko-cue-alignment",
+      "type": "cues_only",
+      "cues": "benchmark/cues/ko_cues.json",
+      "source_language": "ko",
+      "reference_translation": "benchmark/ref/ko_translation.json",
+      "notes": "Korean cue list for translation alignment testing. Provide benchmark/cues/ko_cues.json."
+    },
+    {
+      "id": "srt-roundtrip-sample",
+      "type": "srt",
+      "srt": "benchmark/cues/sample.srt",
+      "source_language": "ja",
+      "reference_translation": "benchmark/ref/sample_translation.json",
+      "notes": "Translates an existing SRT's cues. Provide benchmark/cues/sample.srt."
+    }
+  ]
+}

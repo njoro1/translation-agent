@@ -5,8 +5,8 @@
 # Install it only if you prefer the convenience of `python -m llama_cpp.server` to
 # serve your GGUF manually; any OpenAI-compatible llama.cpp build works.
 #
-# NOTE: the default target model, Hy-MT2-1.8B-1.25Bit-GGUF, is a 1.25-bit STQ
-# quantization that needs the llama.cpp STQ kernel (PR #22836). A recent
-# llama-cpp-python build includes it; if translations come out as garbage, build
-# llama.cpp from source (or use the bundled/recent `llama-server`).
+# NOTE: the default target model is Hy-MT2-1.8B-Q8_0.gguf, a Q8_0 quantization
+# that is a standard llama.cpp format supported by the bundled/recent llama-server.
+# If translations come out as garbage, make sure you're using a recent
+# llama-cpp-python build (or the bundled `llama-server`).
 llama-cpp-python[server]

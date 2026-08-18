@@ -44,10 +44,12 @@ translation-agent/
 ├── src/                        # CLI pipeline (framework-free Python)
 │   ├── config.py               # .env loading + OpenAI client construction
 │   ├── fetch_subs.py           # YouTube subtitles/title/source-language fetch
-│   ├── srt_io.py               # Cue dataclass + SRT read/write + filename sanitize
+│   ├── srt_io.py               # Cue dataclass + SRT/read + output-path helpers
 │   ├── translate.py            # Faithful English translation (batched, LLM)
 │   ├── local_asr.py            # Local file transcription (FunASR / ffmpeg)
-│   └── local_server.py         # Auto-start a bundled CPU-only llama-server
+│   ├── local_server.py         # Auto-start a bundled CPU-only llama-server
+│   ├── postprocess.py          # Fansub post-processing (line breaks / overlap snap / TN)
+│   └── ass_io.py               # Aegisub-compatible Advanced SubStation Alpha writer
 │
 ├── backend/                    # GUI bridge layer (QObject / QRunnable workers)
 │   ├── bridge.py               # AppBridge: QML <-> Python state + pipeline runner
@@ -95,9 +97,9 @@ translation-agent/
 ### 3.1 CLI — `translate.py`
 
 ```
-python translate.py "<youtube_url>" [--model ...] [--out path.srt] [--batch 40]
+python translate.py "<youtube_url>" [--model ...] [--out path.srt] [--batch 8]
 python translate.py --file video.mp4 [--asr-lang ja] [--asr-model ...] [--out path.srt]
-python translate.py "<youtube_url>" --local [--local-model models/Hy-MT2-1.8B-1.25Bit.gguf]
+python translate.py "<youtube_url>" --local [--local-model models/Hy-MT2-1.8B-Q8_0.gguf]
 ```
 
 The CLI is deliberately thin: it parses arguments, fetches/transcribes cues, builds an
@@ -191,11 +193,33 @@ Flow:
 Config resolution order is *flag → env → bundled/default* (`FUNASR_SENSEVOICE_BIN`,
 `FUNASR_VAD_BIN`, `FUNASR_MODEL`, `FUNASR_VAD_MODEL`, `./gguf/*.gguf`).
 
+### 4.4b `src/postprocess.py` — fansub post-processing
+
+Runs after translation and before writing output, over the final cue list:
+
+- `break_lines(text, max_chars=37)` — splits a long line into at most 2 lines at the
+  word boundary nearest the midpoint, using `\\N` as the separator (ASS convention).
+- `format_translator_note(text)` — moves a `[TN: ...]` annotation onto its own line.
+- `snap_overlaps(cues, gap_ms=50)` — trims the previous cue's `end` so consecutive
+  cues keep a minimum separation, never trimming a cue below 300 ms.
+- `apply_all(cues)` — runs the steps in order and returns exactly the same number
+  of cues it receives (no merging or dropping).
+
+SRT output converts `\\N` to a literal newline; ASS output keeps `\\N`.
+
+### 4.4c `src/ass_io.py` — Advanced SubStation Alpha writer
+
+Writes Aegisub-compatible `.ass` files with a sensible default style (1920×1080
+PlayRes, bottom-centred white text, black outline + shadow). `write_ass(path, cues)`
+returns the number of cues written. Enabled via `--format ass` (or a `.ass` output
+path). Line breaks are emitted as `\\N`.
+
+
 ### 4.5 `src/translate.py` — the heart (faithful English translation)
 
 This is where the translation policy lives.
 
-**Cue alignment protocol.** Cues are translated in **batches** (default 40) for context and
+**Cue alignment protocol.** Cues are translated in **batches** (default 8) for context and
 token efficiency. Each batch is sent as **numbered items** (`1. text`, `2. text`, …) and
 the model is told to reply with the *same numbers, one per line* — `_parse_numbered()`
 verifies the returned keys are exactly `{1..N}`. This keeps cue **order and count** aligned
@@ -277,7 +301,7 @@ pipeline run. It decouples "what to run" (the resolved CLI args + env) from "how
   (`_DONE_PATTERN`), enabling the **Open Output Folder** button from the resolved path.
 - **One-click model downloads** via `_ModelDownloadWorker` (a `QRunnable`): fetches the
   the FunASR models (`sensevoice-small-q8.gguf` + `fsmn-vad.gguf`) and/or the **Hy-MT2 translation GGUF**
-  (`Hy-MT2-1.8B-1.25Bit.gguf`) from Hugging Face into `./gguf`, streaming a percentage
+  (`Hy-MT2-1.8B-Q8_0.gguf`) from Hugging Face into `./gguf`, streaming a percentage
   progress bar into the UI. Downloaded models are auto-picked into the relevant settings.
 - **`localPath()`** slot converts a `file://` QML URL into a plain filesystem path.
 
@@ -462,4 +486,12 @@ build_exe.bat                   # -> dist\TranslationAgent.exe
   build time).
 - Validate end-to-end output on a range of videos (manual/vs auto captions, various source
   languages, offline Hy-MT2 path) to firm up confidence before any release.
+
+**Fansub-quality upgrade (done):** ASS output (`src/ass_io.py`, `--format ass`),
+post-processing pass (`src/postprocess.py` — line breaking, overlap snap, translator-note
+placement), and CJK-aware cue splitting (weighted char budget in `src/local_asr.py`).
+
+- **Typesetter integration** — export cues with positional override tags (`{\\anX}` /
+  per-line alignment + `\\pos`) for dual-speaker dialogue, so the output is insert-ready
+  for Aegisub without manual repositioning.
 

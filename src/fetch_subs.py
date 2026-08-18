@@ -114,14 +114,12 @@ def _fetch_english_title(video_id: str) -> str | None:
         return None
 
 
-def _resolve_transcript(video_id: str, lang: str | None):
-    """Pick the original-language transcript (manual preferred, auto fallback)."""
-    api = YouTubeTranscriptApi()
-    try:
-        transcript_list = api.list(video_id)
-    except Exception as exc:  # network / unavailable / disabled errors
-        raise RuntimeError(f"Could not retrieve subtitles: {exc}") from exc
+def _resolve_transcript(transcript_list, lang: str | None):
+    """Pick the original-language transcript (manual preferred, auto fallback).
 
+    ``transcript_list`` is an already-listed ``TranscriptList``; ``lang`` is an
+    optional original-language hint from the video metadata.
+    """
     # Prefer the original language when we know it.
     if lang:
         try:
@@ -137,29 +135,30 @@ def _resolve_transcript(video_id: str, lang: str | None):
     for transcript in transcript_list:  # iterates manual, then generated
         return transcript
 
-    raise RuntimeError(
-        "No subtitles (manual or auto-generated) are available for this video."
-    )
+    return None
 
 
-def fetch_original_subtitles(url: str) -> tuple[list[Cue], str | None, str | None]:
-    """Fetch the original-language subtitles for a YouTube URL.
+def _resolve_english_transcript(transcript_list):
+    """Return an English track (manual preferred, then generated), or None.
 
-    Returns (cues, english_video_title, source_language_code). The title used
-    for the output filename is YouTube's English-localized title, falling back
-    to the original title when no English title exists. Raises
-    RuntimeError/ValueError with an actionable message on failure.
+    Some videos ship an English subtitle/manual caption even when the narration
+    is in another language. When one exists we use it verbatim instead of running
+    the transcribe+translate pipeline — it is the platform's own translation.
     """
-    video_id = extract_video_id(url)
-    title, lang = _yt_dlp_metadata(url)
+    en_codes = ["en", "en-US", "en-GB", "en-CA", "en-AU"]
+    try:
+        return transcript_list.find_manually_created_transcript(en_codes)
+    except NoTranscriptFound:
+        pass
+    try:
+        return transcript_list.find_generated_transcript(en_codes)
+    except NoTranscriptFound:
+        pass
+    return None
 
-    transcript = _resolve_transcript(video_id, lang)
-    snippets = transcript.fetch()
 
-    # Prefer the language of the track we actually fetched (youtube-transcript-api
-    # knows it even when yt-dlp reports "na"/unknown). Fall back to yt-dlp's hint.
-    source_lang = getattr(snippets, "language_code", None) or lang
-
+def _snippets_to_cues(snippets) -> list[Cue]:
+    """Convert a fetched transcript (or snippet container) into Cue objects."""
     cues: list[Cue] = []
     for s in snippets:
         text = (s.text or "").strip()
@@ -168,10 +167,54 @@ def fetch_original_subtitles(url: str) -> tuple[list[Cue], str | None, str | Non
         start = float(s.start)
         duration = float(getattr(s, "duration", 0) or 0)
         cues.append(Cue(start=start, end=start + duration, text=text))
+    return cues
 
+
+def fetch_original_subtitles(url: str) -> tuple[list[Cue], str | None, str | None]:
+    """Fetch subtitles for a YouTube URL, preferring an existing English track.
+
+    Returns (cues, english_video_title, source_language_code). The title used for
+    the output filename is YouTube's English-localized title, falling back to the
+    original title when no English title exists. Raises RuntimeError/ValueError
+    with an actionable message on failure.
+
+    English-first: if YouTube already provides an English subtitle (manual or
+    auto-generated), we return those cues with source_language_code ``"en"`` so the
+    caller writes them as-is and skips translation. Only when no English track
+    exists do we fall back to the video's original-language track, which the caller
+    then translates.
+    """
+    video_id = extract_video_id(url)
+    title, lang = _yt_dlp_metadata(url)
+
+    try:
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+    except Exception as exc:  # network / unavailable / disabled errors
+        raise RuntimeError(f"Could not retrieve subtitles: {exc}") from exc
+
+    def _english_title() -> str | None:
+        return _fetch_english_title(video_id) or title
+
+    # 1) Prefer the existing English subtitle (YouTube's own translation).
+    english = _resolve_english_transcript(transcript_list)
+    if english is not None:
+        cues = _snippets_to_cues(english.fetch())
+        return cues, _english_title(), "en"
+
+    # 2) No English track: fall back to the video's original language, which the
+    #    caller translates into English.
+    transcript = _resolve_transcript(transcript_list, lang)
+    if transcript is None:
+        raise RuntimeError(
+            "No subtitles (manual or auto-generated) are available for this video."
+        )
+
+    snippets = transcript.fetch()
+    source_lang = getattr(snippets, "language_code", None) or lang
+
+    cues = _snippets_to_cues(snippets)
     if not cues:
         raise RuntimeError("Retrieved subtitles were empty for this video.")
 
-    # Filename uses the English-localized title YouTube provides (if any).
-    english_title = _fetch_english_title(video_id) or title
-    return cues, english_title, source_lang
+    return cues, _english_title(), source_lang

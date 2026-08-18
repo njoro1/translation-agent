@@ -30,7 +30,7 @@ python translate.py "<youtube_url>" --model gpt-4o --out my_subs.srt --batch 30
 - Output is written to `<video_title>.srt` in the current directory by default.
 - `--out` overrides the output path.
 - `--model` overrides `OPENAI_MODEL`.
-- `--batch` sets how many subtitle cues are sent per translation call (default 40).
+- `--batch` sets how many subtitle cues are sent per translation call (default 8).
 
 ## GUI (Windows)
 
@@ -152,14 +152,16 @@ Defaults if neither is set: the binaries resolved from PATH, and `./gguf/*.gguf`
 | `--asr-vad-model` | `FUNASR_VAD_MODEL`      | `./gguf/fsmn-vad.gguf`           | fsmn-vad GGUF model.                     |
 | `--asr-lang`      | —                       | `auto`                           | Source language (`auto`/`zh`/`en`/`ja`/`ko`/`yue`). |
 | `--asr-threads`   | `FUNASR_THREADS`        | `4`                              | CPU threads for FunASR.                  |
-| `--asr-max-segment-ms` | `FUNASR_MAX_SEGMENT_MS` | `7000`                       | Max ASR audio segment before cue splitting. |
+| `--asr-max-segment-ms` | `FUNASR_MAX_SEGMENT_MS` | `6000`                       | Max ASR audio segment before cue splitting. |
 | `--asr-max-end-silence-ms` | `FUNASR_MAX_END_SILENCE_MS` | `250`                    | Trailing silence before VAD closes a segment. |
 | `--asr-speech-noise-threshold` | `FUNASR_SPEECH_NOISE_THRES` | `0.55`          | FunASR VAD speech/noise threshold.       |
 | `--asr-noise-db`  | `FUNASR_NOISE_DB`        | `-35`                            | ffmpeg silencedetect noise threshold (dB). |
-| `--asr-min-silence-s` | `FUNASR_MIN_SILENCE_S` | `0.20`                          | Min silence for ffmpeg silence detection. |
-| `--asr-max-cue-duration-ms` | `FUNASR_MAX_CUE_DURATION_MS` | `3000`                | Preferred max subtitle cue duration.     |
-| `--asr-max-cue-chars` | `FUNASR_MAX_CUE_CHARS` | `70`                            | Preferred max subtitle cue character count. |
+| `--asr-min-silence-s` | `FUNASR_MIN_SILENCE_S` | `0.25`                          | Min silence for ffmpeg silence detection. |
+| `--asr-max-cue-duration-ms` | `FUNASR_MAX_CUE_DURATION_MS` | `3200`                | Preferred max subtitle cue duration.     |
+| `--asr-max-cue-chars` | `FUNASR_MAX_CUE_CHARS` | `70`                            | Preferred max subtitle cue character count (non-CJK). |
+| `--asr-max-cue-chars-cjk` | `FUNASR_MAX_CUE_CHARS_CJK` | `48`                    | Preferred max subtitle cue character count (CJK). |
 | `--asr-no-tags`   | —                       | off                              | Do not request SenseVoice tag output.    |
+| `--asr-keep-tags` | `FUNASR_KEEP_TAGS`      | off                              | Keep ASR `<|...|>` tags (disable default tag stripping). |
 
 ### How timing works
 Audio is extracted to a 16 kHz mono WAV, then a **FunASR VAD pass** yields speech
@@ -190,9 +192,9 @@ the tool will connect to the host/port you give it, exactly as before.
 Pick or download the GGUF in Settings, then run with `--local-model`:
 
 ```bash
-python translate.py "<youtube_url>" --local --local-model models/Hy-MT2-1.8B-1.25Bit.gguf
+python translate.py "<youtube_url>" --local --local-model models/Hy-MT2-1.8B-Q8_0.gguf
 python translate.py "<youtube_url>" --local --local-port 8080 \
-  --local-model-name Hy-MT2-1.8B --local-model models/Hy-MT2-1.8B-1.25Bit.gguf
+  --local-model-name Hy-MT2-1.8B-Q8_0 --local-model models/Hy-MT2-1.8B-Q8_0.gguf
 ```
 
 The app starts its bundled CPU `llama-server` against that file, waits until it is
@@ -204,7 +206,7 @@ If you already run a llama.cpp server yourself (any OpenAI-compatible build):
 
 ```bash
 # Example with llama-cpp-python (install once: pip install -r requirements-local.txt)
-python -m llama_cpp.server --model models/Hy-MT2-1.8B-1.25Bit.gguf --n_ctx 4096
+python -m llama_cpp.server --model models/Hy-MT2-1.8B-Q8_0.gguf --n_ctx 4096
 # -> listens on http://127.0.0.1:8080/v1
 ```
 
@@ -212,13 +214,13 @@ Then just use `--local` (no `--local-model`):
 
 ```bash
 python translate.py "<youtube_url>" --local
-python translate.py "<youtube_url>" --local --local-port 8080 --local-model-name Hy-MT2-1.8B
+python translate.py "<youtube_url>" --local --local-port 8080 --local-model-name Hy-MT2-1.8B-Q8_0
 ```
 
 …or purely via environment variables (no flag needed):
 
 ```bash
-OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_API_KEY=sk-local OPENAI_MODEL=Hy-MT2-1.8B \
+OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_API_KEY=sk-local OPENAI_MODEL=Hy-MT2-1.8B-Q8_0 \
   python translate.py "<youtube_url>"
 ```
 
@@ -233,18 +235,20 @@ Relevant flags (only used with `--local`):
 | `--local`           | off            | Use a llama.cpp server (auto-started or already running).     |
 | `--local-host`      | `127.0.0.1`    | Host of the llama.cpp server.                                  |
 | `--local-port`      | `8080`         | Port of the llama.cpp server.                                  |
-| `--local-model-name`| `Hy-MT2-1.8B`  | Model id sent to the local server.                            |
+| `--local-model-name`| `Hy-MT2-1.8B-Q8_0`  | Model id sent to the local server.                            |
 | `--local-model`     | —              | Path to a GGUF; when given the app auto-starts bundled CPU `llama-server` against it. |
+| `--local-threads`   | `0`            | CPU threads for the local server (`LLAMA_SERVER_THREADS`; 0 = let llama.cpp decide). |
+| `--local-mlock`     | off            | Lock the model in RAM (`--mlock`; `LLAMA_SERVER_MLOCK`).       |
 
 Notes:
-- **STQ kernel:** the default target model, `Hy-MT2-1.8B-1.25Bit-GGUF`, is a 1.25-bit
-  **STQ** quantization that needs the llama.cpp STQ kernel (PR #22836). The bundled
-  `llama-server` is a recent release build that includes it. If translations come out as
-  garbage, your local copy may be stale — use a recent `llama-server`.
+- **Quantization:** the default target model is the `Hy-MT2-1.8B-Q8_0.gguf` **Q8_0**
+  quantization, a standard llama.cpp format supported by the bundled `llama-server`. If
+  translations come out as garbage, your local copy may be stale — use a recent
+  `llama-server`.
 - **Sampling:** the model card suggests `temperature 0.7, top_p 0.6, top_k 20,
   repetition_penalty 1.05`. For the cloud path the translator intentionally uses a low
   `temperature 0.3` for translation fidelity. When the model is detected as Hy-MT2
-  (model name contains `hy-mt2` / `hy_mt2`, which the local default `Hy-MT2-1.8B` does),
+  (model name contains `hy-mt2` / `hy_mt2`, which the local default `Hy-MT2-1.8B-Q8_0` does),
   it instead follows the
   [hy-mt2-translator skill](https://skillhub.cn/skills/hy-mt2-translator): no system
   prompt, the skill's own Chinese instruction wording, and a low `temperature 0.1` (kept
@@ -258,4 +262,157 @@ Notes:
   (`top_k` / `repeat_penalty`), they are dropped and the batch is retried plainly.
 - Target language stays English; the original `start`/`end` times and cue count are
   preserved exactly as with the cloud path.
+
+## Consistency & quality features
+
+These are **optional, off-line-friendly** aids that improve the local translation
+path without replacing the model.
+
+### Translation batching (Hy-MT2)
+
+Hy-MT2 is small, so 40 cues per request is too aggressive on a CPU. When the model
+name is detected as Hy-MT2, the translator automatically uses a smaller effective
+batch:
+
+- Max **12 cues** per request (override `HY_MT2_MAX_BATCH_CUES`).
+- Character-aware batching: ≤ **700** non-whitespace chars for CJK
+  (`HY_MT2_MAX_BATCH_CHARS_CJK`), ≤ **1000** for non-CJK
+  (`HY_MT2_MAX_BATCH_CHARS_NON_CJK`).
+- A robust fallback ladder: `retry → split in half → split further → per-item
+  fallback`. This preserves cue order/count and reduces expensive per-item retries.
+
+```text
+[local] Hy-MT2 detected: using effective batch size 12 instead of requested 40
+[translate] Dynamic batching: 120 cues -> 12 batches
+```
+
+### Translation memory
+
+Repeated exact source lines (greetings, catchphrases, opening/ending lines) are
+cached in a SQLite database and reused, so they are not re-translated each time.
+
+```bash
+python translate.py "<url>" --translation-memory on
+python translate.py --file clip.mkv --local --translation-memory-db ./cache/tm.sqlite3
+```
+
+- `--translation-memory auto` (default): on for local Hy-MT2, off for cloud.
+- `--translation-memory on` / `off`: force it.
+- `TRANSLATION_MEMORY_DB` (default `./cache/translation_memory.sqlite3`).
+- Cache keys include the source language, model, and glossary hash, so a glossary
+  or model change invalidates stale entries. Corrupt databases degrade gracefully.
+
+### Glossary
+
+Enforce consistent terminology with a plain-text glossary file:
+
+```bash
+python translate.py "<url>" --glossary my_terms.txt
+```
+
+Format (`#` comments, `TAB`, `=` or `->` separators, UTF-8):
+
+```text
+# terms
+先輩 = senpai
+先生 -> sensei
+魔法少女	magical girl
+```
+
+The glossary is injected into the prompt without altering the foreignization
+directive. `TRANSLATION_GLOSSARY` sets it via the environment.
+
+### Cloud rescue
+
+If local translation leaves some cues empty/failed, you can let a cloud model
+recover **only those** failed cues (never the whole set, never by default):
+
+```bash
+python translate.py "<url>" --local --cloud-rescue --cloud-rescue-model gpt-4o-mini
+```
+
+- `--cloud-rescue` / `CLOUD_RESCUE_ENABLED` (default off).
+- `--cloud-rescue-model` / `CLOUD_RESCUE_MODEL` — cloud model to use.
+- `--cloud-rescue-batch` / `CLOUD_RESCUE_BATCH` (default 10).
+- Fails gracefully (warns and continues) if no cloud credentials are available.
+- Cannot run when cloud rescue is disabled; cue count is always preserved.
+
+### Subtitle quality diagnostics
+
+A built-in analyzer reports readability issues: characters-per-second (CPS),
+over-long/over-short cues, excessive lines, and empty text.
+
+```bash
+python translate.py "<url>" --quality-report report.json
+python translate.py "<url>" --strict-quality   # exit 1 if serious errors found
+```
+
+Thresholds: CPS warning 18 / error 22; chars warning 80 / error 110; duration
+min 0.8/0.5 s and max 6/8 s; lines warning 2 / error 3. Output is a JSON report
+and a console summary (`tools/check_srt.py` gives a quick cue-count/duration
+overview).
+
+### Local server warmup & tuning
+
+After the local server starts, a tiny warmup request initializes the model and
+reduces first-request latency. Optional flags:
+
+- `--local-threads` / `LLAMA_SERVER_THREADS` (0 = auto).
+- `--local-mlock` / `LLAMA_SERVER_MLOCK` (lock model in RAM).
+
+If the server rejects an optional flag, it is automatically retried without it.
+
+## Benchmarking
+
+`tools/benchmark.py` measures timing, reliability, and subtitle quality against
+`benchmark/cases.json`:
+
+```bash
+python tools/benchmark.py --cases benchmark/cases.json --output benchmark/results/run.json
+python tools/benchmark.py --case-id ja-short-dialogue --local
+```
+
+See `benchmark/README.md` for how to add your own test media. The harness runs
+offline and needs no real API keys to start; missing media files produce clear
+errors. Results are JSON so they can be diffed between runs.
+
+## Environment variables (summary)
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `TRANSLATION_GLOSSARY` | unset | Glossary file path |
+| `TRANSLATION_MEMORY_MODE` | `auto` | `auto` \| `on` \| `off` |
+| `TRANSLATION_MEMORY_DB` | `./cache/translation_memory.sqlite3` | TM database path |
+| `HY_MT2_MAX_BATCH_CUES` | `12` | Hy-MT2 max batch cues |
+| `HY_MT2_MAX_BATCH_CHARS_CJK` | `700` | Hy-MT2 max batch chars (CJK) |
+| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `1000` | Hy-MT2 max batch chars (non-CJK) |
+| `LLAMA_SERVER_THREADS` | `0` | Local server threads |
+| `LLAMA_SERVER_MLOCK` | `0` | Local server mlock (1 = on) |
+| `CLOUD_RESCUE_ENABLED` | `0` | Enable cloud rescue (1 = on) |
+| `CLOUD_RESCUE_MODEL` | unset | Cloud rescue model |
+| `CLOUD_RESCUE_BATCH` | `10` | Cloud rescue batch size |
+| `FUNASR_MAX_CUE_CHARS_CJK` | `48` | CJK max cue chars |
+| `FUNASR_KEEP_TAGS` | `0` | Keep ASR tags (1 = on) |
+
+## Model note
+
+Hy-MT2-1.8B remains the default local translation model because it provides the
+best practical balance of size, CPU feasibility, and translation specialization
+for the target hardware (a small model loaded on CPU). The preferred file is
+`Hy-MT2-1.8B-Q8_0.gguf`. A model swap is only accepted with benchmark evidence
+that the replacement is both more accurate **and** faster/equal at equal-or-lower
+resource usage.
+
+### Troubleshooting: `llama-server exited before becoming ready (rc=1)`
+
+If startup fails with `rc=1` and the server stderr mentions *failed to read tensor
+data* / *tensor offset*, the GGUF file is **corrupt or truncated** — re-download
+it:
+
+- **GUI:** Settings → Download models (or delete the file and retry).
+- **Manual:** <https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf>
+
+If the stderr mentions an unsupported quantization, ensure you're using the
+app's bundled `llama-server` (under `vendor/llama/`), which supports the Q8_0
+quantization used by the default local model.
 

@@ -28,6 +28,7 @@ import wave
 from pathlib import Path
 
 from .srt_io import Cue
+from .batching import is_cjk_language
 
 # Hide console windows spawned by subprocess on Windows.
 _SUBPROCESS_CREATION_FLAGS = 0
@@ -38,6 +39,15 @@ if os.name == "nt":
 DEFAULT_SENSEVOICE_MODEL = os.path.join("gguf", "sensevoice-small-q8.gguf")
 DEFAULT_VAD_MODEL = os.path.join("gguf", "fsmn-vad.gguf")
 
+# A transcript that stops well before the media ends (a long silent tail between
+# the last cue and the audio duration) is a strong sign the VAD/ASR run ended
+# early. We warn when the uncovered tail exceeds BOTH the absolute floor below
+# AND 5% of the whole media — generous enough to never flag natural pauses.
+INCOMPLETE_WARN_SECONDS = float(
+    os.environ.get("FUNASR_INCOMPLETE_WARN_SECONDS", "8.0")
+)
+INCOMPLETE_WARN_MEDIA_RATIO = 0.05
+
 _CODE_TO_NAME = {
     "zh": "Chinese",
     "yue": "Cantonese",
@@ -45,6 +55,10 @@ _CODE_TO_NAME = {
     "ja": "Japanese",
     "ko": "Korean",
 }
+
+# File extensions treated as video for the snap-to-keyframe pass. Pure audio
+# files (mp3/wav/m4a/flac/ogg...) are skipped.
+_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 
 _SENSEVOICE_LANG_RE = re.compile(r"<\|\s*(zh|en|ja|ko|yue|auto)\s*\|>", re.I)
 _TAG_RE = re.compile(r"<\|[^<>|]*\|>")
@@ -205,6 +219,7 @@ def _extract_wav(media_path: Path, wav_path: Path) -> None:
         "-loglevel", "error",
         "-i", str(media_path),
         "-vn",
+        "-af", "loudnorm",  # loudness-normalize BEFORE VAD sees the audio
         "-ac", "1",
         "-ar", "16000",
         "-acodec", "pcm_s16le",
@@ -810,13 +825,35 @@ def _run_sensevoice(
     raise RuntimeError(f"SenseVoice failed on {chunk_path.name}: {last_error}")
 
 
+def _cjk_adjusted_char_count(text: str) -> int:
+    """Count characters, weighting each CJK codepoint as 2.
+
+    CJK characters require roughly 2x the reading time of ASCII characters, so a
+    batch/line budget of N Latin characters should be a budget of ~N/2 CJK
+    characters for the same on-screen duration. This helper gives CJK scripts
+    the same *reading-time* weight as Latin text while keeping the effective
+    budget controlled by the existing ``--asr-max-cue-chars`` flag.
+    """
+    count = 0
+    for ch in text:
+        cp = ord(ch)
+        # CJK Unified Ideographs, Hangul syllables, Hiragana, Katakana.
+        if (0x4E00 <= cp <= 0x9FFF
+                or 0xAC00 <= cp <= 0xD7A3
+                or 0x3040 <= cp <= 0x30FF):
+            count += 2
+        else:
+            count += 1
+    return count
+
+
 def _split_text(text: str, max_chars: int) -> list[str]:
     text = text.strip()
 
     if not text:
         return []
 
-    if len(text) <= max_chars:
+    if _cjk_adjusted_char_count(text) <= max_chars:
         return [text]
 
     for sep in _TEXT_SEPARATORS:
@@ -834,13 +871,13 @@ def _split_text(text: str, max_chars: int) -> list[str]:
 
             candidate = part if not buf else buf + sep + part
 
-            if len(candidate) <= max_chars:
+            if _cjk_adjusted_char_count(candidate) <= max_chars:
                 buf = candidate
             else:
                 if buf:
                     out.append(buf.strip())
 
-                if len(part) > max_chars:
+                if _cjk_adjusted_char_count(part) > max_chars:
                     out.extend(_split_text(part, max_chars))
                     buf = ""
                 else:
@@ -853,7 +890,25 @@ def _split_text(text: str, max_chars: int) -> list[str]:
         if out:
             return out
 
-    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+    # No separator available: hard chunk by weighted char budget.
+    result: list[str] = []
+    current = ""
+    current_weight = 0
+    for ch in text:
+        w = 2 if (
+            0x4E00 <= ord(ch) <= 0x9FFF
+            or 0xAC00 <= ord(ch) <= 0xD7A3
+            or 0x3040 <= ord(ch) <= 0x30FF
+        ) else 1
+        if current and current_weight + w > max_chars:
+            result.append(current)
+            current = ""
+            current_weight = 0
+        current += ch
+        current_weight += w
+    if current:
+        result.append(current)
+    return result if result else [text]
 
 
 
@@ -882,7 +937,9 @@ def _segment_to_cues(
     if not units:
         return []
 
-    weights = [max(1, len(u)) for u in units]
+    # Weighted by CJK-adjusted length so characters get proportional share of
+    # the segment duration based on real reading time.
+    weights = [max(1, _cjk_adjusted_char_count(u)) for u in units]
     total_weight = sum(weights)
 
     cues: list[Cue] = []
@@ -935,6 +992,139 @@ def _lang_name(code: str | None) -> str | None:
     return _CODE_TO_NAME.get(code, code)
 
 
+def _ffprobe_exe() -> str | None:
+    """Return the ffprobe binary path, or None if unavailable.
+
+    Preferred source is ``imageio_ffmpeg.get_ffmpeg_exe()``, with the ffprobe
+    sibling derived by replacing the executable name (imageio_ffmpeg only ships
+    ffmpeg, not ffprobe, so this usually returns the next best candidate).
+    """
+    candidates: list[str] = []
+
+    env = os.environ.get("FFPROBE_BIN")
+    if env:
+        candidates.append(env)
+    env = os.environ.get("IMAGEIO_FFMPEG_EXE")
+    if env:
+        candidates.append(
+            os.path.join(os.path.dirname(env), "ffprobe.exe")
+            if env.lower().endswith(".exe")
+            else env
+        )
+
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        base = os.path.splitext(ffmpeg)[0]
+        sibling = base + ".exe" if os.name == "nt" else base
+        candidates.append(sibling)
+    except Exception:  # noqa: BLE001
+        pass
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        candidates.append(ffprobe)
+
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+        if candidate and os.path.sep not in candidate:
+            which = shutil.which(candidate)
+            if which:
+                return which
+    return None
+
+
+def _extract_keyframe_times(video_path: str, ffprobe_bin: str) -> list[float]:
+    """Return a sorted list of keyframe PTS times (seconds) for the video stream.
+
+    Uses ffprobe packet flags. On any error or an empty result it returns ``[]``
+    so callers can fall back to no snapping — this must never be fatal.
+    """
+    times: list[float] = []
+    try:
+        p = subprocess.run(
+            [ffprobe_bin, "-v", "quiet", "-select_streams", "v",
+             "-show_entries", "packet=pts_time:packet=flags",
+             "-of", "csv", video_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            creationflags=_SUBPROCESS_CREATION_FLAGS,
+        )
+    except Exception:  # noqa: BLE001
+        return times
+    for line in p.stdout.splitlines():
+        if "K" not in line:
+            continue
+        # CSV: packet,<pts_time>,<flags>  ->  e.g. packet,0.000000,K_
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        try:
+            pts = float(parts[1])
+        except ValueError:
+            continue
+        if pts >= 0 and (times == [] or pts > times[-1]):
+            times.append(pts)
+    return times
+
+
+def _snap_cues_to_keyframes(
+    cues: list,
+    keyframe_times: list[float],
+    snap_window_s: float = 0.10,
+) -> list:
+    """Snap each cue ``start`` to the nearest keyframe within ``snap_window_s``.
+
+    Prevents a subtitle from appearing mid-scene-cut. Duration is preserved: the
+    ``end`` shifts by the same delta as the ``start``. Cues whose nearest
+    keyframe is farther than ``snap_window_s`` away are left untouched.
+    """
+    if not keyframe_times:
+        return cues
+    import bisect
+    from dataclasses import replace
+
+    snapped = []
+    for cue in cues:
+        idx = bisect.bisect_left(keyframe_times, cue.start)
+        candidates = []
+        if idx < len(keyframe_times):
+            candidates.append(keyframe_times[idx])
+        if idx > 0:
+            candidates.append(keyframe_times[idx - 1])
+        nearest = min(candidates, key=lambda t: abs(t - cue.start))
+        if abs(nearest - cue.start) <= snap_window_s:
+            delta = nearest - cue.start
+            cue = replace(cue, start=nearest, end=cue.end + delta)
+        snapped.append(cue)
+    return snapped
+
+def maybe_warn_incomplete(cues: list[Cue], duration: float) -> None:
+    """Print a warning when the transcript seems to stop before the media ends.
+
+    A long uncovered tail (last cue end far short of the media duration) is a
+    strong signal the ASR/segmentation run ended early — see SUBTITLE_QUALITY_REPORT
+    §2.7, where a subtitle file stopped at 2:15 while the video was much longer.
+    Thresholds are generous so natural pauses are never flagged.
+    """
+    if not cues or duration <= 0:
+        return
+    last_end = cues[-1].end
+    uncovered = duration - last_end
+    if uncovered > max(INCOMPLETE_WARN_SECONDS, INCOMPLETE_WARN_MEDIA_RATIO * duration):
+        print(
+            f"[asr] WARNING: transcription may be incomplete — last cue ends at "
+            f"{last_end:.1f}s but media is {duration:.1f}s "
+            f"({uncovered:.1f}s / {uncovered / duration * 100:.0f}% uncovered). "
+            f"The subtitle output will be shorter than the source video.",
+            flush=True,
+        )
+
+
 def transcribe_local_file(
     file_path: str | Path,
     asr_bin: str | None = None,
@@ -951,6 +1141,8 @@ def transcribe_local_file(
     max_cue_duration_ms: int | None = None,
     max_cue_chars: int | None = None,
     no_tags: bool = False,
+    max_cue_chars_cjk: int | None = None,
+    keep_tags: bool | None = None,
 ) -> tuple[list[Cue], str | None]:
     """
     Transcribe a local media file using FunASR SenseVoiceSmall.
@@ -976,7 +1168,7 @@ def transcribe_local_file(
 
 
     if max_segment_ms is None:
-        max_segment_ms = int(os.environ.get("FUNASR_MAX_SEGMENT_MS", "7000"))
+        max_segment_ms = int(os.environ.get("FUNASR_MAX_SEGMENT_MS", "6000"))
 
     if max_end_silence_ms is None:
         max_end_silence_ms = int(os.environ.get("FUNASR_MAX_END_SILENCE_MS", "250"))
@@ -988,13 +1180,46 @@ def transcribe_local_file(
         noise_db = float(os.environ.get("FUNASR_NOISE_DB", "-35"))
 
     if min_silence_s is None:
-        min_silence_s = float(os.environ.get("FUNASR_MIN_SILENCE_S", "0.20"))
+        min_silence_s = float(os.environ.get("FUNASR_MIN_SILENCE_S", "0.25"))
 
     if max_cue_duration_ms is None:
-        max_cue_duration_ms = int(os.environ.get("FUNASR_MAX_CUE_DURATION_MS", "3000"))
+        max_cue_duration_ms = int(os.environ.get("FUNASR_MAX_CUE_DURATION_MS", "3200"))
 
     if max_cue_chars is None:
         max_cue_chars = int(os.environ.get("FUNASR_MAX_CUE_CHARS", "70"))
+
+    if max_cue_chars_cjk is None:
+        max_cue_chars_cjk = int(os.environ.get("FUNASR_MAX_CUE_CHARS_CJK", "48"))
+
+    # Determine whether tags should be kept.
+    # FUNASR_KEEP_TAGS=1 (or --asr-keep-tags) -> keep tags (disable stripping).
+    if keep_tags is None:
+        keep_tags = os.environ.get("FUNASR_KEEP_TAGS", "0") == "1"
+
+    # Effective tag-keeping. The DEFAULT is to STRIP SenseVoice tags (this is
+    # documented as the intended behavior: "Strip ASR tags by default;
+    # --asr-keep-tags to disable"). Tags are preserved into the cue text ONLY
+    # when the user explicitly opts in via --asr-keep-tags / FUNASR_KEEP_TAGS=1.
+    #
+    # Regression note: this used to be `bool(keep_tags) or not no_tags`, which
+    # silently enabled tag-keeping whenever no_tags was False (the default), so
+    # the `<|zh|><|ANGRY|><|BGM|><|withitn|>` SenseVoice tag group flowed all
+    # the way into the final SRT and made subtitles unusable. The default must
+    # strip tags; keeping being opt-in restores that.
+    #
+    # NOTE: `no_tags` still governs whether the binary's own `--keep-tags` flag
+    # is requested (see _run_sensevoice). With the default we request tags from
+    # SenseVoice, then strip them here (in _parse_sensevoice_output) so clean
+    # source text reaches upstream.
+    effective_keep = bool(keep_tags)
+    if effective_keep:
+        print("[asr] Keeping ASR tags due to user setting", flush=True)
+    else:
+        print("[asr] Stripping ASR tags", flush=True)
+
+    # Log CJK cue char limit if the explicit language is CJK.
+    if is_cjk_language(asr_lang):
+        print(f"[asr] Using CJK max cue chars: {max_cue_chars_cjk}", flush=True)
 
     max_cue_duration_s = max(1.0, float(max_cue_duration_ms) / 1000.0)
 
@@ -1089,7 +1314,7 @@ def transcribe_local_file(
             except Exception:
                 continue
 
-            text, seg_lang = _parse_sensevoice_output(raw, keep_tags=False)
+            text, seg_lang = _parse_sensevoice_output(raw, keep_tags=effective_keep)
 
             if not detected_lang and seg_lang:
                 detected_lang = seg_lang
@@ -1097,12 +1322,19 @@ def transcribe_local_file(
             if not text:
                 continue
 
+            # CJK-aware cue char limit: once we know the language (from the
+            # explicit asr_lang or detected_lang), use the tighter CJK limit.
+            if is_cjk_language(asr_lang) or is_cjk_language(detected_lang):
+                effective_max_chars = max_cue_chars_cjk
+            else:
+                effective_max_chars = max_cue_chars
+
             cues.extend(
                 _segment_to_cues(
                     text=text,
                     start=seg_start,
                     end=seg_end,
-                    max_cue_chars=max_cue_chars,
+                    max_cue_chars=effective_max_chars,
                     max_cue_duration_s=max_cue_duration_s,
                 )
             )
@@ -1118,6 +1350,38 @@ def transcribe_local_file(
         source_language = _lang_name(asr_lang)
     else:
         source_language = _lang_name(detected_lang)
+
+    # --- Snap-to-keyframe pass ----------------------------------------------
+    # Only for video containers, and only when ffprobe is available. Never
+    # fatal: if keyframes can't be extracted we log and continue unsnapped.
+    if media_path.suffix.lower() in _VIDEO_EXTENSIONS:
+        ffprobe = _ffprobe_exe()
+        if not ffprobe:
+            print(
+                "[asr] ffprobe not available; skipping snap-to-keyframe pass.",
+                flush=True,
+            )
+        else:
+            keyframes = _extract_keyframe_times(str(media_path), ffprobe)
+            if not keyframes:
+                print(
+                    "[asr] No keyframes extracted; skipping snap-to-keyframe pass.",
+                    flush=True,
+                )
+            else:
+                before = [(c.start, c.end) for c in cues]
+                cues = _snap_cues_to_keyframes(cues, keyframes)
+                moved = sum(
+                    1 for a, b in zip(before, [(c.start, c.end) for c in cues])
+                    if a != b
+                )
+                print(
+                    f"[asr] Snap-to-keyframe: snapped {moved}/{len(cues)} cues to "
+                    f"{len(keyframes)} keyframes",
+                    flush=True,
+                )
+
+    maybe_warn_incomplete(cues, duration)
 
     return cues, source_language
 

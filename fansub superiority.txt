@@ -1,0 +1,139 @@
+# Fan Subtitling: A Detailed Summary
+
+## Why Fansubs Are Superior to Professional Subtitles
+
+The superiority of fansubs over professional subtitles is not accidental. It emerges from a fundamentally different set of priorities, deeper expertise, and a production culture built around craft rather than throughput.
+
+**Philosophy of Fidelity Over Fluency.** Professional subtitlers work under commercial pressure to produce clean, readable English that a general audience can absorb without friction. This leads to "localization" — smoothing out cultural references, dropping honorifics, simplifying idioms, and sometimes rewriting jokes entirely. Fansubs operate on the opposite principle: the viewer should encounter the source culture, not a domesticated version of it. A fansub will retain a Japanese honorific, keep a Korean speech-level marker visible, or leave a Chinese chengyu untranslated with a note, because the goal is to carry the viewer *into* the culture rather than pull the culture toward the viewer.
+
+**Deeper Linguistic and Cultural Expertise.** Fansub translators are typically native or near-native speakers who are deeply embedded in the source culture. They are not generalist translators assigned a project by a studio. They watch the show because they love it. This means they catch wordplay, historical allusions, dialect markers, and tonal shifts that a hired professional working under deadline may miss or flatten. For Chinese web novels and historical dramas, this is especially critical, because Classical Chinese (wenyanwen) and four-character idioms (chengyu) require literary knowledge that goes well beyond conversational fluency.
+
+**Superior Technical Execution.** Fansub groups use Aegisub and the ASS (Advanced SubStation Alpha) format, which give them granular control over timing, font, colour, positioning, and on-screen text recreation that most professional pipelines do not bother with. A professional subtitle is typically a white line at the bottom of the screen. A fansub can recreate the exact font and colour of a shop sign visible in the background, render vertical Japanese calligraphy correctly, or place a subtitle near the speaker's mouth to reduce eye travel. This visual craft makes the subtitles feel like part of the artwork rather than an overlay.
+
+**Collaborative, Multi-Layered Quality Control.** A fansub group functions like a small specialised studio. The script passes through a Translator, a Timer, a Typesetter, an Editor, and a Quality Checker, each with a distinct role. Every line is reviewed multiple times by different people with different expertise. Professional pipelines often have fewer human checkpoints and are optimised for volume. The result is that a fansub has been collectively scrutinised and refined in ways a commercial product rarely is.
+
+**Motivation by Passion, Not Profit.** Fansubbers volunteer their time. There is no studio executive demanding a 48-hour turnaround for 20 episodes. This allows them to spend hours on a single scene, debating whether a particular rendering of a Korean honorific or a Chinese classical allusion captures the right register. That patience produces a product with a level of care that is structurally difficult to replicate in a commercial environment.
+
+---
+
+## The Fansub Production Pipeline: Step by Step
+
+The process is linear in broad strokes but iterative in practice, with feedback loops between stages.
+
+### Step 1 – Acquisition (Raw)
+A group member obtains the raw, un-subtitled video file. This is typically a broadcast recording, a streaming rip, or a file shared within the community. Using the highest-quality source available is considered essential, because every downstream step (timing, typesetting, encoding) depends on the raw's integrity.
+
+### Step 2 – Translation
+The translator converts all dialogue, narration, and relevant on-screen text from the source language into English. This is not a mechanical word-for-word conversion. The translator makes active decisions about:
+- Whether to keep honorifics, idioms, or cultural terms in the source language or translate them.
+- How to handle wordplay, puns, and double meanings.
+- Whether to add translator's notes for context the English-speaking audience would lack.
+- How to render speech-level differences (formal vs. casual, humble vs. respectful).
+
+In many groups, translation is discussed collaboratively. A difficult line might be debated in a group chat before a final rendering is agreed upon.
+
+### Step 3 – Timing
+A dedicated Timer opens the translated script in Aegisub and synchronises every subtitle line to the audio track. This involves:
+- Setting precise start and end timestamps for each line so it appears exactly when the speaker begins and disappears at the right moment.
+- Ensuring minimum display durations (roughly 500 ms) and maximum durations (around 800–1000 ms per line) so text is readable but not lingering.
+- For fast dialogue, allowing a subtitle to appear up to 0.25–0.5 seconds early so the viewer has time to read, and letting it linger 0.1–0.2 seconds after the speech ends.
+- Snapping timings to video keyframes so subtitles align with visual cuts.
+- Checking for and correcting "timing drift," where subtitles gradually fall out of sync over a long episode.
+
+### Step 4 – Typesetting
+The Typesetter uses Aegisub's ASS styling engine to handle all visual text that appears within the video itself:
+- Recreating the font, colour, size, and position of signs, title cards, phone screens, letters, and any other in-world text so the English subtitle matches the original visual.
+- Choosing subtitle fonts, colours, outlines, and shadows that are legible against varying backgrounds.
+- Positioning subtitles near the speaker when appropriate, rather than always defaulting to bottom-centre.
+- Implementing special effects: karaoke-style syllable highlighting for opening/ending songs, parallax scrolling for background text, rotation for stylised title cards.
+- Handling vertical text (common in Japanese and Chinese media) and tate-chu-yoko (keeping numerals horizontal within vertical text columns).
+
+### Step 5 – Editing
+An Editor reviews the entire script for English grammar, punctuation, spelling, and stylistic consistency. They check that character voices are consistent across episodes, that tone matches the scene, and that no translation errors slipped through.
+
+### Step 6 – Quality Check
+A Quality Checker performs a final pass, watching the video with the subtitles active. They verify:
+- No timing errors or overlaps.
+- No typos or grammatical mistakes.
+- Typesetting matches the on-screen visuals correctly.
+- Translator's notes are accurate and well-placed.
+- The overall reading experience is smooth.
+
+### Step 7 – Encoding
+The Encoder takes the final, approved subtitle file and burns it into the video, producing a single self-contained file. Encoding settings are chosen to balance file size with visual quality. Some groups also produce "soft-sub" versions where the subtitle file is separate, giving viewers flexibility.
+
+### Step 8 – Distribution
+The finished file is released through the group's chosen channels. For many groups this is a community-oriented release tied to a specific show's airing schedule.
+
+---
+
+## Language-Specific Nuances
+
+### Japanese
+
+**The Writing System.** Japanese uses three scripts simultaneously: Kanji (logographic characters borrowed from Chinese), Hiragana (a syllabary for native words and grammatical particles), and Katakana (a syllabary primarily for foreign loanwords and onomatopoeia). A fansub must decide how to represent each. Katakana loanwords, for instance, are often left in Katakana rather than transliterated into Roman letters, preserving the visual cue that the character is using a borrowed term.
+
+**Honorifics (Keigo).** Japanese has an elaborate system of honorific suffixes and verb conjugations that encode social hierarchy, respect, intimacy, and formality. Examples include -san (polite), -sama (very respectful), -kun (familiar, often for younger males), -chan (affectionate, often for children or close friends), and -senpai/-kohai (senior/junior). Professional subtitles frequently drop these because English has no equivalent. Fansubs routinely retain them in the original Japanese, trusting the audience to learn their meaning. Some groups add a brief translator's note the first time an unusual honorific appears. This preserves critical information about character relationships: whether someone is speaking as a subordinate, a superior, a friend, or a stranger.
+
+**Speech Levels Beyond Honorifics.** Beyond suffixes, Japanese verb conjugations shift between plain form and polite form (desu/masu). The choice between them signals formality, gender, age, and social context. Fansubs sometimes annotate these shifts or render them with subtle changes in English register to signal the shift without breaking the sentence.
+
+**Furigana (Ruby Text).** Kanji characters can have multiple readings depending on context. Fansubs use Aegisub's ASS ruby-text feature to display the Hiragana pronunciation guide above or beside a Kanji character. This is extremely rare in professional subtitles but is valued by fansub audiences, particularly language learners, because it clarifies exactly how a word is being read in that specific context.
+
+**Vertical Text.** Traditional Japanese media, especially period dramas, historical anime, and adaptations of manga, frequently use vertical text for signs, scrolls, and title cards. Fansubbers recreate this in ASS by setting the text direction to vertical, matching the original layout rather than forcing horizontal text.
+
+**Onomatopoeia and Sound Effects.** Japanese is rich in onomatopoeia (giongo for actual sounds, gitaigo for mimetic states). These are often written in Katakana and appear visually in anime. Fansubs translate these with care, sometimes keeping the Japanese term with an English gloss, because a direct English equivalent often loses the specific texture of the original.
+
+---
+
+### Korean
+
+**Speech Levels (Banmal and Jondaetmal).** Korean has a rigid system of speech levels that govern every interaction. Banmal (반말) is casual, used among close friends, peers, or when speaking to someone younger or of lower status. Jondaetmal (존댓말) is polite and formal, used with elders, strangers, superiors, or in professional settings. The choice between them is not optional; it is grammatically mandatory and carries enormous social meaning. Professional subtitles often flatten this into neutral English. Fansubs are more likely to preserve the distinction, sometimes leaving the Korean polite ending visible or using English register shifts (e.g., adding "sir," "ma'am," or more formal phrasing) to signal the level. Some fansubs include a note when a character switches from jondaetmal to banmal, because that switch is a significant narrative moment indicating growing intimacy or a shift in power.
+
+**Honorific Suffixes and Titles.** Korean uses honorific suffixes like -ssi (씨, polite), -nim (님, respectful), and kinship terms like hyung/oppa (older brother, used by males/females), unni/noona (older sister, used by females/males), and sunbae (senior). These encode relationship and hierarchy. Fansubs often keep them in Korean, especially in contexts where the relationship dynamic is central to the plot, because translating "oppa" as "brother" strips it of its cultural and emotional weight.
+
+**Culturally Specific Idioms and Expressions.** Korean is full of idioms rooted in Confucian values, historical events, and folk sayings. Fansubs tend to render these more literally or descriptively rather than swapping in an English idiom that changes the cultural frame. For example, a Korean expression referencing a specific historical figure might be translated literally with a translator's note rather than replaced with an unrelated English proverb.
+
+**Onomatopoeia and Expressive Language.** Like Japanese, Korean has a rich set of sound-symbolic words. Fansubs handle these with attention to the specific texture the original conveys, sometimes keeping the Korean word with a gloss rather than forcing a flat English equivalent.
+
+**Research Finding.** Comparative studies of Korean drama subtitles have found that professional versions tend to be shorter and more concise, while fan-produced versions (such as those on Viki) are longer, use more explanatory language, include more hedges and qualifiers, and are more willing to add context. This suggests fansubs prioritise completeness of meaning over brevity.
+
+---
+
+### Chinese
+
+**Classical Chinese (Wenyanwen).** Historical dramas, wuxia/xianxia adaptations, and period pieces frequently use Classical Chinese, a literary register that is grammatically and lexically very different from modern spoken Mandarin. It is terse, allusive, and relies heavily on parallel structure and historical/literary references. Translating this requires deep literary knowledge. Fansubbers of Chinese content are often specifically praised for preserving the grand, archaic tone of wenyanwen rather than flattening it into modern conversational English. Machine translation and generalist professional translators typically struggle here because the register demands a feel for classical prosody and allusion.
+
+**Four-Character Idioms (Chengyu).** Chengyu are fixed four-character phrases drawn from ancient stories, poems, or historical events. They are extremely dense with meaning and cultural resonance. Examples include 画蛇添足 (drawing a snake and adding feet, meaning to ruin something by adding unnecessary detail) or 破釜沉舟 (breaking the pots and sinking the boats, meaning to burn one's bridges). Fansubs handle chengyu in several ways:
+- A literal translation that preserves the imagery, with a translator's note explaining the origin.
+- A functional English equivalent if one exists and the imagery is not important to the scene.
+- Keeping the Chinese characters on screen with a gloss, especially when the idiom is being discussed by characters.
+Studies comparing fansub and official Chinese film subtitles have found that fansubs are more willing to break conventional subtitling rules (such as line-length limits) to keep a chengyu intact, because the four-character structure is itself meaningful.
+
+**Dialects and Regional Variation.** Chinese media may feature Mandarin, Cantonese, Shanghainese, Sichuanese, or other regional dialects. Fansubs note when a character switches dialect, because this often signals something about their background, social class, or emotional state. Professional subtitles may ignore the distinction entirely.
+
+**Tonal and Homophonic Wordplay.** Mandarin is tonal, and many puns rely on homophones or near-homophones. These are extremely difficult to render in English. Fansubs sometimes include a translator's note explaining the pun rather than pretending it does not exist, which is a common professional practice.
+
+**Simplified vs. Traditional Characters.** Depending on the source (mainland China vs. Taiwan vs. Hong Kong), the written text may be in Simplified or Traditional characters. Fansubs are attentive to this distinction and preserve the correct character set in any on-screen text recreation.
+
+**Cultural and Historical References.** Chinese media is dense with references to dynastic history, classical literature (Romance of the Three Kingdoms, Journey to the West, Dream of the Red Chamber), and philosophical traditions (Confucianism, Daoism, Buddhism). Fansubs frequently include translator's notes to contextualise these references for an English-speaking audience, treating the subtitle as a small educational layer rather than a transparent window.
+
+---
+
+## Summary Table: Fansub vs. Professional by Language
+
+| Challenge | Fansub Approach | Typical Professional Approach |
+|---|---|---|
+| **JP Honorifics** | Retained in Japanese; translator's notes added | Dropped or replaced with generic English |
+| **JP Furigana** | Rendered via ASS ruby text | Almost never included |
+| **JP Vertical Text** | Recreated vertically in ASS | Converted to horizontal or omitted |
+| **KR Speech Levels** | Preserved via register shifts, notes, or retained Korean | Flattened to neutral English |
+| **KR Kinship Terms** | Kept in Korean (oppa, unni, etc.) | Translated as "brother," "sister," or dropped |
+| **KR Idioms** | Literal/descriptive rendering with notes | Replaced with English idiom or simplified |
+| **CN Classical Chinese** | Careful literary translation preserving archaic tone | Often modernised or simplified |
+| **CN Chengyu** | Kept as four-character structure; notes explain origin | Replaced with English equivalent or paraphrased |
+| **CN Dialect Shifts** | Noted in subtitle or translator's note | Usually ignored |
+| **On-screen text (all)** | Recreated font, colour, position via typesetting | Generic white text at bottom of screen |
+
+---
+
+The through-line is consistent across all three languages: fansubs treat the subtitle as a craft object that should serve the source material's cultural and linguistic integrity, using every technical tool available to preserve what the original creators intended. Professional subtitles treat the subtitle as a delivery mechanism that should be invisible and frictionless for the widest possible audience. These are two valid goals, but they produce meaningfully different products, and for viewers who want to encounter Chinese, Japanese, or Korean media on its own terms, the fansub approach delivers a richer, more faithful, and more technically polished result.

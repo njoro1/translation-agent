@@ -1,6 +1,6 @@
 """Faithful English translation of subtitle cues via an OpenAI-compatible LLM.
 
-Cues are translated in batches (default 40) for context and token efficiency.
+Cues are translated in batches (default 8) for context and token efficiency.
 Each batch is sent as numbered items and the model returns the same numbers,
 so cue order/count stays aligned with the original timestamps.
 """
@@ -11,7 +11,128 @@ import time
 
 from openai import OpenAI
 
+from .batching import chunk_texts, is_cjk_language
 from .srt_io import Cue
+
+
+class TranslationEndpointError(RuntimeError):
+    """Raised when the configured chat/completions endpoint is not an
+    OpenAI-compatible LLM server (e.g. a web app / homepage answering HTTP
+    404/405 on the /v1/chat/completions route). Retrying can never fix it, so
+    translation aborts immediately instead of hanging in the retry/backoff
+    ladder against the wrong endpoint."""
+
+
+_FATAL_HTTP_STATUS = {404, 405, 501}
+
+
+def _endpoint_fatal_message(exc: Exception) -> str | None:
+    """Return an actionable message if ``exc`` is a fatal endpoint error.
+
+    HTTP 404/405/501 on the chat/completions route mean the configured Base URL
+    is *not* an OpenAI-compatible LLM server (it is a web page / router instead).
+    Such errors never recover with retries, so callers abort rather than hang.
+    Returns ``None`` for anything that might be transient (connection refused,
+    rate limits, provider 5xx, etc.) so the normal retry ladder still applies.
+    """
+    status = getattr(exc, "status_code", None)
+    if status in _FATAL_HTTP_STATUS:
+        return (
+            "The chat/completions endpoint returned HTTP {status}, which means it "
+            "is not an OpenAI-compatible LLM server at /v1/chat/completions. "
+            "Fix your Base URL (OPENAI_BASE_URL / Settings \u2192 Base URL). For the "
+            "bundled local llama-server use 'http://127.0.0.1:8080/v1'; for a real "
+            "cloud API use its actual /v1 URL. Do not point it at a website or "
+            "home page."
+        ).format(status=status)
+    return None
+
+
+def _raise_if_fatal(exc: Exception) -> None:
+    """Raise TranslationEndpointError if ``exc`` indicates a broken endpoint."""
+    fatal = _endpoint_fatal_message(exc)
+    if fatal:
+        raise TranslationEndpointError(fatal) from exc
+
+
+class _PerfMetrics:
+    """Aggregate token + generation-speed metrics from OpenAI/llama.cpp replies.
+
+    Standard usage (prompt/completion counts) is read from ``resp.usage``;
+    llama.cpp additionally returns a top-level ``timings`` object (exposed by the
+    SDK as ``resp.model_extra``) with ``predicted_per_second`` (generation
+    tokens/sec) and ``prompt_per_second``. Logging these makes it easy to see how
+    the local CPU Hy-MT2 run is actually performing (throughput, token counts).
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.requests = 0
+        self.gen_seconds = 0.0
+
+    @staticmethod
+    def _extract(resp) -> tuple[int | None, int | None, dict | None]:
+        usage = getattr(resp, "usage", None)
+        prompt = getattr(usage, "prompt_tokens", None) if usage is not None else None
+        completion = (
+            getattr(usage, "completion_tokens", None) if usage is not None else None
+        )
+        extra = getattr(resp, "model_extra", None) or {}
+        timings = extra.get("timings") if isinstance(extra, dict) else None
+        return prompt, completion, timings
+
+    def add(self, resp) -> None:
+        prompt, completion, timings = self._extract(resp)
+        if prompt is None and completion is None:
+            return
+        self.prompt_tokens += prompt or 0
+        self.completion_tokens += completion or 0
+        self.requests += 1
+        if isinstance(timings, dict):
+            gen_ms = timings.get("predicted_ms")
+            if isinstance(gen_ms, (int, float)) and gen_ms > 0:
+                self.gen_seconds += gen_ms / 1000.0
+
+    def print_call(self, resp, label: str) -> None:
+        """Accumulate response metrics and print a one-line perf summary."""
+        prompt, completion, timings = self._extract(resp)
+        if prompt is None and completion is None:
+            return
+        # Always accumulate even if we have nothing to print yet.
+        self.add(resp)
+        parts: list[str] = []
+        if prompt is not None:
+            parts.append(f"prompt={prompt} tok")
+        if completion is not None:
+            parts.append(f"gen={completion} tok")
+        if isinstance(timings, dict):
+            gen_tok_s = timings.get("predicted_per_second")
+            prompt_tok_s = timings.get("prompt_per_second")
+            if isinstance(gen_tok_s, (int, float)):
+                parts.append(f"{gen_tok_s:.1f} gen tok/s")
+            if isinstance(prompt_tok_s, (int, float)):
+                parts.append(f"{prompt_tok_s:.1f} prompt tok/s")
+        if parts:
+            print(f"[perf] {label}: " + ", ".join(parts), flush=True)
+
+    def print_summary(self) -> None:
+        """Print overall token totals for the whole run, if any requests happened."""
+        if self.requests == 0:
+            return
+        total = self.prompt_tokens + self.completion_tokens
+        parts = [
+            f"TOTAL: {self.requests} requests",
+            f"prompt={self.prompt_tokens} tok",
+            f"gen={self.completion_tokens} tok",
+            f"total={total} tok",
+        ]
+        if self.gen_seconds:
+            parts.append(f"~{total / self.gen_seconds:.1f} overall tok/s")
+        print("[perf] " + ", ".join(parts), flush=True)
 
 # Foreignization directive: preserve the author's voice, cultural context, and
 # intent; never domesticate to target-culture sensibilities. The [SOURCE LANGUAGE]
@@ -51,19 +172,61 @@ Crucial placement rule: when you add a [Translator's Note], place it on new line
 
 
 def build_system_prompt(
-    source_language: str | None, target_language: str = "English"
+    source_language: str | None,
+    target_language: str = "English",
+    *,
+    glossary: str | None = None,
+    chengyu: bool = False,
+    classical: bool = False,
+    emotion: bool = False,
 ) -> str:
-    """Fill the foreignization directive's language placeholders."""
+    """Fill the foreignization directive's language placeholders.
+
+    ``glossary``, when non-empty, is appended after the base directive so
+    terminology is applied consistently without altering the core directive.
+
+    ``chengyu`` / ``classical`` / ``emotion`` toggle fansub-quality augmentations
+    (chengyu literal+functional rendering, Classical-Chinese register, and
+    SenseVoice emotion-tag register awareness). These are appended to — never a
+    replacement of — ``_FOREIGNIZATION_DIRECTIVE``.
+    """
     src = source_language or "the video's original language"
-    return (
+    prompt = (
         _FOREIGNIZATION_DIRECTIVE.replace("[SOURCE LANGUAGE]", src)
         .replace("[TARGET LANGUAGE]", target_language)
     )
 
+    if chengyu:
+        prompt += (
+            "\n\nFor any term marked [CHENGYU:xxxx], provide the idiomatic "
+            "English meaning followed by the literal meaning in parentheses, "
+            'e.g. "add the finishing touch (lit. dot the eye on the dragon)". '
+            "Remove the [CHENGYU:...] markup from your output."
+        )
+
+    if classical:
+        prompt += (
+            "\n\nThe source text contains Classical Chinese (文言文). Preserve "
+            "its formal, archaic register in the English translation. Do not "
+            "modernize the diction."
+        )
+
+    if emotion:
+        prompt += (
+            "\n\nIf the source text begins with a SenseVoice emotion tag such as "
+            "<HAPPY>, <SAD>, <LAUGH>, use it to inform the natural register of "
+            "the translation. Do not reproduce the tag in your output."
+        )
+
+    if glossary:
+        prompt = prompt + "\n\n" + glossary
+    return prompt
+
 _USER_INSTRUCTION = (
     "Translate each numbered item into English. Respond with the same numbers, "
     "one translation per line, in the same order. Do not merge items, renumber, "
-    "or add commentary.\n\n"
+    "and do NOT include any reasoning, commentary, or translation notes — output "
+    "only the translation text after each number.\n\n"
 )
 
 # --- Hy-MT2 skill prompts ---------------------------------------------------
@@ -90,6 +253,113 @@ HY_MT2_TOP_P = 0.6
 HY_MT2_TOP_K = 20
 HY_MT2_REPETITION_PENALTY = 1.05
 
+# --- Hy-MT2 dynamic batching defaults ---------------------------------------
+# Hy-MT2 is a tiny CPU model; 40 cues per batch is too aggressive and increases
+# the chance of missing numbered lines, malformed output, or context overflow.
+# These limits can be overridden via environment variables.
+import os as _os
+
+HY_MT2_DEFAULT_MAX_BATCH_CUES = int(
+    _os.environ.get("HY_MT2_MAX_BATCH_CUES", "12")
+)
+HY_MT2_MAX_BATCH_CHARS_CJK = int(
+    _os.environ.get("HY_MT2_MAX_BATCH_CHARS_CJK", "700")
+)
+HY_MT2_MAX_BATCH_CHARS_NON_CJK = int(
+    _os.environ.get("HY_MT2_MAX_BATCH_CHARS_NON_CJK", "1000")
+)
+
+# Maximum recursion depth for the batch-split fallback ladder.
+MAX_SPLIT_DEPTH = 8
+
+# --- Fansub-quality helpers --------------------------------------------------
+# SenseVoice emits a leading tag group per utterance: an optional language tag
+# (`<|zh|>`), then emotion/event/itn tags (`<|ANGRY|>`, `<|BGM|>`, `<|withitn|>`).
+# The documented shorthand is `<HAPPY>`. These are preserved through ASR only to
+# steer the translation register; they must ALWAYS be stripped from the final
+# output (SRT/ASS). The regex matches a leading run of `|<token|>` markers
+# (language code may be lowercase, e.g. `zh`) plus an optional `<STYLE>` tag.
+_LEAD_TAG_ATOM = r"(?:<\|[a-zA-Z0-9_]+\|>|<[A-Za-z_]+>)"
+_SENSEVOICE_TAG_RE = re.compile(r"^(?:" + _LEAD_TAG_ATOM + r")+(?:\s*)")
+
+# Residual `[CHENGYU:...]` wrapper leaked by the model echoing the flagged prompt.
+# If the model copies the chengyu markup back into its answer instead of a clean
+# translation, the wrapper must not reach the SRT. The local model often emits the
+# wrapper WITHOUT a closing bracket ("[CHENGYU: many people"), so both the closed
+# `[CHENGYU:x]` and the bare `[CHENGYU:` prefix are matched.
+_RESIDUAL_CHENGYU_RE = re.compile(r"\[CHENGYU:([^\]]*)\]|\[CHENGYU:")
+
+# Four consecutive CJK characters — a candidate 成语 (chengyu) idiom. These get
+# wrapped in [CHENGYU:...] markup so the model supplies a literal + functional
+# rendering rather than a flat translation.
+_CHENGYU_RE = re.compile(r"[\u4e00-\u9fff]{4}")
+
+# Characters suggestive of Classical Chinese (文言文).
+_CLASSICAL_MARKERS = frozenset([
+    "之", "乎", "者", "也", "矣", "焉", "哉", "乃", "夫", "兮",
+])
+
+
+def _flag_chengyu(text: str) -> str:
+    """Wrap detected 4-char CJK sequences in [CHENGYU:...] for prompt awareness."""
+    return _CHENGYU_RE.sub(lambda m: f"[CHENGYU:{m.group(0)}]", text)
+
+
+def _strip_sensevoice_tag(text: str) -> str:
+    """Remove a leading SenseVoice emotion/event tag from translated text.
+
+    The tag is used to steer the translation register but must never appear in
+    the final SRT/ASS output. Handles a full leading tag group (which may include
+    the language tag `<|zh|>`) so it can never leak through, and also repairs any
+    `[CHENGYU:...]` wrapper the model echoed back.
+    """
+    text = _SENSEVOICE_TAG_RE.sub("", text)
+    text = _RESIDUAL_CHENGYU_RE.sub(lambda m: (m.group(1) or "").strip(), text)
+    return text.strip()
+
+
+def _is_classical_chinese(text: str) -> bool:
+    """Heuristic: True when a chunk of CJK text looks like Classical Chinese.
+
+    A Classical-Chinese cue has a high density of the ubiquitous function
+    characters (之乎者也矣焉哉乃夫兮). We require a minimum of CJK chars and a
+    marker ratio above a threshold before flagging, so modern Chinese sentences
+    that happen to contain one of these characters are not misclassified.
+    """
+    chars = [c for c in text if "\u4e00" <= c <= "\u9fff"]
+    if len(chars) < 8:
+        return False
+    marker_count = sum(1 for c in chars if c in _CLASSICAL_MARKERS)
+    return marker_count / len(chars) > 0.12
+
+
+def _detect_cjk_lang(text: str) -> str | None:
+    """Heuristic: return 'zh', 'ja', or 'ko' based on dominant script.
+
+    Returns ``None`` if undetermined (no CJK found or ratios too mixed to be
+    confident). Used to fill in the source language for the translation prompt
+    when ``--asr-lang`` was left at 'auto'.
+    """
+    zh = ko = ja = 0
+    for ch in text:
+        cp = ord(ch)
+        if 0xAC00 <= cp <= 0xD7A3:
+            ko += 1
+        elif 0x3040 <= cp <= 0x30FF:
+            ja += 1
+        elif 0x4E00 <= cp <= 0x9FFF:
+            zh += 1
+    total = zh + ko + ja
+    if total == 0:
+        return None
+    if ko / total > 0.4:
+        return "ko"
+    if ja / total > 0.3:
+        return "ja"
+    if zh / total > 0.3:
+        return "zh"
+    return None
+
 # Foreignization "style" we always ask the local model to honor — the same
 # philosophy as the cloud path's _FOREIGNIZATION_DIRECTIVE, but written in Chinese
 # because Hy-MT2 is a Chinese-trained MT model and the skill drives it with Chinese
@@ -108,16 +378,19 @@ def _is_hy_mt2(model: str) -> bool:
     return any(hint in m for hint in _HY_MT2_HINTS)
 
 
-def _hy_mt2_single_prompt(text: str) -> str:
+def _hy_mt2_single_prompt(text: str, glossary: str | None = None) -> str:
     """Skill 'basic' template for one text (used for per-item fallback)."""
+    glossary_block = f"{glossary}\n\n" if glossary else ""
     return (
         f"将以下文本翻译为{HY_MT2_TARGET_LANG}，"
-        f"注意只需要输出翻译后的结果，不要额外解释。{_HY_MT2_STYLE}\n\n{text}"
+        f"注意只需要输出翻译后的结果，不要额外解释。{_HY_MT2_STYLE}\n\n{glossary_block}{text}"
     )
 
 
 def build_hy_mt2_user_prompt(
-    texts: list[str], source_language: str | None
+    texts: list[str],
+    source_language: str | None,
+    glossary: str | None = None,
 ) -> str:
     """User-message prompt for Hy-MT2, per the hy-mt2-translator skill.
 
@@ -126,18 +399,22 @@ def build_hy_mt2_user_prompt(
     'basic' template otherwise. The foreignization philosophy is always appended
     as a 'style' so the local model preserves voice/culture/honorifics exactly
     like the cloud path's system prompt would.
+
+    If ``glossary`` is non-empty it is inserted after the style text and before
+    the numbered source lines.
     """
     block = _numbered_block(texts)
+    glossary_block = f"{glossary}\n\n" if glossary else ""
     if source_language:
         return (
             f"【背景信息】\n源语言：{source_language}\n文本类型：视频字幕\n\n"
             f"请结合背景信息将以下文本翻译为{HY_MT2_TARGET_LANG}。"
-            f"{_HY_MT2_STYLE}\n\n"
+            f"{_HY_MT2_STYLE}\n\n{glossary_block}"
             f"【待翻译文本】\n{block}"
         )
     return (
         f"将以下文本翻译为{HY_MT2_TARGET_LANG}，"
-        f"注意只需要输出翻译后的结果，不要额外解释。{_HY_MT2_STYLE}\n\n{block}"
+        f"注意只需要输出翻译后的结果，不要额外解释。{_HY_MT2_STYLE}\n\n{glossary_block}{block}"
     )
 
 
@@ -149,6 +426,7 @@ def _numbered_block(texts: list[str]) -> str:
 def _parse_numbered(response: str, expected: int) -> list[str] | None:
     """Map 'N. text' lines back to a list of `expected` translations, or None."""
     items: dict[int, list[str]] = {}
+    counts: dict[int, int] = {}
     current: int | None = None
     buf: list[str] = []
     for line in response.splitlines():
@@ -157,16 +435,86 @@ def _parse_numbered(response: str, expected: int) -> list[str] | None:
             if current is not None:
                 items[current] = buf
             current = int(m.group(1))
+            counts[current] = counts.get(current, 0) + 1
             buf = [m.group(2)]
         elif current is not None:
             buf.append(line)
     if current is not None:
         items[current] = buf
 
+    # A number appearing more than once is ambiguous -> invalid.
+    if any(count > 1 for count in counts.values()):
+        return None
+
     if set(items.keys()) == set(range(1, expected + 1)):
         return ["\n".join(items[i]).strip() for i in range(1, expected + 1)]
     return None
 
+# --- Output validation ------------------------------------------------------
+# Detects model replies that are NOT real translations so they can be retried,
+# rescued, flagged, or counted. The offline path has no cloud rescue, so a bad
+# reply used to become the SRT line verbatim (see SUBTITLE_QUALITY_REPORT §3): a
+# third of the analyzed cues were untranslated Chinese shipped as "translated".
+_CJK_IDEOGRAPHS = "\u3400-\u4dbf\u4e00-\u9fff"  # CJK Ext A + Unified Ideographs
+_HANGUL = "\uac00-\ud7af"
+
+
+def _cjk_count(text: str) -> int:
+    """Number of CJK ideograph + Hangul characters in ``text``."""
+    return sum(
+        1 for ch in text
+        if "\u3400" <= ch <= "\u4dbf"
+        or "\u4e00" <= ch <= "\u9fff"
+        or "\uac00" <= ch <= "\ud7af"
+    )
+
+
+def looks_untranslated(
+    source_text: str,
+    translation: str,
+    source_language: str | None,
+) -> bool:
+    """Return True when ``translation`` cannot be trusted as a translation.
+
+    Used on every returned line (batch and per-item alike) so that an empty
+    reply, a source echo, or a reply full of non-target scripts is treated as a
+    *failure* — never silently shipped or cached.
+
+    1. Empty / whitespace-only replies are failures.
+    2. A reply that exactly repeats the source (after whitespace folding) is a
+       passthrough, not a translation.
+    3. When the source is a CJK language (zh/ja/ko/yue) and the target is
+       English: Korean Hangul is always a red flag (it never belongs in an
+       English subtitle line), and a reply whose non-whitespace characters are
+       mostly CJK ideographs is essentially untranslated source text.
+    4. A short reply that still contains CJK is treated as code-switching
+       corruption (e.g. ``Super加倍``), while a long reply with a tiny CJK ratio
+       (a proper name, say) is tolerated — callers log those as warnings.
+    """
+    if not translation or not translation.strip():
+        return True
+    folded_t = re.sub(r"\s+", " ", translation.strip()).lower()
+    folded_s = re.sub(r"\s+", " ", (source_text or "").strip()).lower()
+    if folded_s and folded_t == folded_s:
+        return True
+
+    if not is_cjk_language(source_language):
+        # Non-CJK source: only the generic empty/passthrough rules apply.
+        return False
+
+    non_space = "".join(translation.split())
+    if not non_space:
+        return True
+    if re.search(_HANGUL, non_space):
+        return True
+    cjk = _cjk_count(non_space)
+    if cjk == 0:
+        return False
+    if cjk / len(non_space) >= 0.5:
+        return True
+    if len(non_space) <= 24:
+        return True
+    return False
 
 def _translate_batch(
     client: OpenAI,
@@ -177,6 +525,7 @@ def _translate_batch(
     temperature: float = 0.3,
     user_content: str | None = None,
     extra_body: dict | None = None,
+    metrics: _PerfMetrics | None = None,
 ) -> list[str] | None:
     strict = (
         "STRICT: output exactly %d lines, each starting with its number and a "
@@ -198,6 +547,10 @@ def _translate_batch(
     if extra_body:
         kwargs["extra_body"] = extra_body
     resp = client.chat.completions.create(**kwargs)
+    if metrics is not None:
+        metrics.print_call(
+            resp, f"batch ({len(texts)} cues{', attempt ' + str(attempt + 1) if attempt else ''})"
+        )
     content = resp.choices[0].message.content or ""
     return _parse_numbered(content, len(texts))
 
@@ -210,10 +563,11 @@ def _translate_one(
     temperature: float = 0.3,
     user_content: str | None = None,
     extra_body: dict | None = None,
+    metrics: _PerfMetrics | None = None,
 ) -> str:
     """Per-item fallback when batch alignment fails."""
     if user_content is None:
-        user_content = "Translate into English:\n\n" + text
+        user_content = "Translate into English. Do NOT include reasoning or commentary; output only the translation.\n\n" + text
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -222,23 +576,257 @@ def _translate_one(
     if extra_body:
         kwargs["extra_body"] = extra_body
     resp = client.chat.completions.create(**kwargs)
-    return (resp.choices[0].message.content or text).strip()
+    if metrics is not None:
+        metrics.print_call(resp, "single item")
+    # Never fall back to the source text here: an empty reply is a failure, and
+    # the caller decides how to surface it (retry / rescue / flag) instead of
+    # silently shipping the untranslated source as if it were a translation.
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _translate_group(
+    client,
+    model,
+    texts: list[str],
+    system_prompt: str | None,
+    *,
+    source_language: str | None,
+    hy_mt2: bool,
+    max_retries: int,
+    depth: int = 0,
+    glossary: str | None = None,
+    extra_body: dict | None = None,
+    temperature: float = 0.3,
+    metrics: _PerfMetrics | None = None,
+) -> list[str] | None:
+    """Translate a group of texts with a robust fallback ladder.
+
+    Ladder:
+        1. If empty, return [].
+        2. If single item, use _translate_one.
+        3. Try _translate_batch with retries (STRICT instruction on retry).
+        4. If still failing and len(texts) > 1, split in half and recurse.
+        5. If depth exceeds MAX_SPLIT_DEPTH, fall back to per-item.
+
+    Returns a list of translations (same length as ``texts``) or None if the
+    group could not be translated at all (caller decides what to do).
+    """
+    if not texts:
+        return []
+
+    # Depth guard: stop splitting and go per-item.
+    if depth > MAX_SPLIT_DEPTH:
+        return _per_item_translate(
+            client, model, texts, system_prompt,
+            source_language=source_language, hy_mt2=hy_mt2,
+            glossary=glossary, extra_body=extra_body,
+            temperature=temperature, metrics=metrics,
+        )
+
+    # Single item: translate directly.
+    if len(texts) == 1:
+        return _per_item_translate(
+            client, model, texts, system_prompt,
+            source_language=source_language, hy_mt2=hy_mt2,
+            glossary=glossary, extra_body=extra_body,
+            temperature=temperature, metrics=metrics,
+        )
+
+    # Try batch translation with retries.
+    translated: list[str] | None = None
+    for attempt in range(max_retries):
+        try:
+            if hy_mt2:
+                user_content = build_hy_mt2_user_prompt(
+                    texts, source_language, glossary=glossary
+                )
+            else:
+                user_content = None  # _translate_batch builds default
+            translated = _translate_batch(
+                client, model, texts, system_prompt,
+                attempt=attempt, temperature=temperature,
+                user_content=user_content, extra_body=extra_body,
+                metrics=metrics,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_fatal(exc)  # broken endpoint -> abort immediately
+            if extra_body is not None:
+                extra_body = None
+            print(
+                f"  [translate] Batch error (depth {depth}, "
+                f"{len(texts)} cues): {exc}",
+                flush=True,
+            )
+        if translated is not None and len(translated) == len(texts):
+            return translated
+        if attempt < max_retries - 1:
+            time.sleep(2 ** attempt)
+
+    # Batch failed after retries: split in half and recurse.
+    if len(texts) > 1:
+        mid = len(texts) // 2
+        left = texts[:mid]
+        right = texts[mid:]
+        print(
+            f"  [translate] Batch failed; splitting into 2 smaller batches "
+            f"({len(left)} + {len(right)})",
+            flush=True,
+        )
+        left_result = _translate_group(
+            client, model, left, system_prompt,
+            source_language=source_language, hy_mt2=hy_mt2,
+            max_retries=max_retries, depth=depth + 1,
+            glossary=glossary, extra_body=extra_body,
+            temperature=temperature, metrics=metrics,
+        )
+        right_result = _translate_group(
+            client, model, right, system_prompt,
+            source_language=source_language, hy_mt2=hy_mt2,
+            max_retries=max_retries, depth=depth + 1,
+            glossary=glossary, extra_body=extra_body,
+            temperature=temperature, metrics=metrics,
+        )
+        if left_result is not None and right_result is not None:
+            return left_result + right_result
+        # If one half succeeded and the other didn't, fill failed half with
+        # per-item results (best effort) so we never lose cues.
+        if left_result is not None:
+            right_result = _per_item_translate(
+                client, model, right, system_prompt,
+                source_language=source_language, hy_mt2=hy_mt2,
+                glossary=glossary, extra_body=extra_body,
+                temperature=temperature, metrics=metrics,
+            )
+            return left_result + right_result
+        if right_result is not None:
+            left_result = _per_item_translate(
+                client, model, left, system_prompt,
+                source_language=source_language, hy_mt2=hy_mt2,
+                glossary=glossary, extra_body=extra_body,
+                temperature=temperature, metrics=metrics,
+            )
+            return left_result + right_result
+
+    # All attempts failed: per-item fallback.
+    return _per_item_translate(
+        client, model, texts, system_prompt,
+        source_language=source_language, hy_mt2=hy_mt2,
+        glossary=glossary, extra_body=extra_body,
+        temperature=temperature, metrics=metrics,
+    )
+
+
+def _translate_one_checked(
+    client,
+    model,
+    text: str,
+    system_prompt: str | None,
+    *,
+    hy_mt2: bool,
+    source_language: str | None,
+    glossary: str | None = None,
+    extra_body: dict | None = None,
+    temperature: float = 0.3,
+    metrics: _PerfMetrics | None = None,
+) -> str:
+    """Per-item translation with one degraded retry + output validation.
+
+    Returns the translated text, or ``""`` when the model produced nothing
+    usable (empty reply, source echo, Hangul, or mostly-CJK output). It never
+    returns the source text as a "translation": offline runs have no cloud
+    rescue, so a failed cue must be surfaced as a failure (counted / flagged /
+    rescued) rather than silently shipped untranslated.
+
+    The second attempt drops the llama.cpp-only sampling params (``extra_body``)
+    and slightly raises temperature for diversity — a cheap "degraded prompt"
+    retry before giving up on the cue.
+    """
+    attempts = [
+        (temperature, extra_body),
+        (min(temperature + 0.2, 0.7), None),
+    ]
+    for attempt_temp, attempt_body in attempts:
+        try:
+            if hy_mt2:
+                result = _translate_one(
+                    client, model, text, system_prompt,
+                    temperature=attempt_temp,
+                    user_content=_hy_mt2_single_prompt(text, glossary=glossary),
+                    extra_body=attempt_body, metrics=metrics,
+                )
+            else:
+                result = _translate_one(
+                    client, model, text, system_prompt,
+                    temperature=attempt_temp, metrics=metrics,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_fatal(exc)  # broken endpoint -> abort immediately
+            print(f"  [translate] Per-item request failed: {exc}", flush=True)
+            continue
+        if result and not looks_untranslated(text, result, source_language):
+            return result
+        print(
+            f"  [translate] Per-item result rejected (untranslated/invalid): {result!r}",
+            flush=True,
+        )
+    return ""
+
+
+def _per_item_translate(
+    client,
+    model,
+    texts: list[str],
+    system_prompt: str | None,
+    *,
+    source_language: str | None,
+    hy_mt2: bool,
+    glossary: str | None = None,
+    extra_body: dict | None = None,
+    temperature: float = 0.3,
+    metrics: _PerfMetrics | None = None,
+) -> list[str]:
+    """Translate each text individually (per-item fallback).
+
+    Each item goes through ``_translate_one_checked``, so a failed cue comes
+    back as ``""`` (never the source text). Callers treat ``""`` as
+    "untranslated" and either rescue it, count it, or flag it in the output.
+    """
+    results: list[str] = []
+    for text in texts:
+        results.append(
+            _translate_one_checked(
+                client, model, text, system_prompt,
+                hy_mt2=hy_mt2, source_language=source_language,
+                glossary=glossary, extra_body=extra_body,
+                temperature=temperature, metrics=metrics,
+            )
+        )
+    return results
+
 
 
 def translate_cues(
     cues: list[Cue],
     client: OpenAI,
     model: str,
-    batch_size: int = 40,
+    batch_size: int = 8,
     max_retries: int = 3,
     source_language: str | None = None,
+    *,
+    glossary: str | None = None,
+    translation_memory=None,
+    rescue_handler=None,
 ) -> list[str]:
-    """Translate cue texts into English, preserving order. Returns translations."""
-    # Hy-MT2 (local model) uses the hy-mt2-translator skill's prompt recipe: no
-    # system prompt, the skill's own Chinese instruction wording, and the
-    # model-card sampling params via extra_body. The foreignization philosophy is
-    # folded into the user message (see _HY_MT2_STYLE) so it matches the cloud
-    # path's directive.
+    """Translate cue texts into English, preserving order. Returns translations.
+
+    New keyword-only arguments (additive — existing callers ignore them):
+        glossary: Formatted glossary string injected into prompts.
+        translation_memory: A ``TranslationMemory`` instance (or None).
+        rescue_handler: A callable(cues, failed_indices) -> dict[int, str]
+            that re-translates failed cues via cloud (or None).
+    """
+    import hashlib
+
     hy_mt2 = _is_hy_mt2(model)
     if hy_mt2:
         system_prompt: str | None = None
@@ -255,57 +843,238 @@ def translate_cues(
             flush=True,
         )
     else:
-        system_prompt = build_system_prompt(source_language)
+        system_prompt = build_system_prompt(source_language, glossary=glossary)
         temperature = 0.3
         extra_body = None
 
+    # --- Determine effective batch limits ----------------------------------
+    if hy_mt2:
+        effective_batch = min(batch_size, HY_MT2_DEFAULT_MAX_BATCH_CUES)
+        if effective_batch < batch_size:
+            print(
+                f"[local] Hy-MT2 detected: using effective batch size "
+                f"{effective_batch} instead of requested {batch_size}",
+                flush=True,
+            )
+        if is_cjk_language(source_language):
+            max_batch_chars = HY_MT2_MAX_BATCH_CHARS_CJK
+        else:
+            max_batch_chars = HY_MT2_MAX_BATCH_CHARS_NON_CJK
+    else:
+        # Cloud: keep existing batch_size, use a generous char budget so
+        # batching is primarily item-count based (non-breaking).
+        effective_batch = batch_size
+        max_batch_chars = 8000
+
     texts = [c.text for c in cues]
-    out: list[str] = []
+    total = len(texts)
+    results: list[str] = [""] * total
 
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        translated: list[str] | None = None
-        for attempt in range(max_retries):
-            try:
-                if hy_mt2:
-                    user_content = build_hy_mt2_user_prompt(batch, source_language)
-                    translated = _translate_batch(
-                        client, model, batch, system_prompt,
-                        attempt=attempt, temperature=temperature,
-                        user_content=user_content, extra_body=extra_body,
-                    )
-                else:
-                    translated = _translate_batch(
-                        client, model, batch, system_prompt, attempt=attempt
-                    )
-            except Exception as exc:
-                # A backend that rejects llama.cpp-only params (top_k /
-                # repeat_penalty) raises here; drop extra_body and retry with just
-                # temperature so we don't lose the batch.
-                if extra_body is not None:
-                    extra_body = None
-                print(f"  [warn] batch {start}-{start+len(batch)} error: {exc}", flush=True)
-            if translated is not None:
-                break
-            time.sleep(2 ** attempt)
-        if translated is None:
-            # Fall back to translating items individually so we never lose a cue.
-            print(f"  [warn] batch {start} misaligned; translating item-by-item.", flush=True)
-            if hy_mt2:
-                translated = [
-                    _translate_one(
-                        client, model, t, system_prompt,
-                        temperature=temperature,
-                        user_content=_hy_mt2_single_prompt(t),
-                        extra_body=extra_body,
-                    )
-                    for t in batch
-                ]
+    # --- Fansub augmentations: chengyu flagging + emotion tags --------------
+    # ``prompt_texts`` are what actually reaches the model:
+    #   * For a Chinese (zh) source, 4-char idioms are wrapped in [CHENGYU:...]
+    #     so the model renders a literal + functional meaning, not a flat gloss.
+    #   * The original string is preserved (including any leading SenseVoice
+    #     emotion tag) — we translate that augmented text but validate and cache
+    #     against the original ``texts`` (and strip emotion tags from output).
+    #
+    # The chengyu markup is disabled for the local Hy-MT2 path: that small CPU
+    # model does not follow the "remove the [CHENGYU:...] markup" instruction
+    # and echoes the brackets back-to-back with no separators, producing run-on
+    # ("childDidn't", "eyebrowsApply") and leaked-marker subtitles. Plain source
+    # yields clean, well-formed translations (see SUBTITLE_QUALITY_REPORT and
+    # the 50元 regression). Cloud models that honor the directive still get it.
+    is_chinese_source = bool(source_language and str(source_language).lower() in (
+        "zh", "chinese", "zho", "chi", "chs", "cht", "zh-cn", "zh-tw"
+    ))
+    _chengyu_flag = bool(is_chinese_source and not hy_mt2)
+    prompt_texts = [
+        _flag_chengyu(t) if _chengyu_flag else t
+        for t in texts
+    ]
+
+    # --- Translation memory lookup -----------------------------------------
+    model_profile = "hy-mt2-local" if hy_mt2 else f"cloud:{model}"
+    g_hash = hashlib.sha256((glossary or "").encode("utf-8")).hexdigest()
+
+    need_translation = list(range(total))
+    if translation_memory and translation_memory.enabled:
+        tm_hits = 0
+        still_needed: list[int] = []
+        for idx in need_translation:
+            cached = translation_memory.get(
+                source_language=source_language,
+                source_text=texts[idx],
+                model_profile=model_profile,
+                glossary_hash=g_hash,
+            )
+            if cached:
+                results[idx] = cached
+                tm_hits += 1
             else:
-                translated = [
-                    _translate_one(client, model, t, system_prompt) for t in batch
-                ]
-        out.extend(translated)
-        print(f"  translated {min(start + batch_size, len(texts))}/{len(texts)}", flush=True)
+                still_needed.append(idx)
+        need_translation = still_needed
+        if tm_hits:
+            print(f"[tm] {tm_hits} cache hits, {len(need_translation)} to translate", flush=True)
 
-    return out
+    # --- Dynamic batching + fallback ladder --------------------------------
+    if need_translation:
+        batch_texts = [texts[idx] for idx in need_translation]
+        batches = chunk_texts(
+            batch_texts,
+            max_items=effective_batch,
+            max_total_chars=max_batch_chars,
+            source_language=source_language,
+        )
+        print(
+            f"[translate] Dynamic batching: {len(need_translation)} cues "
+            f"-> {len(batches)} batches",
+            flush=True,
+        )
+
+        translated_count = 0
+        metrics = _PerfMetrics()
+        for bi, batch_local_indices in enumerate(batches):
+            global_indices = [need_translation[li] for li in batch_local_indices]
+            subset = [texts[gi] for gi in global_indices]
+            prompt_subset = [prompt_texts[gi] for gi in global_indices]
+            print(f"[translate] batch {bi + 1}/{len(batches)}: {len(subset)} cues", flush=True)
+
+            # Per-batch system prompt augmentation: classical-Chinese register
+            # (when any cue in this batch looks like 文言文) and emotion-tag
+            # awareness (when any cue carries a SenseVoice emotion prefix).
+            batch_classical = bool(subset) and any(
+                _is_classical_chinese(t) for t in subset
+            )
+            batch_emotion = any(bool(_SENSEVOICE_TAG_RE.match(t or "")) for t in subset)
+            if hy_mt2:
+                batch_system_prompt: str | None = None
+            else:
+                batch_system_prompt = build_system_prompt(
+                    source_language,
+                    glossary=glossary,
+                    chengyu=_chengyu_flag,
+                    classical=batch_classical,
+                    emotion=batch_emotion,
+                )
+
+            group_result = _translate_group(
+                client, model, prompt_subset, batch_system_prompt,
+                source_language=source_language, hy_mt2=hy_mt2,
+                max_retries=max_retries, glossary=glossary,
+                extra_body=extra_body, temperature=temperature,
+                metrics=metrics,
+            )
+
+            used_per_item = group_result is None
+            if used_per_item:
+                group_result = _per_item_translate(
+                    client, model, prompt_subset, batch_system_prompt,
+                    source_language=source_language, hy_mt2=hy_mt2,
+                    glossary=glossary, extra_body=extra_body,
+                    temperature=temperature, metrics=metrics,
+                )
+
+            # Validate every returned line. A reply that is empty, echoes the
+            # source, or is full of non-target scripts (CJK / Hangul) is NOT a
+            # translation — it must never reach the SRT or the translation
+            # memory. Such lines are left "" so callers can count / rescue /
+            # flag them explicitly instead of shipping untranslated text.
+            # Validation compares against the ORIGINAL source (no chengyu
+            # markup), and any SenseVoice emotion tag is stripped from the
+            # final translation so it never reaches the output file.
+            failed_local: list[int] = []
+            for li, (src, tr) in enumerate(zip(subset, group_result)):
+                if not tr or not tr.strip() or looks_untranslated(src, tr, source_language):
+                    failed_local.append(li)
+                    results[global_indices[li]] = ""
+                else:
+                    results[global_indices[li]] = _strip_sensevoice_tag(tr)
+                    if _cjk_count(tr) > 0:
+                        print(
+                            f"[translate] Cue {global_indices[li]} has residual "
+                            f"CJK in English output: {tr!r}",
+                            flush=True,
+                        )
+
+            # A *batch* that smuggled untranslated lines through alignment gets
+            # one clean per-item retry with a single-cue prompt. Single-cue
+            # groups were already handled by _translate_one_checked (which has
+            # its own retry), so they are not re-tried here.
+            if failed_local and not used_per_item and len(subset) > 1:
+                print(
+                    f"[translate] Retrying {len(failed_local)} rejected cue(s) "
+                    f"per-item: {[subset[li] for li in failed_local]!r}",
+                    flush=True,
+                )
+                retried = _per_item_translate(
+                    client, model, [prompt_subset[li] for li in failed_local],
+                    batch_system_prompt,
+                    source_language=source_language, hy_mt2=hy_mt2,
+                    glossary=glossary, extra_body=extra_body,
+                    temperature=temperature, metrics=metrics,
+                )
+                for li, retr in zip(failed_local, retried):
+                    if retr and retr.strip():
+                        if not looks_untranslated(
+                            subset[li], retr, source_language
+                        ):
+                            results[global_indices[li]] = _strip_sensevoice_tag(retr)
+
+            # Cache only *validated* translations in the translation memory.
+            # Storing the source echo would poison every future run (a failed
+            # cue would then be replayed straight from cache as "translated").
+            if translation_memory and translation_memory.enabled:
+                stored = 0
+                for gi in global_indices:
+                    translation = results[gi]
+                    src = texts[gi]
+                    if (
+                        translation
+                        and translation.strip()
+                        and not looks_untranslated(src, translation, source_language)
+                    ):
+                        translation_memory.put(
+                            source_language=source_language,
+                            source_text=src,
+                            translated_text=translation,
+                            model_profile=model_profile,
+                            glossary_hash=g_hash,
+                        )
+                        stored += 1
+                if stored:
+                    print(f"[tm] Stored {stored} new translations", flush=True)
+
+            translated_count += len(batch_local_indices)
+            print(f"  translated {translated_count}/{len(need_translation)}", flush=True)
+
+        metrics.print_summary()
+
+    # --- Cloud rescue for failed cues --------------------------------------
+    if rescue_handler:
+        failed = [i for i, r in enumerate(results) if not r or not r.strip()]
+        if failed:
+            try:
+                rescued = rescue_handler(cues=cues, failed_indices=failed)
+                for idx, text in rescued.items():
+                    results[idx] = text
+            except Exception as exc:  # noqa: BLE001
+                print(f"[rescue] Cloud rescue failed: {exc}", flush=True)
+
+    # --- Untranslated summary ----------------------------------------------
+    # Failures are now always "" (never the source text), so a partial output is
+    # impossible to mistake for a complete translation: each failed cue is
+    # counted, logged with its source text, and (in the CLI) flagged in the SRT.
+    untranslated = [i for i, r in enumerate(results) if not r or not r.strip()]
+    if untranslated:
+        print(
+            f"[translate] {len(untranslated)}/{total} cues left UNTRANSLATED "
+            f"(indices: {untranslated[:20]}{'...' if len(untranslated) > 20 else ''}).",
+            flush=True,
+        )
+        for i in untranslated[:30]:
+            print(f"[translate]   cue {i}: {texts[i]!r}", flush=True)
+    else:
+        print(f"[translate] All {total} cues translated.", flush=True)
+
+    return results

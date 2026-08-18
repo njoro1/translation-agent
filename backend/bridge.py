@@ -28,12 +28,41 @@ _MODEL_URLS = (
 )
 
 # Translation GGUF served by the bundled llama-server (auto-started by the app).
+# The default local translation model is the Q8_0-quantized Hy-MT2 GGUF.
+_LOCAL_MODEL = "Hy-MT2-1.8B-Q8_0.gguf"
 _LOCAL_MODEL_URLS = (
     (
-        "Hy-MT2-1.8B-1.25Bit.gguf",
-        "https://huggingface.co/tencent/Hy-MT2-1.8B-1.25Bit-GGUF/resolve/main/Hy-MT2-1.8B-1.25Bit.gguf",
+        _LOCAL_MODEL,
+        "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf",
     ),
 )
+
+
+def resolve_local_model_path(gguf_dir: str) -> str:
+    """Resolve the preferred local translation model path in `gguf_dir`.
+
+    Preference order:
+        1. gguf/Hy-MT2-1.8B-Q8_0.gguf
+        2. Any single unambiguous Hy-MT2 GGUF in the directory.
+
+    Returns the chosen path or an empty string if none is found.
+    """
+    import glob
+
+    candidate = os.path.join(gguf_dir, _LOCAL_MODEL)
+    if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+        return candidate
+
+    # Any Hy-MT2 GGUF, preferring Q8_0 files.
+    hy_mt2_files = glob.glob(os.path.join(gguf_dir, "Hy-MT2*.gguf"))
+    if len(hy_mt2_files) == 1:
+        return hy_mt2_files[0]
+    if len(hy_mt2_files) > 1:
+        q8_files = [f for f in hy_mt2_files if "q8" in os.path.basename(f).lower()]
+        if q8_files:
+            return sorted(q8_files)[0]
+        return sorted(hy_mt2_files)[0]
+    return ""
 
 
 _DONE_PATTERN = re.compile(r"^Wrote \d+ cues to (?P<path>.+)$")
@@ -122,26 +151,41 @@ class AppBridge(QObject):
     isRunningChanged = Signal()
     canOpenOutputFolderChanged = Signal()
     modelDownloadChanged = Signal()
+    pipelineModeChanged = Signal()
+    localModelDownloadPendingChanged = Signal()
 
     # Fields persisted across runs, as (attr, QSettings key, default). Bumped
     # whenever a new stored preference is introduced; secrets like the API key
     # are intentionally not persisted.
     _PERSISTED = (
+        ("_pipeline_mode", "pipeline/mode", "youtube"),
         ("_asr_language", "asr/language", "auto"),
         ("_asr_bin", "asr/bin", ""),
         ("_asr_vad_bin", "asr/vadBin", ""),
         ("_asr_model", "asr/model", ""),
         ("_asr_vad_model", "asr/vadModel", ""),
         ("_asr_threads", "asr/threads", "4"),
-        ("_asr_max_segment_ms", "asr/maxSegmentMs", "7000"),
+        ("_asr_max_segment_ms", "asr/maxSegmentMs", "6000"),
         ("_asr_max_end_silence_ms", "asr/maxEndSilenceMs", "250"),
         ("_asr_speech_noise_threshold", "asr/speechNoiseThreshold", "0.55"),
         ("_asr_noise_db", "asr/noiseDb", "-35"),
-        ("_asr_min_silence_s", "asr/minSilenceS", "0.20"),
-        ("_asr_max_cue_duration_ms", "asr/maxCueDurationMs", "3000"),
+        ("_asr_min_silence_s", "asr/minSilenceS", "0.25"),
+        ("_asr_max_cue_duration_ms", "asr/maxCueDurationMs", "3200"),
         ("_asr_max_cue_chars", "asr/maxCueChars", "70"),
+        ("_asr_max_cue_chars_cjk", "asr/maxCueCharsCjk", "48"),
         ("_asr_no_tags", "asr/noTags", False),
+        ("_asr_keep_tags", "asr/keepTags", False),
         ("_local_model", "local/model", ""),
+        ("_local_threads", "local/threads", "0"),
+        ("_local_mlock", "local/mlock", False),
+        ("_glossary_path", "translation/glossaryPath", ""),
+        ("_translation_memory_mode", "translation/translationMemoryMode", "auto"),
+        ("_translation_memory_db", "translation/translationMemoryDbPath", ""),
+        ("_cloud_rescue_enabled", "rescue/enabled", False),
+        ("_cloud_rescue_model", "rescue/model", ""),
+        ("_cloud_rescue_batch", "rescue/batch", "10"),
+        ("_strict_quality", "quality/strict", False),
+        ("_output_format", "output/format", "srt"),
     )
 
     def __init__(self, parent: QObject | None = None):
@@ -150,18 +194,19 @@ class AppBridge(QObject):
         self.logger = logging.getLogger("translation_agent")
         self._settings = QSettings()
 
+        self._pipeline_mode = "youtube"
         self._mode = "youtube"
         self._backend = "cloud"
         self._url = ""
         self._file_path = ""
         self._out_path = ""
-        self._batch = "40"
+        self._batch = "8"
         self._api_key = ""
         self._base_url = ""
         self._model = ""
         self._host = "127.0.0.1"
         self._port = "8080"
-        self._model_name = "Hy-MT2-1.8B"
+        self._model_name = "Hy-MT2-1.8B-Q8_0"
         self._local_model = ""
         self._asr_language = "auto"
         self._asr_bin = ""
@@ -173,10 +218,22 @@ class AppBridge(QObject):
         self._asr_max_end_silence_ms = "250"
         self._asr_speech_noise_threshold = "0.55"
         self._asr_noise_db = "-35"
-        self._asr_min_silence_s = "0.20"
-        self._asr_max_cue_duration_ms = "3000"
+        self._asr_min_silence_s = "0.25"
+        self._asr_max_cue_duration_ms = "3200"
         self._asr_max_cue_chars = "70"
+        self._asr_max_cue_chars_cjk = "48"
         self._asr_no_tags = False
+        self._asr_keep_tags = False
+        self._local_threads = "0"
+        self._local_mlock = False
+        self._glossary_path = ""
+        self._translation_memory_mode = "auto"
+        self._translation_memory_db = ""
+        self._cloud_rescue_enabled = False
+        self._cloud_rescue_model = ""
+        self._cloud_rescue_batch = "10"
+        self._strict_quality = False
+        self._output_format = "srt"
         self._status_message = "Ready."
         self._log_text = ""
         self._is_running = False
@@ -186,16 +243,35 @@ class AppBridge(QObject):
         self._model_downloading = False
         self._local_model_download_status = ""
         self._local_model_downloading = False
+        self._local_model_download_pending = False
 
         self._load_persisted()
+
+    _BOOL_FIELDS = {
+        "_asr_no_tags",
+        "_asr_keep_tags",
+        "_local_mlock",
+        "_cloud_rescue_enabled",
+        "_strict_quality",
+    }
 
     def _load_persisted(self) -> None:
         for attr, key, default in self._PERSISTED:
             value = self._settings.value(key, default)
-            if attr == "_asr_no_tags":
+            if attr in self._BOOL_FIELDS:
                 setattr(self, attr, str(value).lower() in ("1", "true", "yes"))
             elif isinstance(value, str):
                 setattr(self, attr, value)
+        # Keep source mode and backend in lock-step with the saved pipeline flow.
+        # Without this, a persisted "local_offline"/"local_hybrid" would leave
+        # _mode at "youtube" and _backend at "cloud", so the run would still ask
+        # for a YouTube URL and the Settings page would show the cloud section.
+        self._apply_pipeline_mode(self._pipeline_mode)
+        # Recompute every derived binding (e.g. `localModelReady`, `asrModelReady`,
+        # `backend`) against the just-loaded persisted state. Without this a model
+        # the user previously selected would not be reflected until some unrelated
+        # field changed, wrongly showing "Download model & Run" at launch.
+        self.formChanged.emit()
 
     def _persist_fields(self) -> None:
         for attr, key, default in self._PERSISTED:
@@ -238,7 +314,7 @@ class AppBridge(QObject):
     def _validate_batch(self) -> str:
         raw = (self._batch or "").strip()
         if not raw:
-            return "40"
+            return "8"
         value = int(raw)
         if value <= 0:
             raise ValueError("Batch size must be a positive integer.")
@@ -247,6 +323,11 @@ class AppBridge(QObject):
     def _build_run_config(self) -> RunConfig:
         argv: list[str] = []
         env: dict[str, str] = {}
+
+        # Always derive the input path from the pipeline flow actually selected
+        # in the UI (single source of truth), so a local/offline selection can
+        # never silently fall through to the YouTube/URL path.
+        self._apply_pipeline_mode(self._pipeline_mode)
 
         if self._mode == "youtube":
             url = self._url.strip()
@@ -269,27 +350,46 @@ class AppBridge(QObject):
                     argv += [flag, value]
             argv += ["--asr-lang", (self._asr_language or "auto").strip() or "auto"]
             argv += ["--asr-threads", str(self._asr_threads or 4)]
-            argv += ["--asr-max-segment-ms", str(self._asr_max_segment_ms or 7000)]
+            argv += ["--asr-max-segment-ms", str(self._asr_max_segment_ms or 6000)]
             argv += ["--asr-max-end-silence-ms", str(self._asr_max_end_silence_ms or 250)]
             argv += [
                 "--asr-speech-noise-threshold",
                 str(self._asr_speech_noise_threshold or 0.55),
             ]
             argv += ["--asr-noise-db", str(self._asr_noise_db if self._asr_noise_db != "" else "-35")]
-            argv += ["--asr-min-silence-s", str(self._asr_min_silence_s or 0.20)]
+            argv += ["--asr-min-silence-s", str(self._asr_min_silence_s or 0.25)]
             argv += [
                 "--asr-max-cue-duration-ms",
-                str(self._asr_max_cue_duration_ms or 3000),
+                str(self._asr_max_cue_duration_ms or 3200),
             ]
             argv += ["--asr-max-cue-chars", str(self._asr_max_cue_chars or 70)]
+            argv += ["--asr-max-cue-chars-cjk", str(self._asr_max_cue_chars_cjk or 48)]
             if self._asr_no_tags:
                 argv += ["--asr-no-tags"]
+            if self._asr_keep_tags:
+                argv += ["--asr-keep-tags"]
 
         out_path = self._out_path.strip()
         if out_path:
             argv += ["--out", out_path]
 
+        fmt = (self._output_format or "srt").strip().lower() or "srt"
+        argv += ["--format", fmt]
+
         argv += ["--batch", self._validate_batch()]
+
+        # --- Translation consistency / quality flags ---
+        glossary_path = self.localPath(self._glossary_path).strip()
+        if glossary_path:
+            argv += ["--glossary", glossary_path]
+        tm_mode = (self._translation_memory_mode or "auto").strip()
+        if tm_mode and tm_mode != "auto":
+            argv += ["--translation-memory", tm_mode]
+        tm_db = self._translation_memory_db.strip()
+        if tm_db:
+            argv += ["--translation-memory-db", tm_db]
+        if self._strict_quality:
+            argv += ["--strict-quality"]
 
         if self._backend == "local":
             argv += [
@@ -299,11 +399,36 @@ class AppBridge(QObject):
                 "--local-port",
                 (self._port or "8080").strip() or "8080",
                 "--local-model-name",
-                (self._model_name or "Hy-MT2-1.8B").strip() or "Hy-MT2-1.8B",
+                (self._model_name or "Hy-MT2-1.8B-Q8_0").strip() or "Hy-MT2-1.8B-Q8_0",
             ]
             local_model = self._local_model.strip()
+            if not local_model:
+                # Self-contained desktop app: auto-pick a bundled translation
+                # model if one is present; otherwise fail fast with clear
+                # guidance instead of silently hanging against an empty port.
+                candidate = resolve_local_model_path(_gguf_dir())
+                if candidate and os.path.exists(candidate):
+                    local_model = candidate
             if local_model:
                 argv += ["--local-model", local_model]
+            else:
+                raise ValueError(
+                    "No local translation model found. Download it via "
+                    "Settings → Download models (fetches Hy-MT2-1.8B-Q8_0.gguf) "
+                    "or Browse to select a GGUF file."
+                )
+            local_threads = int(self._local_threads or 0)
+            if local_threads > 0:
+                argv += ["--local-threads", str(local_threads)]
+            if self._local_mlock:
+                argv += ["--local-mlock"]
+            # Cloud rescue only makes sense with the local backend.
+            if self._cloud_rescue_enabled:
+                argv += ["--cloud-rescue"]
+                rescue_model = self._cloud_rescue_model.strip()
+                if rescue_model:
+                    argv += ["--cloud-rescue-model", rescue_model]
+                argv += ["--cloud-rescue-batch", str(int(self._cloud_rescue_batch or 10))]
         else:
             model = self._model.strip()
             if model:
@@ -324,6 +449,35 @@ class AppBridge(QObject):
     @mode.setter
     def mode(self, value: str) -> None:
         self._set_field("_mode", value)
+
+    @Property(str, notify=pipelineModeChanged)
+    def pipelineMode(self) -> str:
+        return self._pipeline_mode
+
+    @pipelineMode.setter
+    def pipelineMode(self, value: str) -> None:
+        value = (value or "").strip().lower() or "youtube"
+        if value not in ("youtube", "local_hybrid", "local_offline"):
+            value = "youtube"
+        if self._pipeline_mode != value:
+            self._pipeline_mode = value
+            self._apply_pipeline_mode(value)
+            self.pipelineModeChanged.emit()
+            self.formChanged.emit()
+
+    def _apply_pipeline_mode(self, mode: str) -> None:
+        if mode == "youtube":
+            self._mode = "youtube"
+            self._backend = "cloud"
+            self._cloud_rescue_enabled = False
+        elif mode == "local_hybrid":
+            self._mode = "file"
+            self._backend = "local"
+            self._cloud_rescue_enabled = True
+        else:
+            self._mode = "file"
+            self._backend = "local"
+            self._cloud_rescue_enabled = False
 
     @Property(str, notify=formChanged)
     def backend(self) -> str:
@@ -421,6 +575,31 @@ class AppBridge(QObject):
     def localModel(self, value: str) -> None:
         self._set_field("_local_model", value)
 
+    @Property(bool, notify=formChanged)
+    def localModelReady(self) -> bool:
+        """True when a usable translation GGUF is available.
+
+        A model counts as ready if either:
+          1. the user has selected/persisted a valid path (`_local_model` that
+             exists on disk — whatever they browsed to, wherever it lives), or
+          2. an auto-detected Hy-MT2 GGUF is present in the app's gguf folder.
+
+        This keeps the UI (Dashboard "Run Translation" vs "Download model & Run",
+        Settings warning) in sync with what the run would actually use.
+        """
+        try:
+            selected = (self._local_model or "").strip()
+            if selected and os.path.exists(selected):
+                return True
+            path = resolve_local_model_path(_gguf_dir())
+            return bool(path) and os.path.exists(path)
+        except Exception:  # noqa: BLE001
+            return False
+
+    @Property(bool, notify=localModelDownloadPendingChanged)
+    def localModelDownloadPending(self) -> bool:
+        return self._local_model_download_pending
+
     @Property(str, notify=formChanged)
     def asrLanguage(self) -> str:
         return self._asr_language
@@ -460,6 +639,29 @@ class AppBridge(QObject):
     @asrVadModel.setter
     def asrVadModel(self, value: str) -> None:
         self._set_field("_asr_vad_model", value)
+
+    @Property(bool, notify=formChanged)
+    def asrModelReady(self) -> bool:
+        """True when the SenseVoice + VAD ASR GGUFs are available.
+
+        Mirrors how the run resolves them: the user-selected/persisted paths are
+        honored first; otherwise the well-known filenames in the app's gguf folder
+        (which the bundled binaries default to) are auto-detected.
+        """
+        try:
+            gguf = _gguf_dir()
+            def _present(path: str) -> bool:
+                p = (path or "").strip()
+                if p and os.path.exists(p):
+                    return True
+                candidate = os.path.join(gguf, os.path.basename(p)) if p else ""
+                return bool(candidate) and os.path.exists(candidate)
+
+            default_sensevoice = os.path.join(gguf, "sensevoice-small-q8.gguf")
+            default_vad = os.path.join(gguf, "fsmn-vad.gguf")
+            return _present(self._asr_model) or os.path.exists(default_sensevoice)
+        except Exception:  # noqa: BLE001
+            return False
 
     @Property(str, notify=formChanged)
     def asrThreads(self) -> str:
@@ -535,6 +737,117 @@ class AppBridge(QObject):
         if self._asr_no_tags != value:
             self._asr_no_tags = value
             self.formChanged.emit()
+
+    @Property(str, notify=formChanged)
+    def asrMaxCueCharsCjk(self) -> str:
+        return self._asr_max_cue_chars_cjk
+
+    @asrMaxCueCharsCjk.setter
+    def asrMaxCueCharsCjk(self, value: str) -> None:
+        self._set_field("_asr_max_cue_chars_cjk", value)
+
+    @Property(bool, notify=formChanged)
+    def asrKeepTags(self) -> bool:
+        return self._asr_keep_tags
+
+    @asrKeepTags.setter
+    def asrKeepTags(self, value: bool) -> None:
+        value = bool(value)
+        if self._asr_keep_tags != value:
+            self._asr_keep_tags = value
+            self.formChanged.emit()
+
+    @Property(str, notify=formChanged)
+    def glossaryPath(self) -> str:
+        return self._glossary_path
+
+    @glossaryPath.setter
+    def glossaryPath(self, value: str) -> None:
+        self._set_field("_glossary_path", value)
+
+    @Property(str, notify=formChanged)
+    def translationMemoryMode(self) -> str:
+        return self._translation_memory_mode
+
+    @translationMemoryMode.setter
+    def translationMemoryMode(self, value: str) -> None:
+        self._set_field("_translation_memory_mode", value)
+
+    @Property(str, notify=formChanged)
+    def translationMemoryDbPath(self) -> str:
+        return self._translation_memory_db
+
+    @translationMemoryDbPath.setter
+    def translationMemoryDbPath(self, value: str) -> None:
+        self._set_field("_translation_memory_db", value)
+
+    @Property(str, notify=formChanged)
+    def localThreads(self) -> str:
+        return self._local_threads
+
+    @localThreads.setter
+    def localThreads(self, value: str) -> None:
+        self._set_field("_local_threads", value)
+
+    @Property(bool, notify=formChanged)
+    def localMlock(self) -> bool:
+        return self._local_mlock
+
+    @localMlock.setter
+    def localMlock(self, value: bool) -> None:
+        value = bool(value)
+        if self._local_mlock != value:
+            self._local_mlock = value
+            self.formChanged.emit()
+
+    @Property(bool, notify=formChanged)
+    def cloudRescueEnabled(self) -> bool:
+        return self._cloud_rescue_enabled
+
+    @cloudRescueEnabled.setter
+    def cloudRescueEnabled(self, value: bool) -> None:
+        value = bool(value)
+        if self._cloud_rescue_enabled != value:
+            self._cloud_rescue_enabled = value
+            self.formChanged.emit()
+
+    @Property(str, notify=formChanged)
+    def cloudRescueModel(self) -> str:
+        return self._cloud_rescue_model
+
+    @cloudRescueModel.setter
+    def cloudRescueModel(self, value: str) -> None:
+        self._set_field("_cloud_rescue_model", value)
+
+    @Property(str, notify=formChanged)
+    def cloudRescueBatch(self) -> str:
+        return self._cloud_rescue_batch
+
+    @cloudRescueBatch.setter
+    def cloudRescueBatch(self, value: str) -> None:
+        self._set_field("_cloud_rescue_batch", value)
+
+    @Property(bool, notify=formChanged)
+    def strictQuality(self) -> bool:
+        return self._strict_quality
+
+    @strictQuality.setter
+    def strictQuality(self, value: bool) -> None:
+        value = bool(value)
+        if self._strict_quality != value:
+            self._strict_quality = value
+            self.formChanged.emit()
+
+    @Property(str, notify=formChanged)
+    def outputFormat(self) -> str:
+        return self._output_format
+
+    @outputFormat.setter
+    def outputFormat(self, value: str) -> None:
+        value = (value or "srt").strip().lower()
+        if value not in ("srt", "ass"):
+            value = "srt"
+        self._set_field("_output_format", value)
 
     @Property(str, notify=statusMessageChanged)
     def statusMessage(self) -> str:
@@ -623,15 +936,41 @@ class AppBridge(QObject):
 
     def _on_local_model_downloaded(self, _msg: str) -> None:
         self._local_model_downloading = False
+        self._local_model_download_pending = False
         worker = self.sender()
         downloaded = getattr(worker, "downloaded", []) if worker else []
         if not self._local_model.strip():
-            candidate = os.path.join(_gguf_dir(), "Hy-MT2-1.8B-1.25Bit.gguf")
-            if candidate in downloaded or os.path.exists(candidate):
+            candidate = resolve_local_model_path(_gguf_dir())
+            if candidate and (
+                candidate in downloaded or os.path.exists(candidate)
+            ):
                 self._set_field("_local_model", candidate)
+                print(
+                    f"[local] Using Hy-MT2 model: {os.path.relpath(candidate)}",
+                    flush=True,
+                )
         self._persist_fields()
         self.modelDownloadChanged.emit()
         self._set_status("Local translation model ready.")
+
+        # If a run was waiting on this download, kick it off now.
+        if self._local_model_download_pending:
+            self._local_model_download_pending = False
+            try:
+                config = self._build_run_config()
+            except ValueError as exc:
+                self._set_status(str(exc))
+                return
+            self._persist_fields()
+            self._resolved_out_path = ""
+            self.canOpenOutputFolderChanged.emit()
+            self._set_running(True)
+            self._set_status("Running…")
+            worker2 = TranslationWorker(config)
+            worker2.signals.logLine.connect(self._append_log)
+            worker2.signals.finished.connect(self._on_finished)
+            self._current_worker = worker2
+            self.threadpool.start(worker2)
 
     @Slot()
     def clearLog(self) -> None:
@@ -658,7 +997,25 @@ class AppBridge(QObject):
         try:
             config = self._build_run_config()
         except ValueError as exc:
-            self._set_status(str(exc))
+            msg = str(exc)
+            # Auto-trigger model download when the only blocker is a missing
+            # local translation GGUF, so the user does not have to configure
+            # anything manually.
+            if (
+                self._backend == "local"
+                and "No local translation model found" in msg
+                and not self._local_model_downloading
+                and not self._local_model_download_pending
+            ):
+                self._local_model_download_pending = True
+                self._set_status("Downloading local translation model…")
+                worker = _ModelDownloadWorker(_LOCAL_MODEL_URLS)
+                worker.signals.progress.connect(self._append_log)
+                worker.signals.progress.connect(self._set_local_model_download_status_text)
+                worker.signals.done.connect(self._on_local_model_downloaded)
+                self.threadpool.start(worker)
+                return
+            self._set_status(msg)
             return
 
         self._persist_fields()

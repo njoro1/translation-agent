@@ -34,23 +34,33 @@ Item {
             Card {
                 Layout.fillWidth: true
                 title: "Translation Backend"
-                subtitle: "Use a hosted OpenAI-compatible endpoint, or a local GGUF model auto-served by the app's bundled llama.cpp server (no manual server setup)."
+                subtitle: "Configure the translation engine for the selected pipeline mode. The Dashboard controls which flow is active."
 
-                RowLayout {
+                Label {
                     Layout.fillWidth: true
-                    spacing: 12
+                    text: "Active pipeline: " + (
+                        appBridge.pipelineMode === "youtube" ? "YouTube \u2192 Cloud" :
+                        appBridge.pipelineMode === "local_hybrid" ? "Local \u2192 Local + AI fallback" :
+                        "Local \u2192 Local only (offline)"
+                    )
+                    color: "#cbd5e1"
+                    font.pixelSize: 12
+                }
 
-                    StyledRadioButton {
-                        checked: appBridge.backend === "cloud"
-                        text: "Cloud API"
-                        onClicked: appBridge.backend = "cloud"
-                    }
+                Label {
+                    Layout.fillWidth: true
+                    text: "Backend: " + (appBridge.backend === "cloud" ? "Cloud API" : "Local llama.cpp")
+                    color: "#94a3b8"
+                    font.pixelSize: 11
+                }
 
-                    StyledRadioButton {
-                        checked: appBridge.backend === "local"
-                        text: "Local llama.cpp"
-                        onClicked: appBridge.backend = "local"
-                    }
+                Label {
+                    Layout.fillWidth: true
+                    visible: appBridge.backend === "local"
+                    text: appBridge.cloudRescueEnabled ? "Cloud rescue: enabled" : "Cloud rescue: disabled"
+                    color: appBridge.cloudRescueEnabled ? "#6366f1" : "#64748b"
+                    font.pixelSize: 11
+                    font.italic: true
                 }
 
                 ColumnLayout {
@@ -86,6 +96,14 @@ Item {
                     }
 
                     Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: "Must be an OpenAI-compatible API root, e.g. https://api.openai.com/v1 (or http://127.0.0.1:8080/v1 for the local server). Pointing it at a website/home page returns HTTP 404/405 \u2014 not an LLM."
+                        color: "#94a3b8"
+                        font.pixelSize: 11
+                    }
+
+                    Label {
                         text: "Model"
                         color: "#cbd5e1"
                         font.pixelSize: 12
@@ -104,42 +122,12 @@ Item {
                     Layout.fillWidth: true
                     spacing: 10
 
-                    RowLayout {
+                    Label {
                         Layout.fillWidth: true
-                        spacing: 10
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-
-                            Label {
-                                text: "Host"
-                                color: "#cbd5e1"
-                                font.pixelSize: 12
-                            }
-
-                            CustomTextField {
-                                Layout.fillWidth: true
-                                text: appBridge.host
-                                onTextEdited: appBridge.host = text
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-
-                            Label {
-                                text: "Port"
-                                color: "#cbd5e1"
-                                font.pixelSize: 12
-                            }
-
-                            CustomTextField {
-                                Layout.fillWidth: true
-                                text: appBridge.port
-                                validator: IntValidator { bottom: 1 }
-                                onTextEdited: appBridge.port = text
-                            }
-                        }
+                        wrapMode: Text.WordWrap
+                        text: "The local llama-server is launched automatically on http://127.0.0.1:8080/v1. You do not need to configure host/port manually."
+                        color: "#64748b"
+                        font.pixelSize: 11
                     }
 
                     Label {
@@ -160,6 +148,26 @@ Item {
                         font.pixelSize: 12
                     }
 
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        visible: appBridge.backend === "local" && !appBridge.localModelReady
+                        text: "\u26a0 No translation model found. Click Download to fetch Hy-MT2-1.8B-Q8_0.gguf, or Browse to select an existing GGUF. Local runs cannot start without it."
+                        color: "#f59e0b"
+                        font.pixelSize: 11
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        visible: appBridge.backend === "local" && appBridge.localModelReady
+                        text: appBridge.localModelReady
+                            ? "\u2713 Translation model is available" + (appBridge.localModel.trim() ? " (" + (appBridge.localModel.includes("/") || appBridge.localModel.includes("\\") ? appBridge.localModel.split(/[\\/]/).pop() : appBridge.localModel) + ")" : " (auto-detected in the app's gguf folder)")
+                            : ""
+                        color: "#22c55e"
+                        font.pixelSize: 11
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 10
@@ -170,7 +178,7 @@ Item {
 
                             CustomTextField {
                                 Layout.fillWidth: true
-                                placeholderText: "Hy-MT2-1.8B-1.25Bit.gguf"
+                                placeholderText: "Hy-MT2-1.8B-Q8_0.gguf"
                                 text: appBridge.localModel
                                 onTextEdited: appBridge.localModel = text
                             }
@@ -194,7 +202,9 @@ Item {
                         }
 
                         Button {
-                            text: appBridge.localModelDownloading ? "Downloading…" : "Download"
+                            text: appBridge.localModelDownloading ? "Downloading…"
+                                : appBridge.localModelReady ? "Re-download"
+                                : "Download model"
                             enabled: !appBridge.localModelDownloading
                             onClicked: appBridge.downloadLocalModel()
                         }
@@ -414,6 +424,17 @@ Item {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 4
+                        Label { text: "Max cue chars (CJK)"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        CustomTextField {
+                            Layout.fillWidth: true
+                            text: appBridge.asrMaxCueCharsCjk
+                            onTextEdited: appBridge.asrMaxCueCharsCjk = text
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
                         Label { text: "Max cue chars"; color: "#cbd5e1"; font.pixelSize: 12 }
                         CustomTextField {
                             Layout.fillWidth: true
@@ -423,10 +444,15 @@ Item {
                     }
                 }
 
-                CheckBox {
-                    text: "No tags"
-                    checked: appBridge.asrNoTags
-                    onCheckedChanged: appBridge.asrNoTags = checked
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    CheckBox {
+                        text: "Keep ASR tags (disable default stripping)"
+                        checked: appBridge.asrKeepTags
+                        onCheckedChanged: appBridge.asrKeepTags = checked
+                    }
                 }
 
                 RowLayout {
@@ -446,6 +472,15 @@ Item {
                         }
 
                         Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: appBridge.localModelReady || appBridge.asrModelReady
+                            text: (appBridge.asrModelReady ? "\u2713 SenseVoice + VAD models found in the app's gguf folder." : "\u26a0 ASR models not found yet.")
+                            color: appBridge.asrModelReady ? "#22c55e" : "#f59e0b"
+                            font.pixelSize: 11
+                        }
+
+                        Label {
                             visible: appBridge.modelDownloadStatus.length > 0
                             text: appBridge.modelDownloadStatus.trim().split("\n").pop()
                             color: "#94a3b8"
@@ -456,9 +491,139 @@ Item {
                     }
 
                     Button {
-                        text: appBridge.modelDownloading ? "Downloading…" : "Download models"
+                        text: appBridge.modelDownloading ? "Downloading…"
+                            : appBridge.asrModelReady ? "Re-download"
+                            : "Download models"
                         enabled: !appBridge.modelDownloading
                         onClicked: appBridge.downloadAsrModels()
+                    }
+                }
+            }
+
+            Card {
+                Layout.fillWidth: true
+                title: "Advanced / Quality"
+                subtitle: "Optional quality and consistency aids. Translation memory and glossary improve consistency; cloud rescue can recover failed local cues."
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Label { text: "Glossary file"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        CustomTextField {
+                            Layout.fillWidth: true
+                            placeholderText: "Path to glossary.txt"
+                            text: appBridge.glossaryPath
+                            onTextEdited: appBridge.glossaryPath = text
+                        }
+                    }
+
+                    Button {
+                        text: "Browse…"
+                        onClicked: glossaryDialog.open()
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Label { text: "Translation memory"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["auto", "on", "off"]
+                            currentIndex: {
+                                var v = appBridge.translationMemoryMode
+                                return v === "on" ? 1 : (v === "off" ? 2 : 0)
+                            }
+                            onActivated: appBridge.translationMemoryMode = currentText
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Label { text: "Local server threads (0 = auto)"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        CustomTextField {
+                            Layout.fillWidth: true
+                            text: appBridge.localThreads
+                            onTextEdited: appBridge.localThreads = text
+                        }
+                    }
+                }
+
+RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Label { text: "Output format"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["srt", "ass"]
+                            currentIndex: appBridge.outputFormat === "ass" ? 1 : 0
+                            onActivated: appBridge.outputFormat = currentText
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    CheckBox {
+                        text: "Use mlock for local server"
+                        checked: appBridge.localMlock
+                        onCheckedChanged: appBridge.localMlock = checked
+                    }
+
+                    CheckBox {
+                        text: "Strict quality (fail on errors)"
+                        checked: appBridge.strictQuality
+                        onCheckedChanged: appBridge.strictQuality = checked
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    CheckBox {
+                        text: "Cloud rescue"
+                        checked: appBridge.cloudRescueEnabled
+                        onCheckedChanged: appBridge.cloudRescueEnabled = checked
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        enabled: appBridge.cloudRescueEnabled
+                        Label { text: "Cloud rescue model"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        CustomTextField {
+                            Layout.fillWidth: true
+                            placeholderText: "gpt-4o-mini"
+                            text: appBridge.cloudRescueModel
+                            onTextEdited: appBridge.cloudRescueModel = text
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        enabled: appBridge.cloudRescueEnabled
+                        Label { text: "Rescue batch"; color: "#cbd5e1"; font.pixelSize: 12 }
+                        CustomTextField {
+                            Layout.fillWidth: true
+                            text: appBridge.cloudRescueBatch
+                            onTextEdited: appBridge.cloudRescueBatch = text
+                        }
                     }
                 }
             }
@@ -498,5 +663,12 @@ Item {
         title: "Select local translation model"
         nameFilters: ["GGUF files (*.gguf)", "All files (*)"]
         onAccepted: appBridge.localModel = appBridge.localPath(selectedFile.toString())
+    }
+
+    FileDialog {
+        id: glossaryDialog
+        title: "Select glossary file"
+        nameFilters: ["Text files (*.txt)", "All files (*)"]
+        onAccepted: appBridge.glossaryPath = appBridge.localPath(selectedFile.toString())
     }
 }
