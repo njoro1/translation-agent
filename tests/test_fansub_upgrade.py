@@ -2,7 +2,7 @@
 translate/local_asr/srt_io helpers."""
 from __future__ import annotations
 
-from src.ass_io import AssStyle, _seconds_to_ass_time, write_ass
+from src.ass_io import AssStyle, _seconds_to_ass_time, font_for_language, write_ass
 from src.postprocess import (
     apply_all,
     break_lines,
@@ -162,6 +162,58 @@ class TestAssOutput:
         assert data.count("Dialogue:") == 2
 
 
+class TestAssFontForLanguage:
+    def test_unknown_returns_arial(self):
+        assert font_for_language(None) == "Arial"
+        assert font_for_language("en") == "Arial"
+
+    def test_japanese(self):
+        assert font_for_language("ja") == "Noto Sans CJK JP"
+
+    def test_chinese_region_resolves_to_primary(self):
+        assert font_for_language("zh-CN") == "Noto Sans CJK SC"
+        assert font_for_language("zh-tw") == "Noto Sans CJK TC"
+
+    def test_korean(self):
+        assert font_for_language("ko") == "Noto Sans CJK KR"
+
+
+class TestAssWriteFontParameters:
+    def test_source_language_selects_cjk_font(self, tmp_path):
+        from src.srt_io import Cue
+
+        path = str(tmp_path / "out.ass")
+        write_ass(path, [Cue(0.0, 1.0, "Hello")], source_language="ja")
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = f.read()
+        assert "Noto Sans CJK JP" in data
+
+    def test_explicit_font_override(self, tmp_path):
+        from src.srt_io import Cue
+
+        path = str(tmp_path / "out.ass")
+        write_ass(path, [Cue(0.0, 1.0, "Hello")], font="Custom Font")
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = f.read()
+        assert "Custom Font" in data
+
+    def test_fontsize_override(self, tmp_path):
+        from src.srt_io import Cue
+
+        path = str(tmp_path / "out.ass")
+        write_ass(path, [Cue(0.0, 1.0, "Hello")], fontsize=64)
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = f.read()
+        assert ",64," in data
+
+    def test_title_in_header(self, tmp_path):
+        from src.srt_io import Cue
+
+        path = str(tmp_path / "out.ass")
+        write_ass(path, [Cue(0.0, 1.0, "Hello")], title="My Video")
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = f.read()
+        assert "Title: My Video" in data
 class TestNewTranslateHelpers:
     def test_flag_chengyu(self):
         assert _flag_chengyu("点睛之笔") == "[CHENGYU:点睛之笔]"

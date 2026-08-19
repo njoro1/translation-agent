@@ -177,17 +177,13 @@ The system prompt for cloud translation is built from `_FOREIGNIZATION_DIRECTIVE
 **Responsibility:** Batch translation of cues via an OpenAI-compatible chat completion API.
 
 **Key types / functions:**
-- `build_system_prompt(source_language, target_language="English") -> str`
-  - Injects language placeholders into `_FOREIGNIZATION_DIRECTIVE`.
-- `translate_cues(cues, client, model, batch_size=40, max_retries=3, source_language=None) -> list[str]`
+- `build_system_prompt(source_language, target_language="English", *, glossary=None, chengyu=False, classical=False, emotion=False) -> str`
+  - Fills `_FOREIGNIZATION_DIRECTIVE` language placeholders; appends glossary and optional fansub augmentations (chengyu, Classical-Chinese register, emotion-tag awareness).
+- `translate_cues(cues, client, model, batch_size=8, max_retries=3, source_language=None, *, glossary=None, translation_memory=None, rescue_handler=None) -> list[str]`
   - The **canonical entry point** used by both CLI and GUI.
-  - Splits cues into batches of `batch_size`.
-  - For each batch:
-    - Determines if the model is Hy-MT2 via `_is_hy_mt2(model)`.
-    - Calls `_translate_batch(...)`.
-    - On failure: retries with exponential backoff (`2 ** attempt` seconds).
-    - On misalignment (returns `None`): falls back to per-item `_translate_one(...)`.
-  - Prints progress: `translated {N}/{total}`.
+  - Splits cues into batches (dynamic batching via `src/batching.py`), calls `_translate_group`, and falls back per item.
+  - `glossary` is the formatted glossary string; `translation_memory` is a `TranslationMemory` instance (or `None`); `rescue_handler` is a `callable(cues, failed_indices) -> dict[int, str]` for cloud rescue (or `None`).
+  - On misalignment a batch is retried, split, and finally translated per-item.
 
 **Internal helpers:**
 - `_is_hy_mt2(model) -> bool`
@@ -408,11 +404,19 @@ python -m pytest -q
 Tests live in `tests/` and cover:
 - `test_srt_io.py` — timestamp format/parse, SRT roundtrip, filename sanitization.
 - `test_translate_parsing.py` — `_numbered_block`, `_parse_numbered`, `_is_hy_mt2`.
+- `test_translate_validation.py` — `looks_untranslated`, per-item failure behavior.
 - `test_batching.py` — `chunk_texts`, `estimate_text_weight`, `is_cjk_language`.
 - `test_glossary.py` — glossary file parsing, formatting, hashing.
 - `test_translation_memory.py` — TM put/get, key separation, graceful failure.
 - `test_subtitle_quality.py` — CPS/duration/char/line thresholds, report building.
 - `test_local_asr_splitting.py` — `_split_text` and `_segment_to_cues`.
+- `test_local_server.py` — server auto-start / warmup helpers (no network).
+- `test_fetch_subs.py` — video-id parsing and fetch helpers.
+- `test_fansub_upgrade.py` — `postprocess`, `ass_io` (incl. `font_for_language` / font flags).
+- `test_cjk.py` — `src/cjk.py` detection, width, and kinsoku line breaking.
+- `test_cli_flags.py` — `--json-progress`, `--ass-font`/`--ass-fontsize` wiring.
+
+Run with `python -m pytest -q` (currently 251 passing, no network / keys / binaries required).
 
 **Manual validation checklist:**
 1. YouTube URL with manual subtitles → SRT with correct timestamps and translated English text.
@@ -796,64 +800,72 @@ When the model name matches `_is_hy_mt2(model)` (contains `hy-mt2` or `hy_mt2`),
 
 ---
 
-## 4. Module Reference (New)
+## 4. Module Reference (pipeline support modules)
 
 ### 4.13 `src/batching.py`
 
 **Responsibility:** Split lists of cue texts into model-safe request batches, respecting cue-count and character limits (CJK-aware).
 
 **Key types / functions:**
-- `estimate_text_weight(text: str) -> int` — returns 2 for CJK text, 1 otherwise (rough "width" weight).
-- `is_cjk_language(text: str) -> bool` — True if CJK char ratio > 25 %.
-- `chunk_texts(texts, *, max_cues, max_chars_cjk, max_chars_non_cjk) -> list[list[int]]` — returns batches of indices.
+- `is_cjk_language(source_language: str | None) -> bool` — True when the *language code/name* is Chinese, Japanese, Korean, or Cantonese (normalized, region-stripped).
+- `estimate_text_weight(text: str, source_language: str | None) -> int` — non-whitespace character count (the CJK distinction applies at the *batch budget* level, not per-character).
+- `chunk_texts(texts, *, max_items, max_total_chars, source_language=None) -> list[list[int]]` — returns batches of original indices (order preserved, never drops).
 
----
+### 4.13b `src/cjk.py` *(new)*
+
+**Responsibility:** Lightweight CJK script detection and kinsoku-aware line breaking. Used by the CLI to auto-detect the source language from a large cue sample, and available for future CJK-target/bilingual output.
+
+**Key types / functions:**
+- `contains_cjk(text: str) -> bool`
+- `detect_cjk_language(text: str, default=None) -> str | None` — `zh`/`ja`/`ko` by script ratios; requires ≥ 8 CJK chars to avoid guessing.
+- `detect_cjk_from_cues(cues, sample_size=80) -> str | None`
+- `char_width(ch) / text_width(text)` — display units (full-width = 2).
+- `break_cjk(text, max_width=26, max_lines=2) -> str` — kinsoku-aware `\N`-joined lines.
 
 ### 4.14 `src/glossary.py`
 
-**Responsibility:** Parse an optional `source→target` glossary file and format it into the system prompt.
+**Responsibility:** Parse an optional `source→target` glossary file and format it into the prompt.
 
 **Key functions:**
-- `load_glossary(path) -> list[tuple[str, str]]`
-  - Supports `.csv`, `.tsv`, and blank/`#` comment-aware plain-text (`source<TAB>target`) files.
-- `format_glossary(entries) -> str` — renders bullet list for the prompt.
-- `glossary_fingerprint(entries) -> str` — sha1 of normalized entries (used by TM cache key).
+- `load_glossary(path) -> list[tuple[str, str]]` — plain-text `source<TAB>target`, `source = target`, or `source -> target`; dedupes and truncates.
+- `format_glossary(entries) -> str` — bullet list for the prompt (capped length).
+- `glossary_hash(entries) -> str` — SHA-256 of the formatted glossary (part of the TM key).
 
 **Environment variable:** `TRANSLATION_GLOSSARY` (path, optional; no-op when unset).
 
----
-
 ### 4.15 `src/translation_memory.py`
 
-**Responsibility:** SQLite-backed store of previously translated source strings.
+**Responsibility:** SQLite-backed exact-match cache of previously translated source lines.
 
-**Key functions:**
-- `get_translation(conn, source, lang, *, model, fingerprint) -> str | None`
-- `add_translation(conn, source, target, lang, *, model, fingerprint) -> None`
-- `open_memory_db(path) -> sqlite3.Connection` (auto-migrates; no-op on error).
-
-**Cache key** = sha1(source + lang + model_id + glossary_fingerprint). Lookup is exact-match only.
+**Key API (class-based):**
+- `TranslationMemory(db_path=...)` — opens/creates the DB (with `_purge_poisoned_entries`), disables itself gracefully on any DB error.
+- `translation_memory.get(*, source_language, source_text, model_profile, glossary_hash) -> str | None`
+- `translation_memory.put(*, source_language, source_text, translated_text, model_profile, glossary_hash) -> None`
+- `translation_memory.close() -> None`
+- `make_key(*, source_language, source_text, model_profile, glossary_hash) -> str` — SHA-256 of `lang|model_profile|glossary_hash|normalized_source`.
 
 **Environment variables:** `TRANSLATION_MEMORY_MODE` (`auto`/`on`/`off`), `TRANSLATION_MEMORY_DB`.
-
----
 
 ### 4.16 `src/subtitle_quality.py`
 
 **Responsibility:** Post-translation quality diagnostics for the generated SRT.
 
 **Key functions:**
-- `analyze_quality(cues) -> QualityReport` — computes CPS, max duration, max chars, line count, empty-cue count.
-- `QualityReport.to_dict() / to_json()` — serialisable summary.
-
----
+- `analyze_cues(cues) -> list[CueIssue]` — per-cue issues (CPS, chars, duration, lines, empty text).
+- `build_report(cues, *, untranslated_count=0) -> QualityReport` — aggregated counts + issues.
+- `QualityReport.to_dict() / to_json(indent=2)` — serializable.
+- `print_summary(cues, *, untranslated_count=0) -> QualityReport`.
 
 ### 4.17 `src/rescue.py`
 
 **Responsibility:** Optional cloud re-translation of only the cues that failed local translation.
 
-**Key function:** `rescue_translations(failed_items, settings, model) -> list[tuple[str, str]]`.
-Guarded by `CLOUD_RESCUE_ENABLED`; never runs when disabled or when `settings` lacks a cloud API key.
+**Key function:** `rescue_failed_cues(*, cues, failed_indices, client, model, source_language=None, batch_size=10, max_retries=3, glossary=None) -> dict[int, str]`.
+Returns a mapping of successfully rescued `{cue_index: translation}` only; never touches already-translated cues.
+
+### 4.18 `src/postprocess.py` and `src/ass_io.py`
+
+**Responsibility:** `postprocess.py` applies fansub-quality cleanup (fusion repair, residual-CJK strip, line breaking, translator-note placement, overlap snapping) to every output cue. `ass_io.py` writes Aegisub-compatible ASS with a style header, a `Title:` field, and a font chosen from the source language via `font_for_language(source_language)` (see `FONT_BY_LANG`).
 
 ---
 

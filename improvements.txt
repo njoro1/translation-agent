@@ -1,0 +1,1892 @@
+I analyzed the four files and the pipeline they imply:
+
+- `translate.py`: CLI pipeline for YouTube subtitles or local ASR → translation → SRT/ASS output.
+- `gui.py`: thin launcher for the PySide6/QML UI.
+- `main.py`: PySide6/QML bootstrap.
+- `_gguf_check.py`: low-level GGUF inspection script.
+
+Your architecture is already good: local ASR, local/cloud translation, glossary, translation memory, cloud rescue, quality reports, ASS/SRT output. The biggest remaining gap for **high-quality CJK subtitles** is not the translation call itself, but the surrounding CJK-specific processing:
+
+1. CJK language detection and source-language certainty.
+2. ASR segmentation tuned for Chinese/Japanese/Korean.
+3. CJK-aware text normalization and cue splitting.
+4. Translation prompting that preserves names, honorifics, idioms, and context.
+5. Target-side subtitle line breaking, timing, and reading-speed enforcement.
+6. ASS output with proper CJK fonts/styles.
+7. GUI workflow for preview/editing/quality inspection.
+
+Below are concrete improvements, prioritized for CJK subtitle quality.
+
+---
+
+## 1. Critical quality issues to fix first
+
+### 1.1 Avoid extremely low-bit translation models for CJK
+
+`_gguf_check.py` references:
+
+```python
+path = r"C:/Users/Njoro/Downloads/Hy-MT2-1.8B-1.25Bit.gguf"
+```
+
+For CJK → English translation, a `1.25Bit` 1.8B model is likely to be too lossy. It may produce:
+
+- untranslated source text,
+- broken names,
+- literal/chunky English,
+- missed idioms,
+- hallucinations on BGM/silence,
+- inconsistent terminology.
+
+Recommended minimum for local CJK translation:
+
+| Model type | Recommendation |
+|---|---|
+| Hy-MT2 1.8B | Use `Q5_K_M`, `Q6_K`, or `Q8_0` if possible |
+| Cloud rescue | Enable for failed or low-confidence cues |
+| Best quality | Use cloud LLM for idioms, classical Chinese, poems, wordplay |
+
+Your CLI already defaults to:
+
+```python
+--local-model-name Hy-MT2-1.8B-Q8_0
+```
+
+That is much better. I would avoid shipping or using `1.25Bit` for production CJK subtitles.
+
+---
+
+### 1.2 Improve CJK language detection
+
+In `translate.py`, you currently do:
+
+```python
+detected = _detect_cjk_lang(" ".join(c.text or "" for c in cues[:5]))
+```
+
+For CJK, five cues may be too few, especially if the opening is a song, sign, greeting, or mixed-language segment.
+
+Use a larger sample, for example first 30–80 cues, and detect by script ratios:
+
+- Hiragana/Katakana + Han → Japanese.
+- Hangul dominant → Korean.
+- Han only → Chinese.
+- Cantonese/Yue should be treated specially.
+
+Suggested replacement module: `src/cjk.py`.
+
+```python
+# src/cjk.py
+from __future__ import annotations
+
+import re
+import unicodedata
+
+NO_LINE_START = set(
+    "、。，．・？！：；゛゜ヽヾゝゞ々ーァィゥェォッャュョヮヵヶゕゖ"
+    "）〕］｝〉》」』】〙〗〟,.;:!?)]}…‥"
+)
+
+NO_LINE_END = set("（〔［｛〈《「『【〘〖([{")
+
+
+def char_width(ch: str) -> int:
+    """Approximate subtitle display width.
+
+    CJK/full-width characters count as 2 units.
+    Latin/digits/punctuation count as 1 unit.
+    """
+    return 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+
+
+def text_width(text: str) -> int:
+    return sum(char_width(c) for c in text)
+
+
+def contains_cjk(text: str) -> bool:
+    for ch in text:
+        cp = ord(ch)
+        if (
+            0x4E00 <= cp <= 0x9FFF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0x20000 <= cp <= 0x2A6DF
+            or 0xF900 <= cp <= 0xFAFF
+            or 0x3040 <= cp <= 0x30FF
+            or 0x31F0 <= cp <= 0x31FF
+            or 0xFF66 <= cp <= 0xFF9D
+            or 0xAC00 <= cp <= 0xD7A3
+            or 0x1100 <= cp <= 0x11FF
+            or 0x3130 <= cp <= 0x318F
+        ):
+            return True
+    return False
+
+
+def detect_cjk_language(text: str, default: str | None = None) -> str | None:
+    """Detect ja/ko/zh from subtitle text using script ratios."""
+    hangul = 0
+    kana = 0
+    han = 0
+
+    for ch in text:
+        cp = ord(ch)
+
+        if (
+            0xAC00 <= cp <= 0xD7A3
+            or 0x1100 <= cp <= 0x11FF
+            or 0x3130 <= cp <= 0x318F
+        ):
+            hangul += 1
+        elif (
+            0x3040 <= cp <= 0x30FF
+            or 0x31F0 <= cp <= 0x31FF
+            or 0xFF66 <= cp <= 0xFF9D
+        ):
+            kana += 1
+        elif (
+            0x4E00 <= cp <= 0x9FFF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0x20000 <= cp <= 0x2A6DF
+            or 0xF900 <= cp <= 0xFAFF
+        ):
+            han += 1
+
+    total = hangul + kana + han
+    if total < 8:
+        return default
+
+    # Japanese usually contains kana + han.
+    if kana and kana + han >= hangul:
+        return "ja"
+
+    # Korean usually has dominant Hangul.
+    if hangul and hangul >= max(kana, han):
+        return "ko"
+
+    # Chinese usually has Han characters without kana/hangul.
+    if han and han >= max(kana, hangul):
+        return "zh"
+
+    return default
+```
+
+Then in `translate.py`, replace the small-sample detection with:
+
+```python
+if getattr(args, "asr_lang", "auto") in (None, "", "auto") and not _is_english(source_lang):
+    sample = " ".join(c.text or "" for c in cues[:80])
+    detected = detect_cjk_language(sample)
+    if detected:
+        print(
+            f"[detect] --asr-lang auto; detected '{detected}' from source text; "
+            f"forwarding to translation.",
+            flush=True,
+        )
+        source_lang = detected
+```
+
+This is especially important for:
+
+- anime openings with little kana,
+- Chinese videos with occasional English,
+- Korean videos with Chinese loanwords,
+- Cantonese content transcribed into Chinese characters.
+
+---
+
+### 1.3 Preserve the untranslated marker during sanitization
+
+In `_run_pipeline`, you set:
+
+```python
+text=(t.strip() if t and t.strip() else UNTRANSLATED_MARKER)
+```
+
+Then later sanitize:
+
+```python
+out_cues = [
+    Cue(start=c.start, end=c.end, text=_sanitize_output(c.text))
+    for c in out_cues
+]
+```
+
+If you extend `_sanitize_output()` to remove bracketed notes like `[CHENGYU:...]`, be careful not to remove `[untranslated]`.
+
+Use this safer version:
+
+```python
+_TAG_RE = re.compile(r"<\|[a-zA-Z0-9_\-]+\|>")
+_NOTE_RE = re.compile(r"\[(?:CHENGYU|IDIOM|NOTE|TN)[^\]]*\]", re.IGNORECASE)
+
+
+def _sanitize_output(t: str) -> str:
+    if t.strip() == UNTRANSLATED_MARKER:
+        return UNTRANSLATED_MARKER
+
+    t = _strip_sensevoice_tag(t)
+    t = _TAG_RE.sub(" ", t)
+    t = _NOTE_RE.sub(" ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+```
+
+---
+
+## 2. CJK ASR improvements
+
+Your local ASR path uses FunASR/SenseVoiceSmall with VAD and ffmpeg silence detection. That is a strong foundation.
+
+For CJK quality, tune ASR segmentation aggressively.
+
+---
+
+### 2.1 Recommended SenseVoice defaults for CJK
+
+For clean speech:
+
+```bash
+--asr-lang ja \
+--asr-max-segment-ms 4500 \
+--asr-max-end-silence-ms 220 \
+--asr-speech-noise-threshold 0.55 \
+--asr-max-cue-duration-ms 4200 \
+--asr-max-cue-chars-cjk 26
+```
+
+For anime/BGM/noisy audio:
+
+```bash
+--asr-lang ja \
+--asr-max-segment-ms 4000 \
+--asr-max-end-silence-ms 200 \
+--asr-speech-noise-threshold 0.62 \
+--asr-noise-db -32 \
+--asr-min-silence-s 0.22 \
+--asr-max-cue-duration-ms 3800 \
+--asr-max-cue-chars-cjk 24
+```
+
+For Chinese drama/documentary:
+
+```bash
+--asr-lang zh \
+--asr-max-segment-ms 5000 \
+--asr-max-end-silence-ms 250 \
+--asr-speech-noise-threshold 0.55 \
+--asr-max-cue-duration-ms 4500 \
+--asr-max-cue-chars-cjk 30
+```
+
+For Korean:
+
+```bash
+--asr-lang ko \
+--asr-max-segment-ms 4500 \
+--asr-max-end-silence-ms 230 \
+--asr-speech-noise-threshold 0.58 \
+--asr-max-cue-duration-ms 4200 \
+--asr-max-cue-chars-cjk 28
+```
+
+Your current default:
+
+```python
+--asr-max-cue-chars-cjk 48
+```
+
+is too high for clean subtitle segmentation. A 48-character CJK cue can become a very long subtitle and may hide timing problems. For source CJK cues, I recommend:
+
+| Language | Preferred max source characters per cue |
+|---|---:|
+| Japanese | 22–26 |
+| Chinese | 26–32 |
+| Korean | 24–30 |
+
+The translation itself can be longer in English, but the source cue should be naturally segmented.
+
+---
+
+### 2.2 Add optional audio preprocessing before ASR
+
+SenseVoice works better with consistent 16 kHz mono speech audio. If `local_asr.py` is not already doing this, add an optional preprocessing step:
+
+```bash
+ffmpeg -i input.mp4 \
+  -vn \
+  -ac 1 \
+  -ar 16000 \
+  -c:a pcm_s16le \
+  -af "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11" \
+  temp_asr.wav
+```
+
+Suggested CLI flag:
+
+```python
+parser.add_argument(
+    "--asr-preprocess",
+    choices=["none", "loudnorm", "denoise"],
+    default="loudnorm",
+    help="Audio preprocessing before SenseVoice ASR.",
+)
+```
+
+For noisy/BGM-heavy content, consider optional vocal separation outside the app, such as Demucs, but keep it optional because it is slow.
+
+---
+
+### 2.3 Handle SenseVoice tags explicitly
+
+SenseVoice may output tags such as:
+
+```text
+<|zh|><|ANGRY|><|BGM|><|withitn|>
+```
+
+For normal subtitle delivery, strip them.
+
+But for SDH-style subtitles, some tags can be useful. Add a mode:
+
+```python
+parser.add_argument(
+    "--sound-tags",
+    choices=["strip", "keep-as-note", "keep-ass-comments"],
+    default="strip",
+    help="How to handle ASR sound/emotion tags.",
+)
+```
+
+Examples:
+
+| Input | strip | keep-as-note |
+|---|---|---|
+| `<|BGM|>` | removed | `[BGM]` |
+| `<|ANGRY|>` | removed | `[angry]` |
+| `<|Speech|>` | removed | removed |
+
+For high-quality fansub-style output, `keep-ass-comments` can place tags into ASS metadata or comments instead of visible text.
+
+---
+
+## 3. Translation improvements for CJK → English
+
+The translation model is only one part. Prompting, context, glossary, and validation matter just as much.
+
+---
+
+### 3.1 Use cue IDs and strict output mapping
+
+Small local models often fail when asked to return a bare list. Use explicit numbered cues.
+
+Example prompt format:
+
+```text
+Translate the following Japanese subtitle cues into English.
+Rules:
+1. Return exactly one English translation for each cue.
+2. Preserve the cue IDs.
+3. Do not add explanations.
+4. Do not include the source text.
+5. Keep translations subtitle-length: prefer under 42 characters per line.
+6. Use the glossary exactly.
+7. Preserve names, honorifics, and tone unless glossary says otherwise.
+8. If a cue is untranslatable, output: [untranslated]
+
+Glossary:
+先輩 -> senpai
+紅茶 -> black tea
+呪術 -> jujutsu
+
+Cues:
+[1] おはよう、先輩。
+[2] 今日は紅茶を買った。
+[3] これは呪術の話だ。
+
+Output:
+[1]
+[2]
+[3]
+```
+
+Then parse with a robust regex:
+
+```python
+_CUE_ANSWER_RE = re.compile(r"^\[(\d+)\]\s*(.+?)\s*$", re.DOTALL | re.MULTILINE)
+```
+
+If the returned cue count mismatches, retry the batch as individual cues. If an individual cue still fails, send it to cloud rescue.
+
+---
+
+### 3.2 Add previous/next context
+
+CJK languages often omit subjects, objects, and pronouns. Without context, translation can become inconsistent.
+
+For each cue batch, include neighboring context:
+
+```text
+Previous context:
+[prev-2] ...
+[prev-1] ...
+
+Current cues:
+[10] ...
+[11] ...
+[12] ...
+
+Next context:
+[next+1] ...
+[next+2] ...
+```
+
+Do not ask the model to translate context cues again. Mark them clearly:
+
+```text
+The following context is for reference only. Do not translate it.
+```
+
+This improves:
+
+- pronoun resolution,
+- gender/speaker consistency,
+- verb tense,
+- honorific usage,
+- name consistency,
+- idioms and callbacks.
+
+---
+
+### 3.3 Add a translation style/profile
+
+CJK subtitle translation needs different behavior depending on content type.
+
+Add:
+
+```python
+parser.add_argument(
+    "--translation-profile",
+    choices=["general", "anime", "drama", "documentary", "literal"],
+    default="general",
+)
+```
+
+Example behavior:
+
+| Profile | Behavior |
+|---|---|
+| `general` | Natural English, concise |
+| `anime` | Preserve honorifics optionally, keep Japanese terms if glossary says |
+| `drama` | Natural dialogue, emotional tone |
+| `documentary` | Formal, precise |
+| `literal` | Closer to source structure for review |
+
+For anime, add prompt rules:
+
+```text
+Preserve Japanese honorifics like -san, -kun, -chan, -senpai unless glossary says otherwise.
+Do not localize culturally specific food, titles, or terminology unless glossary says otherwise.
+```
+
+For documentary:
+
+```text
+Use formal, neutral English.
+Avoid slang.
+Preserve technical terminology.
+```
+
+---
+
+### 3.4 Improve glossary handling
+
+Your glossary support is excellent. For CJK, glossary entries should support:
+
+```tsv
+source	target	note	case_sensitive
+先輩	senpai	Keep Japanese honorific	0
+紅茶	black tea		0
+呪術	jjujutsu	Do not translate as magic	0
+```
+
+Add glossary hash to translation memory. Otherwise, old TM matches may conflict with a new glossary.
+
+Example TM key:
+
+```python
+key = sha256(
+    f"{source_lang}|{normalized_source}|{target_lang}|{model}|{glossary_hash}"
+)
+```
+
+---
+
+### 3.5 Translation memory should store quality metadata
+
+Suggested SQLite schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS translation_memory (
+    id INTEGER PRIMARY KEY,
+    source_lang TEXT NOT NULL,
+    target_lang TEXT NOT NULL DEFAULT 'en',
+    source_text TEXT NOT NULL,
+    source_norm TEXT NOT NULL,
+    target_text TEXT NOT NULL,
+    model TEXT,
+    glossary_hash TEXT,
+    approved INTEGER DEFAULT 0,
+    quality_score REAL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tm_unique
+ON translation_memory (
+    source_lang,
+    target_lang,
+    source_norm,
+    model,
+    glossary_hash
+);
+```
+
+Use exact-match TM automatically. Later, add fuzzy matching with `rapidfuzz`, but be careful: fuzzy TM for CJK can be dangerous unless the source language and segmentation are stable.
+
+---
+
+### 3.6 Add source-residue validation
+
+A common CJK translation failure is returning the original text unchanged.
+
+Add a check after translation:
+
+```python
+from src.cjk import contains_cjk
+
+residue_indices = [
+    i
+    for i, t in enumerate(translations)
+    if t
+    and t.strip() != UNTRANSLATED_MARKER
+    and contains_cjk(t)
+]
+```
+
+Be careful: some CJK may be intentional, such as names, titles, glossary terms, or bilingual signs. Therefore:
+
+- warn by default,
+- fail only under `--strict-quality` if residue count is high,
+- allow glossary terms.
+
+Example:
+
+```python
+if residue_indices:
+    print(
+        f"[translation] WARNING: {len(residue_indices)} cues still contain CJK text. "
+        f"This may be intentional for names/terms, but review them.",
+        flush=True,
+    )
+```
+
+---
+
+### 3.7 Add automatic individual retry
+
+For failed cues:
+
+1. Retry batch once with lower temperature.
+2. Retry failed cues individually.
+3. If local model fails, send to cloud rescue.
+4. If cloud rescue fails, mark `[untranslated]`.
+
+Recommended local settings for small CJK MT models:
+
+```python
+temperature = 0.1
+top_p = 0.9
+repeat_penalty = 1.05
+max_tokens = source_len * 4 + 64
+```
+
+For cloud rescue:
+
+```python
+temperature = 0.2
+```
+
+Avoid high temperature for subtitle translation. It increases hallucination and inconsistent terminology.
+
+---
+
+## 4. Subtitle timing and line-quality improvements
+
+Even with perfect translation, bad timing and line breaks ruin subtitle quality.
+
+---
+
+### 4.1 Add target-language line wrapping
+
+Since your output is English, final line breaking should be English-aware, not purely CJK-aware.
+
+Recommended final English constraints:
+
+| Constraint | Value |
+|---|---:|
+| Max characters per line | 38–42 |
+| Max lines | 2 |
+| Minimum display duration | 800–1000 ms |
+| Preferred maximum duration | 6000–7000 ms |
+| Minimum gap between cues | 80–120 ms |
+| Max English chars/sec | 17–20 |
+
+Add helper:
+
+```python
+import textwrap
+
+def wrap_english(text: str, width: int = 42, max_lines: int = 2) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return text
+
+    lines = textwrap.wrap(
+        text,
+        width=width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+    if not lines:
+        return text
+
+    if len(lines) > max_lines:
+        # Do not drop text. Keep extra lines and let QA flag it,
+        # or split the cue earlier/later in the pipeline.
+        pass
+
+    return "\N".join(lines[:max_lines] if len(lines) <= max_lines else lines)
+```
+
+For future bilingual or CJK-target output, use the CJK breaker.
+
+---
+
+### 4.2 Add CJK line breaking for source/bilingual mode
+
+If you add bilingual subtitles, CJK target subtitles, or source-text preview, use kinsoku-aware line breaking.
+
+Add this to `src/cjk.py`:
+
+```python
+_PUNCT_SPLIT_RE = re.compile(r"(?<=[。！？；…，、：:,!\?;])\s*")
+
+
+def _can_break_after(text: str, i: int) -> bool:
+    if i < 0 or i >= len(text) - 1:
+        return False
+
+    a = text[i]
+    b = text[i + 1]
+
+    if b in NO_LINE_START:
+        return False
+
+    if a in NO_LINE_END:
+        return False
+
+    # Do not split ASCII words.
+    if a.isalnum() and b.isalnum() and ord(a) < 128 and ord(b) < 128:
+        return False
+
+    return True
+
+
+def _hard_break(text: str, max_width: int) -> list[str]:
+    lines = []
+
+    while text_width(text) > max_width:
+        width = 0
+        limit = 0
+        break_pos = None
+
+        for i, ch in enumerate(text):
+            cw = char_width(ch)
+
+            if width + cw > max_width:
+                break
+
+            width += cw
+            limit = i + 1
+
+            if _can_break_after(text, i):
+                break_pos = i + 1
+
+        if break_pos is None:
+            break_pos = max(1, limit)
+
+        lines.append(text[:break_pos].rstrip())
+        text = text[break_pos:].lstrip()
+
+    if text:
+        lines.append(text)
+
+    return lines
+
+
+def break_cjk(text: str, max_width: int = 26, max_lines: int = 2) -> str:
+    """Break CJK text into subtitle lines.
+
+    max_width is in display units:
+    - 26 means about 13 full-width CJK characters.
+    """
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return text
+
+    if text_width(text) <= max_width:
+        return text
+
+    parts = _PUNCT_SPLIT_RE.split(text)
+    lines: list[str] = []
+    cur = ""
+
+    for part in parts:
+        if not part:
+            continue
+
+        candidate = cur + part
+
+        if text_width(candidate) <= max_width:
+            cur = candidate
+            continue
+
+        if cur:
+            lines.append(cur.strip())
+
+        if text_width(part) > max_width:
+            lines.extend(_hard_break(part, max_width))
+            cur = ""
+        else:
+            cur = part
+
+    if cur:
+        lines.append(cur.strip())
+
+    lines = [ln for ln in lines if ln]
+
+    # Do not silently drop text. If more than max_lines are needed,
+    # quality report should flag the cue for splitting.
+    return "\N".join(lines)
+```
+
+Recommended CJK display widths:
+
+| Target language | max_width display units | Approx full-width chars |
+|---|---:|---:|
+| Japanese | 26 | 13 chars |
+| Simplified Chinese | 30–34 | 15–17 chars |
+| Traditional Chinese | 30–34 | 15–17 chars |
+| Korean | 28–32 | 14–16 chars |
+
+---
+
+### 4.3 Enforce minimum duration and overlap snapping
+
+Add a timing postprocessor:
+
+```python
+from src.srt_io import Cue
+
+
+def enforce_display_timing(
+    cues: list[Cue],
+    min_ms: int = 900,
+    min_gap_ms: int = 100,
+    max_ms: int = 7000,
+) -> list[Cue]:
+    out: list[Cue] = []
+
+    for i, c in enumerate(cues):
+        start = c.start
+        end = c.end
+
+        if end <= start:
+            end = start + min_ms
+
+        # Minimum display time.
+        if end - start < min_ms:
+            end = start + min_ms
+
+        # Avoid overlap with next cue.
+        if i + 1 < len(cues):
+            next_start = cues[i + 1].start
+            limit = next_start - min_gap_ms
+
+            if end > limit and limit > start + 200:
+                end = limit
+
+        # Do not truncate text here; instead flag cues that are too long.
+        # Splitting long cues should be done in a separate cue splitter.
+        if end - start > max_ms:
+            pass
+
+        out.append(Cue(start=start, end=end, text=c.text))
+
+    return out
+```
+
+For strict quality, report:
+
+- overlapping cues,
+- cues shorter than 800 ms,
+- cues longer than 7 seconds,
+- reading speed violations,
+- lines over max width.
+
+---
+
+### 4.4 Add reading-speed checks
+
+For English output:
+
+```python
+def english_cps(text: str, duration_ms: int) -> float:
+    visible = re.sub(r"\\N|\n", " ", text)
+    visible = re.sub(r"\s+", " ", visible).strip()
+    return len(visible) / max(duration_ms / 1000.0, 0.001)
+```
+
+For CJK output:
+
+```python
+from src.cjk import text_width
+
+def cjk_cps(text: str, duration_ms: int) -> float:
+    visible = text.replace("\\N", "").replace("\n", "")
+    return text_width(visible) / max(duration_ms / 1000.0, 0.001)
+```
+
+Suggested thresholds:
+
+| Output | Max speed |
+|---|---:|
+| English | 18–20 chars/sec |
+| Japanese | 10–12 display units/sec |
+| Chinese | 12–14 display units/sec |
+| Korean | 11–13 display units/sec |
+
+Add to quality report:
+
+```python
+report.add_warning("cps too high", cue_index=cue_index)
+```
+
+---
+
+## 5. ASS output improvements
+
+Your `--format ass` option is very useful. For CJK video, ASS should include proper font and style metadata.
+
+---
+
+### 5.1 Use CJK fonts by language
+
+Add:
+
+```python
+FONT_BY_LANG = {
+    "ja": "Noto Sans CJK JP",
+    "zh": "Noto Sans CJK SC",
+    "zh-cn": "Noto Sans CJK SC",
+    "zh-sg": "Noto Sans CJK SC",
+    "zh-tw": "Noto Sans CJK TC",
+    "zh-hk": "Noto Sans CJK HK",
+    "yue": "Noto Sans CJK HK",
+    "ko": "Noto Sans CJK KR",
+}
+```
+
+If output is English but source is CJK, still use a CJK-capable font because translations may retain names, honorifics, or signs.
+
+---
+
+### 5.2 Better ASS header
+
+Example:
+
+```python
+def write_ass(
+    path: str,
+    cues,
+    title: str = "Subtitles",
+    lang: str | None = None,
+    font: str | None = None,
+    fontsize: int = 64,
+) -> None:
+    lang = (lang or "").lower()
+    font = font or FONT_BY_LANG.get(lang, "Noto Sans CJK JP")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"""[Script Info]
+Title: {title}
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{font},{fontsize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,60,60,60,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+""")
+
+        for c in cues:
+            start = format_ass_time(c.start)
+            end = format_ass_time(c.end)
+            text = c.text.replace("\n", "\\N")
+            f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
+```
+
+ASS time helper:
+
+```python
+def format_ass_time(ms: int) -> str:
+    h = ms // 3_600_000
+    ms -= h * 3_600_000
+    m = ms // 60_000
+    ms -= m * 60_000
+    s = ms // 1_000
+    cs = (ms % 1_000) // 10
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+```
+
+Add CLI flags:
+
+```python
+parser.add_argument("--ass-font", help="Override ASS font name.")
+parser.add_argument("--ass-fontsize", type=int, default=64)
+```
+
+---
+
+### 5.3 Optional bilingual ASS output
+
+For CJK learning/review workflows, add:
+
+```python
+parser.add_argument(
+    "--bilingual",
+    action="store_true",
+    help="Write source text above English translation in ASS output.",
+)
+```
+
+Example output:
+
+```ass
+Dialogue: 0,0:00:01.00,0:00:03.00,Source,,0,0,0,,{\an8\fs36}おはよう、先輩。
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Good morning, senpai.
+```
+
+This is extremely useful for QA and manual correction.
+
+---
+
+## 6. Quality report improvements
+
+Your `build_report()` / `print_summary()` idea is excellent. For CJK, extend it.
+
+Recommended checks:
+
+| Check | Severity |
+|---|---|
+| Empty cue | error |
+| `[untranslated]` marker | error |
+| Source CJK residue in English output | warning/error depending threshold |
+| Line too long | warning |
+| More than 2 lines | warning |
+| Cue duration too short | warning |
+| Cue duration too long | warning |
+| Overlapping cues | warning |
+| Reading speed too high | warning |
+| Glossary violation | warning |
+| Duplicate consecutive cue | warning |
+| ASR tag leakage | error |
+| Fan markup leakage | error |
+
+Example JSON report shape:
+
+```json
+{
+  "total_cues": 420,
+  "untranslated_count": 3,
+  "source_residue_count": 2,
+  "overlap_count": 1,
+  "short_cue_count": 5,
+  "long_cue_count": 2,
+  "cps_violation_count": 7,
+  "line_length_violation_count": 12,
+  "glossary_violation_count": 0,
+  "serious_error_count": 6,
+  "warnings": [
+    {"cue": 17, "type": "cps", "value": 23.4},
+    {"cue": 58, "type": "overlap", "gap_ms": -120}
+  ]
+}
+```
+
+For `--strict-quality`, fail on:
+
+- untranslated cues,
+- ASR tag leakage,
+- source text leakage above threshold,
+- overlapping cues with negative gap,
+- empty cues.
+
+Warnings alone should not fail unless you add `--strict-warnings`.
+
+---
+
+## 7. Frontend improvements
+
+Your QML frontend can become much more valuable if it exposes the full pipeline visually.
+
+---
+
+### 7.1 Recommended UI structure
+
+Use a four-pane layout:
+
+```text
++--------------------------------------------------------------+
+| Source: YouTube URL / Local File / Language / Profile        |
++--------------------------------------------------------------+
+| Translation: Model / Local/Cloud / Glossary / TM / Rescue    |
++--------------------------------------------------------------+
+| Output: SRT/ASS / Font / Line length / Strict quality        |
++--------------------------------------------------------------+
+| Progress + Log                                               |
++--------------------------------------------------------------+
+| Cue Preview / Edit / Quality Warnings                        |
++--------------------------------------------------------------+
+```
+
+The most important missing feature for quality is a **cue preview/edit table**.
+
+Users should be able to see:
+
+| # | Start | End | Source | Translation | Status |
+|---:|---:|---:|---|---|---|
+| 1 | 00:00:01 | 00:00:03 | おはよう | Good morning | OK |
+| 2 | 00:00:03 | 00:00:05 | 先輩… | [untranslated] | Failed |
+
+Then they can manually fix failed cues and save.
+
+---
+
+### 7.2 Suggested `AppBridge` API
+
+Your current bridge is not shown, but for a robust GUI I would expose these properties and slots.
+
+```python
+class AppBridge(QObject):
+    logChanged = Signal()
+    progressChanged = Signal()
+    runningChanged = Signal()
+    finished = Signal(bool, str)
+
+    # Source
+    urlChanged = Signal()
+    filePathChanged = Signal()
+    sourceLangChanged = Signal()
+
+    # Translation
+    localModeChanged = Signal()
+    localModelPathChanged = Signal()
+    cloudModelChanged = Signal()
+    glossaryPathChanged = Signal()
+    translationMemoryModeChanged = Signal()
+
+    # Output
+    outputFormatChanged = Signal()
+    outputPathChanged = Signal()
+
+    @Property(str, notify=urlChanged)
+    def url(self) -> str: ...
+
+    @Slot(str)
+    def setUrl(self, value: str): ...
+
+    @Slot()
+    def browseVideoFile(self): ...
+
+    @Slot()
+    def browseGlossaryFile(self): ...
+
+    @Slot()
+    def browseLocalModel(self): ...
+
+    @Slot()
+    def start(self): ...
+
+    @Slot()
+    def cancel(self): ...
+
+    @Slot()
+    def openOutputFolder(self): ...
+```
+
+---
+
+### 7.3 Improved `Main.qml` skeleton
+
+This is a starting point. Adjust to your existing bridge names.
+
+```qml
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQuick.Dialogs
+
+ApplicationWindow {
+    id: root
+    visible: true
+    width: 1400
+    height: 900
+    title: qsTr("CJK Subtitle Translator")
+
+    property bool busy: appBridge.running
+
+    header: ToolBar {
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: 8
+
+            Label {
+                text: qsTr("CJK Subtitle Translator")
+                font.bold: true
+            }
+
+            Item { Layout.fillWidth: true }
+
+            ProgressBar {
+                visible: root.busy
+                value: appBridge.progress
+                width: 280
+            }
+
+            Button {
+                text: root.busy ? qsTr("Cancel") : qsTr("Start")
+                onClicked: root.busy ? appBridge.cancel() : appBridge.start()
+            }
+        }
+    }
+
+    SplitView {
+        anchors.fill: parent
+
+        Pane {
+            SplitView.preferredWidth: 520
+
+            ScrollView {
+                anchors.fill: parent
+
+                ColumnLayout {
+                    width: root.width * 0.35
+                    spacing: 12
+
+                    GroupBox {
+                        title: qsTr("Source")
+                        Layout.fillWidth: true
+
+                        GridLayout {
+                            anchors.fill: parent
+                            columns: 2
+
+                            Label { text: qsTr("YouTube URL") }
+                            TextField {
+                                Layout.fillWidth: true
+                                placeholderText: "https://www.youtube.com/watch?v=..."
+                                text: appBridge.url
+                                onEditingFinished: appBridge.setUrl(text)
+                            }
+
+                            Label { text: qsTr("Local File") }
+                            RowLayout {
+                                Layout.fillWidth: true
+
+                                TextField {
+                                    Layout.fillWidth: true
+                                    readOnly: true
+                                    text: appBridge.filePath
+                                }
+
+                                Button {
+                                    text: qsTr("Browse")
+                                    onClicked: appBridge.browseVideoFile()
+                                }
+                            }
+
+                            Label { text: qsTr("ASR Language") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["auto", "zh", "ja", "ko", "yue"]
+                                currentIndex: 0
+                            }
+
+                            Label { text: qsTr("Profile") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["general", "anime", "drama", "documentary", "literal"]
+                                currentIndex: 0
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: qsTr("Translation")
+                        Layout.fillWidth: true
+
+                        GridLayout {
+                            anchors.fill: parent
+                            columns: 2
+
+                            CheckBox {
+                                id: localMode
+                                text: qsTr("Local model")
+                                checked: appBridge.localMode
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Label { text: qsTr("Local GGUF") }
+                            RowLayout {
+                                Layout.fillWidth: true
+
+                                TextField {
+                                    Layout.fillWidth: true
+                                    readOnly: true
+                                    text: appBridge.localModelPath
+                                }
+
+                                Button {
+                                    text: qsTr("Browse")
+                                    onClicked: appBridge.browseLocalModel()
+                                }
+                            }
+
+                            Label { text: qsTr("Cloud Model") }
+                            TextField {
+                                Layout.fillWidth: true
+                                placeholderText: "gpt-4o"
+                                text: appBridge.cloudModel
+                            }
+
+                            Label { text: qsTr("Glossary") }
+                            RowLayout {
+                                Layout.fillWidth: true
+
+                                TextField {
+                                    Layout.fillWidth: true
+                                    readOnly: true
+                                    text: appBridge.glossaryPath
+                                }
+
+                                Button {
+                                    text: qsTr("Browse")
+                                    onClicked: appBridge.browseGlossaryFile()
+                                }
+                            }
+
+                            Label { text: qsTr("Translation Memory") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["auto", "on", "off"]
+                            }
+
+                            CheckBox {
+                                text: qsTr("Cloud rescue")
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: qsTr("Output")
+                        Layout.fillWidth: true
+
+                        GridLayout {
+                            anchors.fill: parent
+                            columns: 2
+
+                            Label { text: qsTr("Format") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["srt", "ass"]
+                            }
+
+                            Label { text: qsTr("Max line length") }
+                            SpinBox {
+                                from: 20
+                                to: 120
+                                value: 42
+                            }
+
+                            Label { text: qsTr("Max lines") }
+                            SpinBox {
+                                from: 1
+                                to: 4
+                                value: 2
+                            }
+
+                            CheckBox {
+                                text: qsTr("Strict quality")
+                            }
+
+                            Button {
+                                text: qsTr("Open Output Folder")
+                                onClicked: appBridge.openOutputFolder()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Pane {
+            SplitView.fillWidth: true
+
+            ColumnLayout {
+                anchors.fill: parent
+
+                TabBar {
+                    id: tabBar
+                    Layout.fillWidth: true
+
+                    TabButton { text: qsTr("Log") }
+                    TabButton { text: qsTr("Cues") }
+                    TabButton { text: qsTr("Quality") }
+                }
+
+                StackLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    currentIndex: tabBar.currentIndex
+
+                    ScrollView {
+                        TextArea {
+                            readOnly: true
+                            text: appBridge.log
+                            font.family: "Consolas"
+                        }
+                    }
+
+                    ScrollView {
+                        TableView {
+                            id: cueTable
+                            model: appBridge.cueModel
+
+                            delegate: Rectangle {
+                                implicitWidth: 180
+                                implicitHeight: 32
+                                color: index % 2 ? "#f6f6f6" : "#ffffff"
+
+                                Text {
+                                    anchors.fill: parent
+                                    anchors.margins: 6
+                                    text: model.display
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+                    }
+
+                    ScrollView {
+                        TextArea {
+                            readOnly: true
+                            text: appBridge.qualityReport
+                            font.family: "Consolas"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+### 7.4 Add structured progress from CLI
+
+Right now your GUI regex depends on:
+
+```python
+print(f"Wrote {len(out_cues)} cues to {out_path}")
+```
+
+Keep that final line, but add structured progress lines before it:
+
+```python
+print('{"type":"progress","stage":"asr","done":0,"total":100}', flush=True)
+print('{"type":"progress","stage":"translate","done":8,"total":420}', flush=True)
+print('{"type":"progress","stage":"postprocess","done":420,"total":420}', flush=True)
+```
+
+Then the bridge can parse JSON progress without breaking the existing final-line contract.
+
+Add:
+
+```python
+parser.add_argument(
+    "--json-progress",
+    action="store_true",
+    help="Emit machine-readable JSON progress lines for the GUI.",
+)
+```
+
+Important: keep the final line exactly as:
+
+```text
+Wrote N cues to path
+```
+
+so the existing GUI continues working.
+
+---
+
+### 7.5 Improve `main.py`
+
+A few small frontend improvements help a lot.
+
+#### Use Fusion or Material style
+
+`Basic` is stable, but `Fusion` often looks cleaner on desktop.
+
+```python
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Fusion")
+```
+
+If you want dark mode:
+
+```python
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Material")
+os.environ.setdefault("QT_QUICK_CONTROLS_MATERIAL_THEME", "Dark")
+```
+
+#### Bundle and load CJK fonts
+
+For UI source-text display, bundle `Noto Sans CJK` or similar.
+
+```python
+from PySide6.QtGui import QFontDatabase
+from pathlib import Path
+
+
+def _load_fonts() -> None:
+    font_dir = Path(_resource_path("assets", "fonts"))
+    if not font_dir.is_dir():
+        return
+
+    for font_file in font_dir.iterdir():
+        if font_file.suffix.lower() in {".ttf", ".otf", ".ttc"}:
+            QFontDatabase.addApplicationFont(str(font_file))
+```
+
+Call after creating `QGuiApplication`:
+
+```python
+app = QGuiApplication(sys.argv)
+_load_fonts()
+```
+
+#### Add application metadata
+
+```python
+app.setApplicationName("Translation Agent")
+app.setApplicationDisplayName("Translation Agent")
+app.setOrganizationName("Translation Agent")
+app.setOrganizationDomain("translation-agent.local")
+```
+
+This helps `QSettings` persistence.
+
+---
+
+## 8. Suggested new CLI flags
+
+These flags would materially improve CJK subtitle quality.
+
+```python
+parser.add_argument(
+    "--source-lang",
+    help="Preferred source language for YouTube subtitles: ja, zh, zh-TW, ko, yue.",
+)
+
+parser.add_argument(
+    "--translation-profile",
+    choices=["general", "anime", "drama", "documentary", "literal"],
+    default="general",
+)
+
+parser.add_argument(
+    "--max-line-chars",
+    type=int,
+    default=42,
+    help="Maximum characters per line for English output.",
+)
+
+parser.add_argument(
+    "--max-lines",
+    type=int,
+    default=2,
+)
+
+parser.add_argument(
+    "--max-cps",
+    type=float,
+    default=18.0,
+    help="Maximum characters per second for English output.",
+)
+
+parser.add_argument(
+    "--min-cue-ms",
+    type=int,
+    default=900,
+)
+
+parser.add_argument(
+    "--min-gap-ms",
+    type=int,
+    default=100,
+)
+
+parser.add_argument(
+    "--ass-font",
+)
+
+parser.add_argument(
+    "--ass-fontsize",
+    type=int,
+    default=64,
+)
+
+parser.add_argument(
+    "--bilingual",
+    action="store_true",
+    help="ASS only: include source text above translation.",
+)
+
+parser.add_argument(
+    "--json-progress",
+    action="store_true",
+    help="Emit JSON progress for the GUI.",
+)
+
+parser.add_argument(
+    "--auto-split-long-cues",
+    action="store_true",
+    help="Split cues whose translated text is too long for one subtitle.",
+)
+```
+
+---
+
+## 9. Cue splitting for long translations
+
+A major problem in CJK → English subtitles is that English is often longer than the source.
+
+Example:
+
+```text
+Source:
+そんなこと言われても困る。
+
+Translation:
+Even if you say that, it still puts me in a difficult position.
+```
+
+The English may exceed two lines. Instead of forcing three lines, split the cue if timing allows.
+
+Suggested logic:
+
+```python
+def split_long_cue(cue, max_chars=42, max_lines=2):
+    lines = cue.text.replace("\\N", "\n").split("\n")
+    if len(lines) <= max_lines:
+        return [cue]
+
+    # Split into two or more cues by line groups.
+    chunks = []
+    current = []
+
+    for line in lines:
+        current.append(line)
+        if len(current) >= max_lines:
+            chunks.append("\n".join(current))
+            current = []
+
+    if current:
+        chunks.append("\n".join(current))
+
+    if len(chunks) <= 1:
+        return [cue]
+
+    duration = cue.end - cue.start
+    weights = [max(len(chunk.replace("\n", " ")), 1) for chunk in chunks]
+    total_weight = sum(weights)
+
+    out = []
+    t = cue.start
+
+    for chunk, weight in zip(chunks, weights):
+        chunk_duration = int(duration * weight / total_weight)
+        start = t
+        end = t + chunk_duration
+        out.append(Cue(start=start, end=end, text=chunk))
+        t = end
+
+    # Ensure final cue ends exactly where original ended.
+    out[-1] = Cue(start=out[-1].start, end=cue.end, text=out[-1].text)
+
+    return out
+```
+
+This should be optional because it changes cue count. For quality work, it is often worth it.
+
+---
+
+## 10. Recommended pipeline order
+
+For best CJK subtitle quality, I would structure the pipeline like this:
+
+```text
+1. Input
+   - YouTube subtitle fetch
+   - or local audio/video file
+
+2. Source selection
+   - prefer manual subtitles if available
+   - choose source language explicitly if known
+
+3. Local ASR
+   - extract 16 kHz mono WAV
+   - optional loudnorm/highpass
+   - SenseVoiceSmall + VAD
+   - language forced if known
+
+4. ASR postprocessing
+   - strip tags
+   - normalize Unicode
+   - remove duplicate/hallucinated lines
+   - split long CJK cues at punctuation
+   - enforce source cue length limits
+
+5. Language detection
+   - script-ratio detection
+   - respect explicit user language
+
+6. Translation memory lookup
+   - exact matches
+   - approved matches only by default
+
+7. Translation
+   - batch with IDs
+   - include previous/next context
+   - include glossary
+   - use profile prompt
+   - validate output count
+
+8. Translation validation
+   - empty output
+   - source residue
+   - unchanged cue
+   - excessive length
+   - retry individually
+   - cloud rescue
+
+9. Translation memory store
+   - only successful translations
+   - store glossary hash/model/source lang
+
+10. Postprocessing
+   - English line wrapping or CJK line breaking
+   - timing enforcement
+   - overlap snapping
+   - reading speed checks
+   - optional long-cue splitting
+
+11. Output
+   - SRT or ASS
+   - ASS CJK font/style
+   - optional bilingual ASS
+   - quality report JSON
+
+12. GUI review
+   - cue table
+   - warnings
+   - manual correction
+   - save corrected output
+```
+
+---
+
+## 11. Recommended command lines
+
+### Japanese anime/local file, local translation, ASS output
+
+```bash
+python translate.py \
+  --file episode.mp4 \
+  --asr-lang ja \
+  --local \
+  --local-model models/Hy-MT2-1.8B-Q8_0.gguf \
+  --local-model-name Hy-MT2-1.8B-Q8_0 \
+  --glossary glossary/anime.tsv \
+  --translation-memory on \
+  --cloud-rescue \
+  --cloud-rescue-model gpt-4o \
+  --format ass \
+  --out episode.ass \
+  --quality-report episode.quality.json \
+  --strict-quality
+```
+
+### Chinese drama/local file, cloud translation
+
+```bash
+python translate.py \
+  --file drama.mp4 \
+  --asr-lang zh \
+  --model gpt-4o \
+  --glossary glossary/drama.tsv \
+  --translation-memory on \
+  --format ass \
+  --out drama.ass \
+  --quality-report drama.quality.json
+```
+
+### Korean variety/local file
+
+```bash
+python translate.py \
+  --file variety.mp4 \
+  --asr-lang ko \
+  --local \
+  --local-model models/Hy-MT2-1.8B-Q8_0.gguf \
+  --translation-memory on \
+  --format srt \
+  --out variety.srt
+```
+
+### YouTube Japanese video with manual subtitles
+
+```bash
+python translate.py \
+  "https://www.youtube.com/watch?v=..." \
+  --source-lang ja \
+  --model gpt-4o \
+  --glossary glossary/ja.tsv \
+  --format ass \
+  --out video.ass
+```
+
+---
+
+## 12. Fix `_gguf_check.py`
+
+The current script has several issues:
+
+```python
+path=r "C:/Users/Njoro/Downloads/Hy-MT2-1.8B-1.25Bit.gguf "
+data=open(path, "rb ").read()
+```
+
+The path and mode strings contain spaces. Also, reading the entire GGUF into memory is inefficient.
+
+Minimal fix:
+
+```python
+path = r"C:/Users/Njoro/Downloads/Hy-MT2-1.8B-1.25Bit.gguf"
+data = open(path, "rb").read()
+```
+
+Better: use `mmap` and avoid printing raw binary slices. But this script is not critical to subtitle quality.
+
+More importantly, avoid using `1.25Bit` for actual CJK translation if quality is the goal.
+
+---
+
+## 13. High-impact roadmap
+
+If I were prioritizing this project, I would do it in this order:
+
+### Phase 1: Immediate quality stabilization
+
+- Replace `1.25Bit` model with `Q5_K_M`/`Q6_K`/`Q8_0`.
+- Use explicit `--asr-lang` for CJK.
+- Reduce `--asr-max-cue-chars-cjk`.
+- Add source-residue detection.
+- Add retry + cloud rescue for failed cues.
+- Add strict final-line preservation for GUI.
+
+### Phase 2: CJK-aware postprocessing
+
+- Add `src/cjk.py`.
+- Add CJK language detection.
+- Add CJK line breaking for source/bilingual mode.
+- Add English line wrapping for final output.
+- Add timing enforcement.
+- Add reading-speed checks.
+
+### Phase 3: Better ASS output
+
+- CJK font selection by language.
+- 1080p ASS style.
+- Optional bilingual output.
+- Optional sound/emotion tags as ASS comments or notes.
+
+### Phase 4: GUI quality workflow
+
+- JSON progress.
+- Cue preview table.
+- Manual cue editing.
+- Quality warning panel.
+- Settings persistence.
+- Model/glossary pickers.
+- Open output folder.
+
+### Phase 5: Advanced quality
+
+- Two-pass translation: literal then polished.
+- Fuzzy translation memory.
+- Glossary violation detection.
+- Automatic long-cue splitting.
+- Optional vocal separation for BGM-heavy audio.
+- Optional whisper/WhisperX alignment fallback.
+
+---
+
+## 14. Summary of the most important changes
+
+For **quality CJK subtitles**, these are the highest-value improvements:
+
+1. **Do not use a 1.25-bit translation model for production CJK work.**
+2. **Force or reliably detect source language: `zh`, `ja`, `ko`, or `yue`.**
+3. **Reduce ASR cue length for CJK.**
+4. **Strip SenseVoice tags reliably, but preserve `[untranslated]`.**
+5. **Add source-residue detection.**
+6. **Add previous/next context to translation batches.**
+7. **Use cue IDs and strict output parsing.**
+8. **Add glossary hash to translation memory.**
+9. **Enforce English line length, max two lines, timing, and reading speed.**
+10. **Generate ASS with CJK-capable fonts and proper 1080p style.**
+11. **Add a GUI cue table for review/editing.**
+12. **Keep the final CLI line stable for GUI compatibility while adding JSON progress.**
+
+If applied, these changes should significantly improve consistency, readability, timing, and reliability of CJK-to-English subtitle output.

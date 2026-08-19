@@ -44,12 +44,18 @@ translation-agent/
 ├── src/                        # CLI pipeline (framework-free Python)
 │   ├── config.py               # .env loading + OpenAI client construction
 │   ├── fetch_subs.py           # YouTube subtitles/title/source-language fetch
-│   ├── srt_io.py               # Cue dataclass + SRT/read + output-path helpers
-│   ├── translate.py            # Faithful English translation (batched, LLM)
-│   ├── local_asr.py            # Local file transcription (FunASR / ffmpeg)
-│   ├── local_server.py         # Auto-start a bundled CPU-only llama-server
-│   ├── postprocess.py          # Fansub post-processing (line breaks / overlap snap / TN)
-│   └── ass_io.py               # Aegisub-compatible Advanced SubStation Alpha writer
+│   ├── srt_io.py               # Cue dataclass + SRT read/write + filename sanitize
+   │   ├── translate.py            # Faithful English translation (batched, LLM)
+   │   ├── batching.py             # Character-aware batch splitting for small CPU models
+   │   ├── glossary.py              # Source→target terminology file parser + prompt formatter
+   │   ├── translation_memory.py   # SQLite-backed exact-match translation cache
+   │   ├── subtitle_quality.py      # CPS / duration / char-count / empty-cue diagnostics
+   │   ├── rescue.py                # Optional cloud re-translation of failed cues
+   │   ├── local_asr.py            # Local file transcription (FunASR / ffmpeg)
+   │   ├── local_server.py         # Auto-start a bundled CPU-only llama-server
+   │   ├── postprocess.py          # Fansub post-processing (line breaks / overlap snap / TN)
+   │   ├── cjk.py                  # CJK script detection + kinsoku-aware line breaking
+   │   └── ass_io.py               # Aegisub-compatible Advanced SubStation Alpha writer
 │
 ├── backend/                    # GUI bridge layer (QObject / QRunnable workers)
 │   ├── bridge.py               # AppBridge: QML <-> Python state + pipeline runner
@@ -157,14 +163,18 @@ Flow:
 1. `extract_video_id()` parses `watch`, `youtu.be`, `shorts`, and `embed` URL forms.
 2. `_yt_dlp_metadata()` shells out to `yt-dlp --print "%(title)s|%(language)s"` to get the
    declared original language and title.
-3. `_resolve_transcript()` uses `youtube-transcript-api`: prefers the original language's
-   **manual** track, then its **generated** track, then falls back to the first available
-   track.
-4. `_fetch_english_title()` calls YouTube's **Innertube player API** with `hl=en` to get the
+3. **English-first:** `_resolve_english_transcript()` checks for an existing English
+   subtitle track (manual preferred, then auto-generated). If one is found, the cues
+   are returned verbatim with `source_language_code="en"` and the caller skips
+   translation.
+4. When no English track exists, `_resolve_transcript()` fetches the video's
+   original-language track (manual first, auto-generated as fallback, then first
+   available track as a last resort).
+5. `_fetch_english_title()` calls YouTube's **Innertube player API** with `hl=en` to get the
    **English-localized title** for the output filename (falling back to the original title).
    The Innertube key is a public web-client key; if it ever stops working the code fails
    gracefully to the original title.
-5. Cues are built from the transcript snippets preserving `start`/`end`.
+6. Cues are built from the transcript snippets preserving `start`/`end`.
 
 Returns `(cues: list[Cue], english_title, source_language_code)`. Errors surface as
 `RuntimeError`/`ValueError` with actionable messages (the CLI prints them and exits
@@ -178,16 +188,23 @@ GGUF + FSMN-VAD) as the only local ASR runtime — no Whisper, no PyTorch, CPU-o
 
 Flow:
 1. `_extract_wav()` converts any container to a 16 kHz mono 16-bit WAV via **ffmpeg**
-   (resolved from `FFMPEG_BIN`, bundled/`IMAGEIO_FFMPEG_EXE`, `imageio_ffmpeg`, or PATH).
+   (resolved from `FFMPEG_BIN`, bundled/`IMAGEIO_FFMPEG_EXE`, `imageio_ffmpeg`, or PATH),
+   applying **loudnorm** normalization before VAD sees the audio.
 2. `_prepare_segments()` runs a **FunASR FSMN-VAD** pass (aggressive settings: max segment
-   ~7 s, max end silence ~250 ms, speech/noise threshold ~0.55), with **ffmpeg
+   ~6 s, max end silence ~250 ms, speech/noise threshold ~0.55), with **ffmpeg
    silencedetect** as fallback/refiner, and splits long speech regions into shorter ASR
    segments.
 3. Each segment is cut out and transcribed by `llama-funasr-sensevoice`.
 4. `_segment_to_cues()` splits long recognized text into **short cues** on punctuation
-   (target ~3 s / ~70 chars) and distributes the timing proportionally inside the segment,
-   so output is short phrase-sized cues instead of giant paragraph blocks.
-5. Source language is detected from the SenseVoice tag group (or taken from `--asr-lang`);
+   using CJK-weighted character budgets (each CJK codepoint counts double, so the CJK
+   limit of 48 ≈ 24 full-width characters) and distributes the timing proportionally
+   inside the segment.
+5. For video containers, cues are snapped to the nearest **keyframe** (±100 ms, via
+   ffprobe) so subtitles never appear mid-scene-cut; the pass is skipped when ffprobe
+   or keyframes are unavailable and is never fatal.
+6. `maybe_warn_incomplete()` warns when the last cue ends well before the media
+   duration (a sign the ASR run stopped early).
+7. Source language is detected from the SenseVoice tag group (or taken from `--asr-lang`);
    `yue`→Cantonese, `zh`→Chinese, etc. Returns `tuple[list[Cue], str | None]`.
 
 Config resolution order is *flag → env → bundled/default* (`FUNASR_SENSEVOICE_BIN`,
@@ -213,6 +230,43 @@ Writes Aegisub-compatible `.ass` files with a sensible default style (1920×1080
 PlayRes, bottom-centred white text, black outline + shadow). `write_ass(path, cues)`
 returns the number of cues written. Enabled via `--format ass` (or a `.ass` output
 path). Line breaks are emitted as `\\N`.
+
+### 4.4d `src/batching.py` — character-aware batch splitting
+
+`chunk_texts()` splits cue texts into model-safe batches (by item count and
+non-whitespace character budget, CJK-aware limits), never reordering or dropping
+indices. `is_cjk_language()` and `estimate_text_weight()` support it. Used to cap
+Hy-MT2 requests at ≤ 12 cues / ≤ 700 CJK chars (env-overridable).
+
+### 4.4e `src/glossary.py` — terminology consistency
+
+`load_glossary()` parses a plain-text `source → target` glossary (TAB / `->` / `=`
+separators, `#` comments, capped at 80 entries / 2000 chars); `format_glossary()`
+renders the prompt block; `glossary_hash()` fingerprints entries for cache keys.
+
+### 4.4f `src/translation_memory.py` — SQLite translation cache
+
+`TranslationMemory` stores exact-match `(source_language, model_profile,
+glossary_hash, normalized_source) → translation` rows. Passthrough "translations"
+are never stored, and **poisoned entries** (source echoes, leaked `[CHENGYU:` /
+`<|...|>` markup) are purged on startup. Degrades gracefully to disabled on any
+SQLite error.
+
+### 4.4g `src/subtitle_quality.py` — subtitle diagnostics
+
+`analyze_cues()` flags CPS / duration / character-count / line-count / empty-text
+issues per cue (warning vs error thresholds); `build_report()` aggregates them
+plus the explicit `untranslated_count`; `print_summary()` prints the console
+summary. Serialized to JSON via `--quality-report`; `--strict-quality` exits
+non-zero on serious errors.
+
+### 4.4h `src/rescue.py` — cloud rescue
+
+`rescue_failed_cues()` re-translates **only** the cues that failed local
+translation, via a cloud OpenAI-compatible client, using the same numbered-item
+protocol, output validation (`looks_untranslated`), and per-item fallback.
+Returns `{cue_index: translation}` for rescued cues only. Enabled with
+`--cloud-rescue` / `--cloud-rescue-model` / `--cloud-rescue-batch`.
 
 
 ### 4.5 `src/translate.py` — the heart (faithful English translation)
@@ -425,17 +479,18 @@ At runtime the frozen app:
    standalone build; they exist locally but are Windows binaries that must be fetched/placed
    manually — and they currently don't appear in `git status` cleanly (untracked folder).
    Decide whether to commit them (they're large) or add them to `.gitignore` explicitly.
-4. **No automated tests.** There is no `tests/`, `pytest.ini`, `tox.ini`, or packaging
-   config. Validation is manual (run the CLI/GUI and check the produced SRT + alignment).
-   The project is a strong candidate for a `tests/` suite around `srt_io`,
-   `_parse_numbered`, and `sanitize_filename`.
-5. **Single-history, half-committed repo.** `git log` shows a single commit (`9d2a21a`
-   "before pyside6 qml migration") that predates the QML rewrite: most of the current work
-   is still uncommitted — `src/local_server.py`, `backend/controllers/`, several QML files
-   (`Card`, `CustomTextField`, `Sidebar`, `StyledRadioButton`, `SettingsView`, the `qmldir`
-   files), `vendor/`, and this file — while `ui/qml/components/SectionCard.qml` (tracked in
-   the old commit) has since been deleted from disk. A commit that snapshots the current
-   working tree is overdue.
+4. **Automated tests exist.** A `tests/` suite (251 tests, run with
+   `python -m pytest -q`, configured by `pytest.ini`) covers `srt_io`, translation
+   parsing and validation, batching, glossary, translation memory, subtitle
+   quality, local-ASR splitting, local server, fetch_subs, the fansub upgrade
+   (postprocess/ass_io), CJK detection (`src/cjk.py`), and the new CLI flags
+   (`--json-progress`, `--ass-font`/`--ass-fontsize`). Validation beyond that is
+   manual (run the CLI/GUI and check the produced SRT + alignment).
+5. **Short, partially-unhealthy commit history.** `git log` shows a handful of
+   commits (`9d2a21a` "before pyside6 qml migration", `ba85d4a` "commit before
+   redesign", `3dce98f` "progress") and the object store reports a missing object
+   when traversing parents — a `git fsck` / re-clone is advisable. Most of the
+   current work is committed; `vendor/` remains untracked.
 
 ---
 
@@ -480,16 +535,42 @@ build_exe.bat                   # -> dist\TranslationAgent.exe
 ## 11. Roadmap / natural next steps (suggested)
 
 - Keep `README.md` / `CLAUDE.md` in sync with the current **FunASR + SenseVoiceSmall** ASR implementation.
-- Add a lightweight `tests/` suite (pytest is not yet a dependency) for `srt_io`, the
-  numbered-parse alignment logic, and `sanitize_filename`.
+- ~~Add a lightweight `tests/` suite~~ — done (251 tests under `tests/`, run `python -m pytest -q`).
 - Consider graceful handling when `vendor/` binaries are absent (currently only enforced at
   build time).
 - Validate end-to-end output on a range of videos (manual/vs auto captions, various source
   languages, offline Hy-MT2 path) to firm up confidence before any release.
+- See `IMPROVEMENTS_TRIAGE.md` for the reviewed improvement backlog and its status.
 
 **Fansub-quality upgrade (done):** ASS output (`src/ass_io.py`, `--format ass`),
 post-processing pass (`src/postprocess.py` — line breaking, overlap snap, translator-note
-placement), and CJK-aware cue splitting (weighted char budget in `src/local_asr.py`).
+placement), CJK-aware cue splitting (weighted char budget in `src/local_asr.py`), and CJK
+language auto-detection (`src/cjk.py`).
+
+### Fansub philosophy (design north star)
+
+The pipeline is modeled on the fansub production culture, not the commercial
+subtitle one. Its quality bar is **fidelity over fluency** — carry the viewer *into*
+the source culture rather than domesticating it:
+
+- **Foreignization:** preserve author voice, cultural references, honorifics
+  (e.g. `-san`, `-senpai`), period register, puns, and speech levels. Never
+  smooth, localize, or sanitize (the `_FOREIGNIZATION_DIRECTIVE` / `_HY_MT2_STYLE`
+  invariants enforce this). Untranslatables get a `[Translator's Note]` on a
+  second line, not a rewrite.
+- **Deep linguistic/cultural expertise:** the glossary + translation-memory layers
+  exist so recurring terms, names, and idioms are applied consistently — the same
+  collaborative review fansubs get from their term/translators.
+- **Technical execution:** ASS (`--format ass`) with Aegisub-compatible timing,
+  styled output, and CJK-capable default fonts, plus `postprocess.snap_overlaps`
+  and reading-speed (CPS) guards so the output is insert-ready without manual
+  timing fixes.
+- **Multi-layer quality control:** every cue line is validated
+  (`looks_untranslated`, CJK-residue stripping) and a `--quality-report` /
+  `--strict-quality` pass counts CPS, duration, char/line counts, and empty/untranslated
+  cues — approximating the fansub editor/timer/typesetter checkpoints.
+
+
 
 - **Typesetter integration** — export cues with positional override tags (`{\\anX}` /
   per-line alignment + `\\pos`) for dual-speaker dialogue, so the output is insert-ready

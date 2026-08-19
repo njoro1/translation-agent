@@ -11,7 +11,7 @@
 - [x] Create `tests/__init__.py`
 - [x] Baseline tests for `src/srt_io.py` (timestamps, roundtrip, sanitization)
 - [x] Baseline tests for `src/translate.py` (`_numbered_block`, `_parse_numbered`, `_is_hy_mt2`)
-- [x] `pytest` runs successfully with no network (118 passed)
+- [x] `pytest` runs successfully with no network (251 passed)
 
 ## Phase 1 — Translation Batching & Hy-MT2 Reliability
 
@@ -94,9 +94,20 @@
 
 ## Final Validation
 
-- [x] Full `pytest` suite passes (118 passed)
+- [x] Full `pytest` suite passes (251 passed)
 - [x] CLI smoke test: `python translate.py --help` exits 0
 - [x] Benchmark smoke test: `python tools/benchmark.py --help` exits 0
 - [x] `py_compile` passes for all modified Python modules
 - [x] No Whisper.cpp / GPU / breaking-signature changes introduced
+
+## Phase 13 — CJK detection & fansub tooling improvements (this pass)
+
+- [x] Add `src/cjk.py` (script-ratio `detect_cjk_language` / `detect_cjk_from_cues`, `contains_cjk`, `char_width`/`text_width`, kinsoku `break_cjk`)
+- [x] Wire CLI auto-detection to the larger cue sample; keep `_detect_cjk_lang` fallback
+- [x] Guard `[untranslated]` marker in the final output sanitizer
+- [x] Add `src/ass_io.py` `FONT_BY_LANG` / `font_for_language` + `Title:` header
+- [x] Add `--ass-font` / `--ass-fontsize` CLI flags and `write_ass` parameters
+- [x] Add `--json-progress` structured progress lines (final `Wrote N cues` line unchanged)
+- [x] Tests: `test_cjk.py`, `test_cli_flags.py`, extended `test_fansub_upgrade.py`
+- [x] Produce `IMPROVEMENTS_TRIAGE.md` (Approved / Rejected / Deferred backlog)
 

@@ -1,9 +1,13 @@
 # YouTube Subtitle Translator
 
-A command-line tool that takes a YouTube URL, fetches the video's
-**original-language** subtitles (manual if available, auto-generated as fallback),
-translates them **faithfully into English** using an OpenAI-compatible LLM, and
-writes an SRT file named after the video while preserving the original timing.
+A command-line tool that takes a YouTube URL, fetches its subtitles, and writes
+an English SRT/ASS file named after the video while preserving the original
+timing. Subtitle selection is **English-first**: if YouTube already provides an
+English track (manual or auto-generated), it is used verbatim and translation is
+skipped; only when no English track exists does the tool fall back to the
+video's original-language track (manual if available, auto-generated as
+fallback) and translate it **faithfully into English** using an
+OpenAI-compatible LLM.
 
 ## Install
 
@@ -27,10 +31,19 @@ python translate.py "<youtube_url>"
 python translate.py "<youtube_url>" --model gpt-4o --out my_subs.srt --batch 30
 ```
 
-- Output is written to `<video_title>.srt` in the current directory by default.
-- `--out` overrides the output path.
+- Output is written to `<video_title>.srt` in the current directory by default
+  (`--format ass` writes an Aegisub-compatible `.ass` instead).
+- `--out` overrides the output path (a `.ass`/`.srt` extension overrides `--format`).
 - `--model` overrides `OPENAI_MODEL`.
-- `--batch` sets how many subtitle cues are sent per translation call (default 8).
+- `--batch` sets how many subtitle cues are sent per translation call (default 8;
+  automatically reduced to ≤ 12 per request for the local Hy-MT2 model).
+- `--json-progress` emits machine-readable `{"type":"progress",...}` lines for the
+  GUI (progress bars) without changing the final `Wrote N cues to ...` line.
+- ASS output picks a CJK-capable font from the detected source language by default;
+  override with `--ass-font <name>` and/or `--ass-fontsize <size>`.
+- When `--asr-lang` is left at `auto` for local files, the source CJK language
+  (zh/ja/ko) is auto-detected from the transcript and forwarded to the translation
+  prompt.
 
 ## GUI (Windows)
 
@@ -78,8 +91,12 @@ pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder 
    uses YouTube's **English-localized title** (fetched via the Innertube player
    API with `hl=en`); when a video has no English title, it falls back to the
    original title.
-3. `youtube-transcript-api` resolves the original-language track:
-   manual subtitles first, auto-generated captions if no manual track exists.
+3. `youtube-transcript-api` resolves subtitles:
+   - **English-first:** if YouTube already provides an English subtitle track
+     (manual or auto-generated), it is used verbatim and translation is skipped.
+   - **Original-language fallback:** when no English track exists, the video's
+     original-language track is fetched (manual subtitles first, auto-generated
+     captions as fallback).
    If the video has no subtitles at all, the tool exits with a clear message.
 4. Cues are translated in batches via the LLM, using numbered items so cue
    order and count stay aligned with the original timestamps. The translator
@@ -87,8 +104,14 @@ pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder 
    the original author's voice, cultural context, honorifics, and period
    register, and never sanitizes, domesticates, or injects modern target-culture
    slang. The source language (from YouTube) is injected into the system prompt.
-5. The translated text is written back into the original SRT cues, keeping
-   `start`/`end` times intact.
+5. Translation failures (empty replies, source echoes, CJK residue) are never
+   silently shipped — failed cues are marked `[untranslated]`, counted, logged
+   with their source text, and optionally rescued via cloud LLM.
+6. A post-processing pass runs line breaking (English word-boundary splitting),
+   overlap snapping, translator-note placement, fused-English repair, residual
+   CJK stripping, and literal-gloss cleanup.
+7. The translated text is written back into the original cue timestamps, keeping
+   `start`/`end` values intact.
 
 ## Notes
 
@@ -164,16 +187,21 @@ Defaults if neither is set: the binaries resolved from PATH, and `./gguf/*.gguf`
 | `--asr-keep-tags` | `FUNASR_KEEP_TAGS`      | off                              | Keep ASR `<|...|>` tags (disable default tag stripping). |
 
 ### How timing works
-Audio is extracted to a 16 kHz mono WAV, then a **FunASR VAD pass** yields speech
-segments (AGGRESSIVE settings keep them short), refined/fallback via **ffmpeg
-silencedetect**, and long speech regions are split into ≤ ~7-second ASR segments.
-Each segment is transcribed by **SenseVoiceSmall**. Long recognized text is then
-split into **short subtitle cues** on punctuation (target ~3 s / ~70 chars each)
-and timed proportionally inside the segment's start/end range — so local output is
-a series of short, phrase-sized cues instead of one giant paragraph block. Use
-`tools/check_srt.py output.srt` to verify cue count/duration. The original
-`start`/`end` times are never altered afterwards — only the `text` is replaced by
-the translation.
+Audio is extracted to a 16 kHz mono WAV with **loudnorm** normalization,
+then a **FunASR VAD pass** yields speech segments (AGGRESSIVE settings keep them
+short), refined/fallback via **ffmpeg silencedetect**, and long speech regions
+are split into ≤ ~6-second ASR segments. Each segment is transcribed by
+**SenseVoiceSmall**. Long recognized text is then split into **short subtitle
+cues** on punctuation using CJK-weighted character budgets (target ~3 s / ~70
+chars non-CJK, ~48 CJK chars by default) and timed proportionally inside the
+segment's start/end range — so local output is a series of short, phrase-sized
+cues instead of one giant paragraph block. For video files, cues are optionally
+snapped to the nearest keyframe (±100 ms) to prevent mid-scene-cut subtitles.
+
+The pipeline warns when the last cue ends well before the media duration (a sign
+the ASR run stopped early).
+
+Use `tools/check_srt.py output.srt` to verify cue count/duration.
 
 English-source audio skips translation (the ASR text is written as-is). Translation
 can still use your local llama.cpp server via `--local`, exactly as with YouTube.
@@ -300,7 +328,12 @@ python translate.py --file clip.mkv --local --translation-memory-db ./cache/tm.s
 - `--translation-memory on` / `off`: force it.
 - `TRANSLATION_MEMORY_DB` (default `./cache/translation_memory.sqlite3`).
 - Cache keys include the source language, model, and glossary hash, so a glossary
-  or model change invalidates stale entries. Corrupt databases degrade gracefully.
+  or model change invalidates stale entries.
+- **Poisoned entries are purged** on startup: source-text passthroughs (where the
+  "translation" is identical to the source) and entries with leaked ASR/markup
+  tags (`[CHENGYU:`, `<|...|>`) are automatically removed so a bad past run never
+  poisons future runs.
+- Corrupt databases degrade gracefully.
 
 ### Glossary
 
@@ -393,6 +426,8 @@ errors. Results are JSON so they can be diffed between runs.
 | `CLOUD_RESCUE_BATCH` | `10` | Cloud rescue batch size |
 | `FUNASR_MAX_CUE_CHARS_CJK` | `48` | CJK max cue chars |
 | `FUNASR_KEEP_TAGS` | `0` | Keep ASR tags (1 = on) |
+| `FUNASR_INCOMPLETE_WARN_SECONDS` | `8.0` | Min uncovered tail to warn about |
+| `FUNASR_FORCE_FFMPEG_VAD` | `0` | Force ffmpeg VAD (skip binary VAD) |
 
 ## Model note
 

@@ -56,6 +56,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Output subtitle format. 'ass' produces Aegisub-compatible ASS with styled output.",
     )
     parser.add_argument(
+        "--ass-font",
+        help="Override the ASS style font name. Defaults to a CJK-capable font "
+        "chosen from the source language (e.g. Noto Sans CJK JP).",
+    )
+    parser.add_argument(
+        "--ass-fontsize",
+        type=int,
+        help="Override the ASS subtitle font size (default 52).",
+    )
+    parser.add_argument(
         "--batch", type=int, default=8, help="Cues per translation call (default 8)"
     )
     parser.add_argument(
@@ -237,6 +247,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--quality-report",
         help="Write a JSON quality report to the given path.",
     )
+    parser.add_argument(
+        "--json-progress",
+        action="store_true",
+        help="Emit machine-readable JSON progress lines for the GUI. The final "
+        "'Wrote N cues to ...' line is unchanged.",
+    )
     return parser.parse_args(argv)
 
 
@@ -274,11 +290,27 @@ def _check_local_ready(base_url: str, timeout: float = 10.0) -> None:
     )
 
 
+def _json_progress(args, stage: str, done: int, total: int) -> None:
+    """Emit one machine-readable JSON progress line when ``--json-progress`` is set.
+
+    The GUI bridge can parse these lines for a progress bar without changing the
+    existing human-readable log or the final ``Wrote N cues to ...`` contract.
+    """
+    if not getattr(args, "json_progress", False):
+        return
+    print(
+        '{"type":"progress","stage":"%s","done":%d,"total":%d}'
+        % (stage, done, total),
+        flush=True,
+    )
+
+
 def _run_pipeline(
     args: argparse.Namespace, settings, fetched: tuple[list, str | None, str | None]
 ) -> int:
     """Translate fetched cues and write the SRT. Shared by local/remote."""
     cues, title, source_lang = fetched
+    _json_progress(args, "fetch", 0, max(len(cues), 1))
 
     # --- --asr-lang auto-pass-through guard --------------------------------
     # When the user left --asr-lang at 'auto' (not explicitly zh/ja/ko), attempt
@@ -287,11 +319,17 @@ def _run_pipeline(
     # Classical-Chinese detection activate correctly. An explicit user value
     # always wins.
     if getattr(args, "asr_lang", "auto") in (None, "", "auto") and not _is_english(source_lang):
-        detected = _detect_cjk_lang(" ".join(c.text or "" for c in cues[:5]))
+        # Use the robust script-ratio detector on a larger cue sample so an
+        # opening song, sign, greeting, or mixed-language segment does not skew
+        # the language the translation prompt is built around.
+        from src.cjk import detect_cjk_from_cues
+        detected = detect_cjk_from_cues(cues) or _detect_cjk_lang(
+            " ".join(c.text or "" for c in cues[:5])
+        )
         if detected:
             print(
                 f"[detect] --asr-lang auto; script heuristic detected "
-                f"'{detected}' from first cues; forwarding to translation.",
+                f"'{detected}' from source text; forwarding to translation.",
                 flush=True,
             )
             source_lang = detected
@@ -394,6 +432,7 @@ def _run_pipeline(
             )
             return 1
 
+    _json_progress(args, "translate", len(cues), len(cues))
     out_cues = [
         Cue(
             start=c.start,
@@ -411,6 +450,10 @@ def _run_pipeline(
     from src.translate import _strip_sensevoice_tag
 
     def _sanitize_output(t: str) -> str:
+        # The untranslated marker is intentional -- never strip or alter it so a
+        # failed cue stays visible instead of silently becoming an empty/live line.
+        if (t or "").strip() == UNTRANSLATED_MARKER:
+            return UNTRANSLATED_MARKER
         t = _strip_sensevoice_tag(t)
         # Collapse any whitespace runs/punctuation the tag group left behind.
         return re.sub(r"\s+", " ", t).strip()
@@ -469,7 +512,14 @@ def _run_pipeline(
             Cue(start=c.start, end=c.end, text=c.text.replace("\n", "\\N"))
             for c in out_cues
         ]
-        write_ass(out_path, ass_cues)
+        write_ass(
+            out_path,
+            ass_cues,
+            source_language=source_lang,
+            font=getattr(args, "ass_font", None),
+            fontsize=getattr(args, "ass_fontsize", None),
+            title=title or "Subtitles",
+        )
     else:
         # SRT uses a literal newline, so translate the \\N line breaks.
         srt_cues = [
@@ -477,6 +527,8 @@ def _run_pipeline(
             for c in out_cues
         ]
         write_srt(srt_cues, out_path)
+
+    _json_progress(args, "write", len(out_cues), len(out_cues))
 
     # --- Completion summary -------------------------------------------------
     # A partially-broken output must never be mistaken for a complete

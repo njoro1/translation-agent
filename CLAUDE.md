@@ -29,9 +29,10 @@ The local llama.cpp path serves Hy-MT2 (or any OpenAI-compatible model) offline 
 - `src/config.py` — loads `.env` (`OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`) and builds the OpenAI client.
 - `src/fetch_subs.py` — parses video id from URL, uses yt-dlp for the declared original language, then youtube-transcript-api to resolve the track (`manually_created` preferred, `generated` as fallback). Returns `list[Cue]`, the English-localized title, and the source language code.
 - `src/local_asr.py` — for local media files without subtitles. Shells out to ffmpeg + FunASR binaries (SenseVoiceSmall GGUF CPU runtime). Runs a FunASR VAD pass refined/backed up by ffmpeg silencedetect, splits long speech into short ASR segments, transcribes each with SenseVoiceSmall, then splits long text into short proportionally-timed cues. Returns `tuple[list[Cue], str | None]` (cues + detected source language).
-- `src/translate.py` — batches cues (default 40) as numbered items (`1. text`) so the model returns `1. translation`, keeping cue count/order aligned with timestamps. Falls back to per-item translation on misalignment and retries transient API errors with backoff. The **`translate_cues`** entry point is used by both the CLI and the GUI bridge.
+- `src/translate.py` — batches cues (default 8) as numbered items (`1. text`) so the model returns `1. translation`, keeping cue count/order aligned with timestamps. Falls back to per-item translation on misalignment and retries transient API errors with backoff. Validates every returned line (empty, source echo, CJK residue) so failures are never shipped or cached. The **`translate_cues`** entry point is used by both the CLI and the GUI bridge.
   - The **system prompt is a foreignization directive** (preserve author voice, cultural context, honorifics, period register; never sanitize/domesticate/inject modern slang). `build_system_prompt(source_language)` fills the source/target language placeholders. Keep this directive intact when editing translation.
   - The local llama.cpp path (`--local`) sends `extra_body` with Hy-MT2 sampling params (temperature, top_p, top_k, repetition_penalty).
+- `src/cjk.py` — dependency-free CJK script helpers: `contains_cjk`, `detect_cjk_language` / `detect_cjk_from_cues` (script-ratio classifier over a large cue sample), `char_width`/`text_width`, and kinsoku-aware `break_cjk` line breaking. Auto-detects the source language when `--asr-lang` is left at `auto`.
 - `src/srt_io.py` — `Cue` dataclass, SRT writer (`HH:MM:SS,mmm` timestamps), filename sanitization.
 
 ### GUI bridge (`backend/`)
@@ -82,9 +83,12 @@ python gui.py             # compatibility launcher, forwards to main.py
 
 ## Operational Notes
 
-- No test infrastructure exists (no `tests/`, no `pytest.ini`, no `tox.ini`, no packaging config).
+- **Tests:** a 251-test pytest suite covers SRT I/O, translation parsing, batching, glossary, translation memory, subtitle quality, local ASR splitting, local server, output validation, CJK detection (`src/cjk.py`), and CLI flag wiring. Run `python -m pytest -q`.
 - `.env` is git-ignored — never commit API keys.
 - yt-dlp and youtube-transcript-api are external CLIs/libraries; fetch failures raise `RuntimeError`/`ValueError` and the CLI exits non-zero without writing a file.
+- **English-first YouTube:** the fetcher prefers an existing English subtitle track (manual or auto) and skips translation when one is found; falls back to the original-language track only when no English track exists.
 - The local ASR path requires FunASR GGUF binaries (SenseVoiceSmall model + VAD model) and ffmpeg on PATH — no Python GPU runtime needed at runtime.
 - The `--local` flag runs a llama.cpp server locally; the model must already be served on the configured host/port (default `127.0.0.1:8080`).
 - `src/local_server.py` bundles a **CPU-only `llama-server`** (in `vendor/llama/`) and auto-starts it when `--local --local-model <file.gguf>` is given, so the user never has to launch a llama.cpp server manually. GPU offload is kept at 0 (`-ngl 0`) for full compatibility.
+- **Output validation:** failed translations (empty replies, source echoes, CJK residue in English output) are never shipped or cached — they are marked `[untranslated]`, counted, logged, and optionally rescued via cloud LLM.
+- **Post-processing:** `src/postprocess.py` applies line breaking, overlap snapping, translator-note placement, fused-English repair, residual CJK stripping, and literal-gloss cleanup before writing the output file.
