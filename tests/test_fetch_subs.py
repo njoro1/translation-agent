@@ -7,6 +7,7 @@ import pytest
 
 from src.fetch_subs import (
     _resolve_english_transcript,
+    _resolve_language_transcript,
     _resolve_transcript,
     _snippets_to_cues,
 )
@@ -111,3 +112,32 @@ def test_snippets_to_cues_skips_empty():
     cues = _snippets_to_cues(snippets)
     assert len(cues) == 1
     assert cues[0].text == "real"
+
+
+class TestResolveLanguageTranscript:
+    """Forced --source-lang track resolution (manual preferred, auto fallback)."""
+
+    def test_prefers_manual_for_forced_language(self):
+        ja_manual = _FakeTranscript("ja", True, [_snippet("a", 0)])
+        ja_gen = _FakeTranscript("ja", False, [_snippet("b", 0)])
+        tl = _FakeTranscriptList([ja_gen, ja_manual])
+        assert _resolve_language_transcript(tl, "ja") is ja_manual
+
+    def test_falls_back_to_generated(self):
+        ja_gen = _FakeTranscript("ja", False, [_snippet("b", 0)])
+        tl = _FakeTranscriptList([ja_gen])
+        assert _resolve_language_transcript(tl, "ja") is ja_gen
+
+    def test_region_code_tries_base_language(self):
+        # zh-TW is not present but zh is; the base-language fallback finds it.
+        zh = _FakeTranscript("zh", True, [_snippet("a", 0)])
+        tl = _FakeTranscriptList([zh])
+        assert _resolve_language_transcript(tl, "zh-TW") is zh
+
+    def test_absent_language_returns_none_not_arbitrary(self):
+        # A forced language that is unavailable must NOT silently use another
+        # language (unlike the original-language fallback path).
+        ja_manual = _FakeTranscript("ja", True, [_snippet("a", 0)])
+        en = _FakeTranscript("en", False, [_snippet("c", 0)])
+        tl = _FakeTranscriptList([ja_manual, en])
+        assert _resolve_language_transcript(tl, "ko") is None

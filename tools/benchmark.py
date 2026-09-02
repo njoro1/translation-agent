@@ -11,7 +11,6 @@ Optional flags:
     --local             Use the local llama.cpp server (Hy-MT2).
     --model NAME        Cloud model to use for translation.
     --batch N           Batch size override.
-    --cloud-rescue      Enable cloud rescue during the run.
 
 Reference-based quality metrics (exact match, length ratio) are computed when a
 reference_translation JSON is available. Missing media files produce clear errors.
@@ -44,18 +43,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--local", action="store_true", help="Use the local server.")
     parser.add_argument("--model", help="Cloud model name.")
     parser.add_argument("--batch", type=int, help="Batch size override.")
-    parser.add_argument("--cloud-rescue", action="store_true", help="Enable rescue.")
-    parser.add_argument(
-        "--cloud-rescue-model",
-        default=os.environ.get("CLOUD_RESCUE_MODEL"),
-        help="Cloud model used for rescue (default: same as --model).",
-    )
-    parser.add_argument(
-        "--cloud-rescue-batch",
-        type=int,
-        default=int(os.environ.get("CLOUD_RESCUE_BATCH", "10")),
-        help="Batch size for cloud rescue (default 10).",
-    )
     return parser.parse_args(argv)
 
 
@@ -192,78 +179,18 @@ def _add_subtitle_metrics(cues, out_cues, translations, case, result) -> None:
             result["avg_length_ratio"] = round(sum(ratios) / len(ratios), 3)
 
 
-def _build_rescue_handler(args, source_language: str | None):
-    """Build an optional cloud-rescue handler, or None if rescue shouldn't run.
-
-    Rescue is only wired when ``--cloud-rescue`` is explicitly passed AND a real
-    cloud API key (not the local ``sk-local`` placeholder) is available. This keeps
-    the benchmark fully usable offline in local mode — rescue simply stays dormant
-    until a cloud key is present.
-    """
-    if not getattr(args, "cloud_rescue", False):
-        return None
-
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key or api_key == "sk-local":
-        print(
-            "[benchmark] Cloud rescue requested but no real cloud credentials "
-            "are available (OPENAI_API_KEY unset or local placeholder); "
-            "rescue skipped.",
-            flush=True,
-        )
-        return None
-
-    rescue_model = (
-        getattr(args, "cloud_rescue_model", None)
-        or os.environ.get("CLOUD_RESCUE_MODEL")
-        or os.environ.get("OPENAI_MODEL")
-    )
-    if not rescue_model:
-        print(
-            "[benchmark] Cloud rescue requested but no rescue model is set "
-            "(--cloud-rescue-model / CLOUD_RESCUE_MODEL / OPENAI_MODEL); "
-            "rescue skipped.",
-            flush=True,
-        )
-        return None
-
-    from src.config import Settings, make_client
-    from src.rescue import rescue_failed_cues
-
-    base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
-    settings = Settings(api_key=api_key, base_url=base_url, model=rescue_model)
-    rescue_client = make_client(settings)
-    batch_size = getattr(args, "cloud_rescue_batch", 10) or 10
-
-    def _handler(cues, failed_indices):
-        return rescue_failed_cues(
-            cues=cues,
-            failed_indices=failed_indices,
-            client=rescue_client,
-            model=rescue_model,
-            source_language=source_language,
-            batch_size=batch_size,
-            glossary=None,
-        )
-
-    print(f"[benchmark] Cloud rescue wired (model={rescue_model})", flush=True)
-    return _handler
-
-
 def _parse_reliability_metrics(log_text: str) -> dict:
     """Extract reliability counters from the pipeline's stdout log lines.
 
-    These mirror the documented log prefixes in ``updated implementation plan.md``
-    section 24 (``[translate]``/``[tm]``/``[rescue]``). Counts are best-effort and
-    additive; a counter stays 0 when its log line never appears.
+    These mirror the documented log prefixes (``[translate]``/``[tm]``). Counts
+    are best-effort and additive; a counter stays 0 when its log line never
+    appears.
     """
     metrics = {
         "batch_failures": 0,
         "batch_splits": 0,
         "per_item_fallbacks": 0,
         "cache_hits": 0,
-        "rescue_attempts": 0,
-        "rescue_successes": 0,
     }
     for line in log_text.splitlines():
         low = line.lower()
@@ -271,19 +198,11 @@ def _parse_reliability_metrics(log_text: str) -> dict:
             metrics["batch_failures"] += 1
         if "splitting into" in low:
             metrics["batch_splits"] += 1
-        if "per-item fallback" in low:
+        if "per-item fallback" in low or "per_item_translate" in low:
             metrics["per_item_fallbacks"] += 1
         m_tm = re.search(r"\[tm\] (\d+) cache hits", low)
         if m_tm:
             metrics["cache_hits"] += int(m_tm.group(1))
-        m_attempt = re.search(r"\[rescue\] (\d+) cues failed locally", low)
-        if m_attempt:
-            metrics["rescue_attempts"] = int(m_attempt.group(1))
-        m_ok = re.search(
-            r"\[rescue\] cloud rescue succeeded for (\d+)/(\d+) cues", low
-        )
-        if m_ok:
-            metrics["rescue_successes"] = int(m_ok.group(1))
     return metrics
 
 
@@ -317,18 +236,16 @@ def _translate_case(cues, source_language, case, args, result, start_total) -> d
             )
 
         print(f"[benchmark] Translating {len(cues)} cues with {model_name}", flush=True)
-    rescue_handler = _build_rescue_handler(args, source_language)
     trans_start = time.monotonic()
     # Capture the pipeline's stdout log lines so we can derive reliability
-    # metrics (batch failures/splits, per-item fallbacks, rescue stats, cache
-    # hits). The captured text is parsed below; progress is not re-emitted to
-    # keep benchmark output concise.
+    # metrics (window/batch failures/splits, per-item fallbacks, cache hits).
+    # The captured text is parsed below; progress is not re-emitted to keep
+    # benchmark output concise.
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
         translations = translate_cues(
             cues, counting, model_name, batch_size=batch,
             source_language=source_language,
-            rescue_handler=rescue_handler,
         )
     result["translation_runtime"] = round(time.monotonic() - trans_start, 3)
 
@@ -347,8 +264,6 @@ def _translate_case(cues, source_language, case, args, result, start_total) -> d
     result["batch_splits"] = rel["batch_splits"]
     result["per_item_fallbacks"] = rel["per_item_fallbacks"]
     result["cache_hits"] = rel["cache_hits"]
-    result["rescue_attempts"] = rel["rescue_attempts"]
-    result["rescue_successes"] = rel["rescue_successes"]
 
     print(f"  total_time: {result['total_runtime']}s", flush=True)
     if result.get("asr_runtime"):
@@ -362,9 +277,6 @@ def _translate_case(cues, source_language, case, args, result, start_total) -> d
     print(f"  batch_splits: {result['batch_splits']}", flush=True)
     print(f"  per_item_fallbacks: {result['per_item_fallbacks']}", flush=True)
     print(f"  cache_hits: {result['cache_hits']}", flush=True)
-    if result["rescue_attempts"] or result["rescue_successes"]:
-        print(f"  rescue_attempts: {result['rescue_attempts']}", flush=True)
-        print(f"  rescue_successes: {result['rescue_successes']}", flush=True)
     if result.get("exact_match_rate") is not None:
         print(f"  exact_match_rate: {result['exact_match_rate']}", flush=True)
     return result
@@ -402,8 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     output = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "args": {
-            "local": args.local, "model": args.model,
-            "batch": args.batch, "cloud_rescue": args.cloud_rescue,
+            "local": args.local, "model": args.model, "batch": args.batch,
         },
         "results": results,
         "failed": failed,

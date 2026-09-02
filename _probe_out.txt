@@ -1,0 +1,142 @@
+== raw inspect_video()
+title      : Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film
+codecs     : ['av1', 'vp9', 'h264']
+resolutions: [2160, 1440, 1080, 720, 480, 360, 240, 144]
+en subs    : False
+best       : {
+  "codec": "",
+  "resolution": "best",
+  "ext": "",
+  "fps": 0,
+  "filesize": 0,
+  "has_audio": true,
+  "merge": false,
+  "label": "Best available (any codec)",
+  "format_selector": "bv*+ba/b"
+}
+matrix:
+  h264    360 -> sel='18'                     size=28526904 merge=False ext=mp4 label='360p · H.264 · mp4 · 30fps · 27MB'
+  av1    2160 -> sel='bestvideo[vcodec^=av01][height=2160]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (2160p, video + audio merge)'
+  av1    1440 -> sel='bestvideo[vcodec^=av01][height=1440]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (1440p, video + audio merge)'
+  av1    1080 -> sel='bestvideo[vcodec^=av01][height=1080]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (1080p, video + audio merge)'
+  av1     720 -> sel='bestvideo[vcodec^=av01][height=720]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (720p, video + audio merge)'
+  av1     480 -> sel='bestvideo[vcodec^=av01][height=480]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (480p, video + audio merge)'
+  av1     360 -> sel='bestvideo[vcodec^=av01][height=360]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (360p, video + audio merge)'
+  av1     240 -> sel='bestvideo[vcodec^=av01][height=240]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (240p, video + audio merge)'
+  av1     144 -> sel='bestvideo[vcodec^=av01][height=144]+bestaudio/best' size=0 merge=True ext=mkv label='Best AV1 (144p, video + audio merge)'
+  vp9    2160 -> sel='bestvideo[vcodec^=vp9][height=2160]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (2160p, video + audio merge)'
+  vp9    1440 -> sel='bestvideo[vcodec^=vp9][height=1440]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (1440p, video + audio merge)'
+  vp9    1080 -> sel='bestvideo[vcodec^=vp9][height=1080]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (1080p, video + audio merge)'
+  vp9     720 -> sel='bestvideo[vcodec^=vp9][height=720]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (720p, video + audio merge)'
+  vp9     480 -> sel='bestvideo[vcodec^=vp9][height=480]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (480p, video + audio merge)'
+  vp9     360 -> sel='bestvideo[vcodec^=vp9][height=360]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (360p, video + audio merge)'
+  vp9     240 -> sel='bestvideo[vcodec^=vp9][height=240]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (240p, video + audio merge)'
+  vp9     144 -> sel='bestvideo[vcodec^=vp9][height=144]+bestaudio/best' size=0 merge=True ext=mkv label='Best VP9 (144p, video + audio merge)'
+
+== yt-dlp raw formats (video-bearing) ==
+  id=   160 ext=mp4   h=144 vcodec=avc1.4d400c acodec=none tbr=54.511 fs=4323893
+  id=   278 ext=webm  h=144 vcodec=vp9 acodec=none tbr=66.688 fs=5289812
+  id=   394 ext=mp4   h=144 vcodec=av01.0.00M.08 acodec=none tbr=58.493 fs=4639733
+  id=   133 ext=mp4   h=240 vcodec=avc1.4d4015 acodec=none tbr=117.541 fs=9323483
+  id=   242 ext=webm  h=240 vcodec=vp9 acodec=none tbr=128.57 fs=10198281
+  id=   395 ext=mp4   h=240 vcodec=av01.0.00M.08 acodec=none tbr=95.52 fs=7576787
+  id=   134 ext=mp4   h=360 vcodec=avc1.4d401e acodec=none tbr=230.634 fs=18294110
+  id=    18 ext=mp4   h=360 vcodec=avc1.42001E acodec=mp4a.40.2 tbr=359.607 fs=28526904
+  id=   243 ext=webm  h=360 vcodec=vp9 acodec=none tbr=303.949 fs=24109536
+  id=   396 ext=mp4   h=360 vcodec=av01.0.01M.08 acodec=none tbr=192.872 fs=15298808
+  id=   135 ext=mp4   h=480 vcodec=avc1.4d401f acodec=none tbr=355.608 fs=28207144
+  id=   244 ext=webm  h=480 vcodec=vp9 acodec=none tbr=417.772 fs=33138062
+  id=   397 ext=mp4   h=480 vcodec=av01.0.04M.08 acodec=none tbr=327.765 fs=25998574
+  id=   298 ext=mp4   h=720 vcodec=avc1.4d4020 acodec=none tbr=1897.673 fs=150524867
+  id=   302 ext=webm  h=720 vcodec=vp9 acodec=none tbr=1420.515 fs=112676322
+  id=   398 ext=mp4   h=720 vcodec=av01.0.08M.08 acodec=none tbr=898.678 fs=71283827
+  id=   299 ext=mp4   h=1080 vcodec=avc1.64002a acodec=none tbr=3247.821 fs=257619653
+  id=   303 ext=webm  h=1080 vcodec=vp9 acodec=none tbr=2127.264 fs=168736189
+  id=   399 ext=mp4   h=1080 vcodec=av01.0.09M.08 acodec=none tbr=1568.15 fs=124386876
+  id=   308 ext=webm  h=1440 vcodec=vp9 acodec=none tbr=5967.715 fs=473363704
+  id=   400 ext=mp4   h=1440 vcodec=av01.0.12M.08 acodec=none tbr=3940.385 fs=312554313
+  id=   315 ext=webm  h=2160 vcodec=vp9 acodec=none tbr=17174.188 fs=1362269481
+  id=   401 ext=mp4   h=2160 vcodec=av01.0.13M.08 acodec=none tbr=8981.827 fs=712445280
+
+== bridge replay (exact UI path) ==
+hasInfo: True
+youtubeCodecs    : [{'id': 'av1', 'label': 'AV1'}, {'id': 'vp9', 'label': 'VP9'}, {'id': 'h264', 'label': 'H.264'}, {'id': 'best', 'label': 'Best (any)'}]
+youtubeResolutions: [{'value': 2160, 'label': '2160p'}, {'value': 1440, 'label': '1440p'}, {'value': 1080, 'label': '1080p'}, {'value': 720, 'label': '720p'}, {'value': 480, 'label': '480p'}, {'value': 360, 'label': '360p'}, {'value': 240, 'label': '240p'}, {'value': 144, 'label': '144p'}, {'value': 'best', 'label': 'Best'}]
+format rows: 18
+    {'isBest': True, 'selected': False, 'codec': 'best', 'codecLabel': 'Best (any)', 'resolution': 'best', 'resLabel': 'Best', 'formatText': 'auto', 'sizeText': '—', 'merge': False}
+    {'isBest': False, 'selected': True, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 2160, 'resLabel': '2160p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 2160, 'resLabel': '2160p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 1440, 'resLabel': '1440p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 1440, 'resLabel': '1440p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 1080, 'resLabel': '1080p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 1080, 'resLabel': '1080p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 720, 'resLabel': '720p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 720, 'resLabel': '720p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 480, 'resLabel': '480p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 480, 'resLabel': '480p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 360, 'resLabel': '360p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 360, 'resLabel': '360p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'h264', 'codecLabel': 'H.264', 'resolution': 360, 'resLabel': '360p', 'formatText': 'mp4 · 30fps', 'sizeText': '27MB', 'merge': False}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 240, 'resLabel': '240p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 240, 'resLabel': '240p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'av1', 'codecLabel': 'AV1', 'resolution': 144, 'resLabel': '144p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+    {'isBest': False, 'selected': False, 'codec': 'vp9', 'codecLabel': 'VP9', 'resolution': 144, 'resLabel': '144p', 'formatText': 'video + audio merge', 'sizeText': '—', 'merge': True}
+  [OK ] codec='av1'  res=2160     -> 'bestvideo[vcodec^=av01][height=2160]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=1440     -> 'bestvideo[vcodec^=av01][height=1440]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=1080     -> 'bestvideo[vcodec^=av01][height=1080]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=720      -> 'bestvideo[vcodec^=av01][height=720]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=480      -> 'bestvideo[vcodec^=av01][height=480]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=360      -> 'bestvideo[vcodec^=av01][height=360]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=240      -> 'bestvideo[vcodec^=av01][height=240]+bestaudio/best' size=0
+  [OK ] codec='av1'  res=144      -> 'bestvideo[vcodec^=av01][height=144]+bestaudio/best' size=0
+  [OK ] codec='av1'  res='best'   -> 'bestvideo[vcodec^=av01][height=2160]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=2160     -> 'bestvideo[vcodec^=vp9][height=2160]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=1440     -> 'bestvideo[vcodec^=vp9][height=1440]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=1080     -> 'bestvideo[vcodec^=vp9][height=1080]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=720      -> 'bestvideo[vcodec^=vp9][height=720]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=480      -> 'bestvideo[vcodec^=vp9][height=480]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=360      -> 'bestvideo[vcodec^=vp9][height=360]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=240      -> 'bestvideo[vcodec^=vp9][height=240]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res=144      -> 'bestvideo[vcodec^=vp9][height=144]+bestaudio/best' size=0
+  [OK ] codec='vp9'  res='best'   -> 'bestvideo[vcodec^=vp9][height=2160]+bestaudio/best' size=0
+  [OK ] codec='h264' res=2160     -> 'bestvideo[vcodec^=avc1][height=2160]+bestaudio/best' size=0
+  [OK ] codec='h264' res=1440     -> 'bestvideo[vcodec^=avc1][height=1440]+bestaudio/best' size=0
+  [OK ] codec='h264' res=1080     -> 'bestvideo[vcodec^=avc1][height=1080]+bestaudio/best' size=0
+  [OK ] codec='h264' res=720      -> 'bestvideo[vcodec^=avc1][height=720]+bestaudio/best' size=0
+  [OK ] codec='h264' res=480      -> 'bestvideo[vcodec^=avc1][height=480]+bestaudio/best' size=0
+  [OK ] codec='h264' res=360      -> '18' size=28526904
+  [OK ] codec='h264' res=240      -> 'bestvideo[vcodec^=avc1][height=240]+bestaudio/best' size=0
+  [OK ] codec='h264' res=144      -> 'bestvideo[vcodec^=avc1][height=144]+bestaudio/best' size=0
+  [OK ] codec='h264' res='best'   -> '18' size=28526904
+  [OK ] codec='best' res=2160     -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=1440     -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=1080     -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=720      -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=480      -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=360      -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=240      -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res=144      -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res='best'   -> 'bv*+ba/b' size=0
+  [OK ] codec='best' res='best'   -> 'bv*+ba/b' size=0
+
+== row-click replay ==
+  [OK ] click row best/best -> 'bv*+ba/b'
+  [OK ] click row av1/2160 -> 'bestvideo[vcodec^=av01][height=2160]+bestaudio/best'
+  [OK ] click row vp9/2160 -> 'bestvideo[vcodec^=vp9][height=2160]+bestaudio/best'
+  [OK ] click row av1/1440 -> 'bestvideo[vcodec^=av01][height=1440]+bestaudio/best'
+  [OK ] click row vp9/1440 -> 'bestvideo[vcodec^=vp9][height=1440]+bestaudio/best'
+  [OK ] click row av1/1080 -> 'bestvideo[vcodec^=av01][height=1080]+bestaudio/best'
+  [OK ] click row vp9/1080 -> 'bestvideo[vcodec^=vp9][height=1080]+bestaudio/best'
+  [OK ] click row av1/720 -> 'bestvideo[vcodec^=av01][height=720]+bestaudio/best'
+  [OK ] click row vp9/720 -> 'bestvideo[vcodec^=vp9][height=720]+bestaudio/best'
+  [OK ] click row av1/480 -> 'bestvideo[vcodec^=av01][height=480]+bestaudio/best'
+  [OK ] click row vp9/480 -> 'bestvideo[vcodec^=vp9][height=480]+bestaudio/best'
+  [OK ] click row av1/360 -> 'bestvideo[vcodec^=av01][height=360]+bestaudio/best'
+  [OK ] click row vp9/360 -> 'bestvideo[vcodec^=vp9][height=360]+bestaudio/best'
+  [OK ] click row h264/360 -> '18'
+  [OK ] click row av1/240 -> 'bestvideo[vcodec^=av01][height=240]+bestaudio/best'
+  [OK ] click row vp9/240 -> 'bestvideo[vcodec^=vp9][height=240]+bestaudio/best'
+  [OK ] click row av1/144 -> 'bestvideo[vcodec^=av01][height=144]+bestaudio/best'
+  [OK ] click row vp9/144 -> 'bestvideo[vcodec^=vp9][height=144]+bestaudio/best'
+
+RESULT: ALL SELECTIONS RESOLVED

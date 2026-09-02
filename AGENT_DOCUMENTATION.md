@@ -2,7 +2,11 @@
 
 > **Audience:** AI agents, coding assistants, and automated refactoring tools.
 > **Goal:** Provide complete, precise, actionable context so an agent can understand, modify, test, and extend this codebase without guessing.
-> **Last updated:** Based on working tree at commit `9d2a21afa91ed9f53f29e4c1dc9b230461ae291f` (branch `main`), with uncommitted QML/PyInstaller migration work present.
+> **Last updated:** Mode-simplification pass (three pipeline modes, cloud rescue removed, content presets, context-first translation windows, result JSON, GUI rework). 320-test suite passing (`python -m pytest -q`).
+>
+> **Canonical source of truth:** This file is the consolidated developer/AI reference. It supersedes the
+> now-archived `PROJECT.md`, `CLAUDE.md`, `TASKS.md`, and `updated implementation plan.md` (their content has
+> been folded in below). `README.md` remains the user-facing quick start.
 
 ---
 
@@ -20,10 +24,10 @@
 
 ```
 translation-agent/
-├── AGENT_DOCUMENTATION.md      # ← this file
-├── PROJECT.md                  # Developer narrative / history (human-readable)
-├── CLAUDE.md                   # Claude Code-specific guidance
-├── README.md                   # User-facing docs
+├── AGENT_DOCUMENTATION.md      # ← this file (consolidated developer/AI reference)
+├── README.md                   # User-facing quick start
+├── IMPROVEMENTS_TRIAGE.md      # Triage of improvements.txt (Approved / Rejected / Deferred)
+├── SUBTITLE_QUALITY_REPORT.md  # Offline-quality analysis + resolution status
 │
 ├── translate.py                # CLI entry point (top-level)
 ├── main.py                     # PySide6 + QML GUI entry point (canonical)
@@ -41,12 +45,22 @@ translation-agent/
 │
 ├── src/                        # Framework-free CLI pipeline
 │   ├── __init__.py
-│   ├── config.py               # .env + OpenAI client construction
+│   ├── config.py               # .env loading + OpenAI client construction
 │   ├── fetch_subs.py           # YouTube subtitle fetching + title resolution
 │   ├── srt_io.py               # Cue dataclass + SRT read/write + filename sanitize
-│   ├── translate.py            # LLM-based faithful English translation (batched)
-│   ├── local_asr.py            # FunASR + SenseVoiceSmall CPU transcription
-│   └── local_server.py         # Auto-start bundled CPU llama-server
+│   ├── translate.py            # LLM translation (context windows, numbered-item protocol) + validation
+│   ├── batching.py             # Character-aware batch splitting for small CPU models
+│   ├── presets.py              # Content presets + central settings resolver (CLI > preset > env > default)
+│   ├── translation_windows.py  # Context-first TranslationWindow engine (before/after context)
+│   ├── glossary.py             # Source→target glossary parse + prompt injection
+│   ├── translation_memory.py   # SQLite exact-match translation cache
+│   ├── subtitle_quality.py     # CPS / duration / char / line / leakage / residue diagnostics
+│   ├── local_asr.py            # FunASR + SenseVoiceSmall CPU transcription (+ FFmpeg preprocessing)
+│   ├── local_server.py         # Auto-start bundled CPU llama-server
+│   ├── postprocess.py          # Fansub post-processing (line break / overlap snap / TN)
+│   ├── cjk.py                  # CJK script detection + kinsoku line breaking
+│   ├── ass_io.py               # Aegisub-compatible ASS writer
+│   └── …
 │
 ├── backend/                    # GUI bridge (QObject + QRunnable workers)
 │   ├── __init__.py
@@ -56,21 +70,27 @@ translation-agent/
 │   │   └── translation.py      # TranslationWorker + _SignalWriter
 │   └── models/
 │       ├── __init__.py
-│       └── run_config.py       # RunConfig dataclass (argv + env)
+│       ├── run_config.py       # RunConfig dataclass (argv + env)
+│       └── results.py          # CueResultModel / filter proxy / QualityIssuesModel (Review + Quality tabs)
 │
 ├── ui/qml/                     # Qt Quick declarative frontend
-│   ├── Main.qml
+│   ├── Main.qml                # Header bar + Run/Review/Quality tabs + log drawer
+│   ├── Theme.qml               # Design tokens (singleton)
+│   ├── qmldir                  # Singleton registration
 │   ├── components/
 │   │   ├── qmldir
-│   │   ├── Card.qml
-│   │   ├── CustomTextField.qml
-│   │   ├── PrimaryButton.qml
-│   │   ├── Sidebar.qml
-│   │   └── StyledRadioButton.qml
-│   └── views/
-│       ├── qmldir
-│       ├── DashboardView.qml
-│       └── SettingsView.qml
+│   │   ├── AppHeader.qml       # Title | mode | preset | language | Run | status pill
+│   │   ├── ModePicker.qml      # YouTube Cloud / Local Cloud / Offline segmented control
+│   │   ├── PresetPicker.qml    # Content preset combo
+│   │   ├── FieldLabel.qml, CompactTextField.qml, CompactComboBox.qml
+│   │   ├── SectionPanel.qml, RunButton.qml, StatusPill.qml, ProgressPanel.qml
+│   │   ├── ReadinessChecklist.qml, AdvancedDrawer.qml
+│   │   ├── LogDrawer.qml       # Collapsible bottom log (JSON progress hidden unless debug)
+│   │   ├── CuePreviewTable.qml # Virtualized review table (QAbstractListModel-backed)
+│   │   └── QualityPanel.qml    # Quality badges + issue list
+│   └── archive/                # Retired pre-rework UI (Sidebar/Dashboard/Settings views)
+│
+├── assets/fonts/               # Optional bundled CJK fonts (Noto Sans CJK; see README.txt)
 │
 ├── vendor/                     # Bundled binaries (untracked, not git-ignored)
 │   ├── funasr/                 # llama-funasr-sensevoice.exe, llama-funasr-vad.exe + DLLs
@@ -79,7 +99,23 @@ translation-agent/
 ├── gguf/                       # Downloaded GGUF models (SenseVoiceSmall, VAD, Hy-MT2)
 │
 ├── tools/
+│   ├── benchmark.py            # Offline benchmark harness (tools/benchmark.py)
+│   ├── benchmark_preprocess.py # ASR preprocessing profile benchmark (cue counts, CER/WER)
 │   └── check_srt.py            # SRT diagnostic (cue count, avg/max duration)
+│
+├── tests/                      # pytest suite (251 tests, no network/keys/binaries)
+│   ├── test_srt_io.py, test_translate_parsing.py, test_translate_validation.py
+│   ├── test_batching.py, test_glossary.py, test_translation_memory.py
+│   ├── test_subtitle_quality.py, test_local_asr_splitting.py, test_local_server.py
+│   ├── test_fetch_subs.py, test_fansub_upgrade.py, test_cjk.py, test_cli_flags.py
+│   └── …
+│
+├── benchmark/
+│   ├── README.md               # How to add test media
+│   └── cases.json              # Benchmark case definitions
+│
+├── docs/
+│   └── archive/                # Archived docs (PROJECT.md, CLAUDE.md, TASKS.md, IMPLEMENTATION_PLAN.md)
 │
 ├── build/                      # PyInstaller intermediate build artifacts
 ├── dist/                       # PyInstaller output (TranslationAgent.exe)
@@ -93,12 +129,17 @@ translation-agent/
 
 ### 3.1 High-Level Modes
 
-| Mode | Input | Subtitle Source | Translation |
-|------|-------|-----------------|-------------|
-| **YouTube (cloud)** | YouTube URL | youtube-transcript-api (manual → auto fallback) | OpenAI-compatible cloud LLM |
-| **YouTube (local)** | YouTube URL | youtube-transcript-api | llama.cpp server (auto-started or existing) |
-| **Local ASR (cloud)** | Local media file | FunASR + SenseVoiceSmall (VAD + ffmpeg) | OpenAI-compatible cloud LLM |
-| **Local ASR (local)** | Local media file | FunASR + SenseVoiceSmall (VAD + ffmpeg) | llama.cpp server (auto-started or existing) |
+Exactly three user-facing pipeline modes (cloud rescue has been removed):
+
+| Mode ID | UI Label | Input | ASR | Translation | Requires API Key | Requires Local Translation Model |
+|---------|----------|-------|-----|-------------|------------------|----------------------------------|
+| `youtube_cloud` | YouTube Cloud | YouTube URL | No | Cloud LLM | Yes | No |
+| `local_cloud` | Local Cloud | Local media file | FunASR + SenseVoiceSmall | Cloud LLM | Yes | No |
+| `offline` | Offline | Local media file | FunASR + SenseVoiceSmall | llama.cpp (Hy-MT2) | No | Yes |
+
+There is deliberately **no mixed mode**: local translation never falls back to
+cloud rescue. The user chooses cloud or local translation per run; offline mode
+never receives cloud credentials (`env={}` in the GUI run config).
 
 ### 3.2 YouTube Pipeline (CLI)
 
@@ -109,17 +150,21 @@ translate.py (main)
   │   └─ src.local_asr.transcribe_local_file()
   │       └─ returns (cues, source_language)
   ├─ else (YouTube URL):
-  │   └─ src.fetch_subs.fetch_original_subtitles(url)
+  │   └─ src.fetch_subs.fetch_original_subtitles(url, preferred_lang=--source-lang)
   │       ├─ extract_video_id(url)
   │       ├─ _yt_dlp_metadata(url) → (title, lang)
   │       ├─ _fetch_english_title(video_id) → english_title
-  │       └─ _resolve_transcript(video_id, lang) → snippets → list[Cue]
+  │       ├─ (--source-lang given?) → _resolve_language_transcript (forced, no
+  │       │   wrong-language fallback; skips English-first when non-English)
+  │       └─ else → _resolve_transcript(video_id, lang) / _resolve_english_transcript
   │           └─ returns (cues, english_title, source_language)
   ├─ if --local:
   │   ├─ src.local_server.ensure_local_server(model_path, host, port) → (proc, how)
   │   └─ _check_local_ready(base_url)
-  └─ src.translate.translate_cues(cues, client, model, batch_size, source_language)
-      └─ batches cues, calls LLM with numbered-item protocol
+  └─ src.translate.translate_cues(cues, client, model, batch_size, source_language,
+           context_mode=…, prompt_profile=…, progress_callback=…)
+      └─ builds context windows (src/translation_windows.py), calls LLM with
+         numbered-item protocol + read-only before/after context
   └─ src.srt_io.write_srt(cues, out_path)
 ```
 
@@ -174,16 +219,20 @@ The system prompt for cloud translation is built from `_FOREIGNIZATION_DIRECTIVE
 **Key types / functions:**
 ### 4.4 `src/translate.py`
 
-**Responsibility:** Batch translation of cues via an OpenAI-compatible chat completion API.
+**Responsibility:** Context-window translation of cues via an OpenAI-compatible chat completion API.
 
 **Key types / functions:**
-- `build_system_prompt(source_language, target_language="English", *, glossary=None, chengyu=False, classical=False, emotion=False) -> str`
-  - Fills `_FOREIGNIZATION_DIRECTIVE` language placeholders; appends glossary and optional fansub augmentations (chengyu, Classical-Chinese register, emotion-tag awareness).
-- `translate_cues(cues, client, model, batch_size=8, max_retries=3, source_language=None, *, glossary=None, translation_memory=None, rescue_handler=None) -> list[str]`
+- `build_system_prompt(source_language, target_language="English", *, glossary=None, chengyu=False, classical=False, emotion=False, addendum=None) -> str`
+  - Fills `_FOREIGNIZATION_DIRECTIVE` language placeholders; appends glossary, optional fansub augmentations (chengyu, Classical-Chinese register, emotion-tag awareness), and the content-preset addendum (`addendum` — appended only, never replaces the directive).
+- `translate_cues(cues, client, model, batch_size=8, max_retries=3, source_language=None, *, glossary=None, translation_memory=None, context_mode=None, prompt_profile=None, progress_callback=None, scene_summary_enabled=False) -> list[str]`
   - The **canonical entry point** used by both CLI and GUI.
-  - Splits cues into batches (dynamic batching via `src/batching.py`), calls `_translate_group`, and falls back per item.
-  - `glossary` is the formatted glossary string; `translation_memory` is a `TranslationMemory` instance (or `None`); `rescue_handler` is a `callable(cues, failed_indices) -> dict[int, str]` for cloud rescue (or `None`).
-  - On misalignment a batch is retried, split, and finally translated per-item.
+  - Splits cues into context-aware `TranslationWindow`s (`src/translation_windows.py`), attaches read-only before/after context plus a rolling memory of recent translated pairs, and calls `_translate_group` per window.
+  - `context_mode`: `off`/`light`/`standard`/`deep` — `None` resolves to the backend default (`standard` for both; benchmark-verified safe for Hy-MT2 — see `tools/compare_context_modes.py`).
+  - `prompt_profile`: selects a scoped content addendum via `src/presets.get_prompt_addendum`.
+  - `progress_callback(done, total, stage)`: invoked after each window finalizes (drives GUI JSON progress).
+  - `scene_summary_enabled`: optional cloud-only rolling scene summary.
+  - Translation-memory interaction: a window whose cues are ALL exact TM hits is served from TM (no LLM); a partially-hit window goes to the LLM whole and TM entries are overwritten with the fresh in-context translations.
+  - On misalignment a window is retried with a stricter instruction, split in half recursively, and finally translated per-item. Cue count is exact at every stage.
 
 **Internal helpers:**
 - `_is_hy_mt2(model) -> bool`
@@ -193,6 +242,8 @@ The system prompt for cloud translation is built from `_FOREIGNIZATION_DIRECTIVE
   - Adds `STRICT:` prefix on retry attempts to force exact line count.
   - Passes `extra_body` for llama.cpp-only params.
 - `_translate_one(client, model, text, system_prompt, ...) -> str`
+- `_maybe_update_scene_summary(client, model, summary, recent_sources) -> str`
+  - Best-effort rolling summary for cloud prompts; never raises, never alters numbering.
 
 **Constants:**
 | Constant | Value | Usage |
@@ -375,14 +426,14 @@ No spaces around `=`.
 | `TRANSLATION_GLOSSARY` | `translate.py` | unset | Glossary file path |
 | `TRANSLATION_MEMORY_MODE` | `translate.py` | `auto` | `auto` \| `on` \| `off` |
 | `TRANSLATION_MEMORY_DB` | `translate.py` | `./cache/translation_memory.sqlite3` | TM database path |
-| `HY_MT2_MAX_BATCH_CUES` | `translate.py` | `12` | Hy-MT2 max batch cues |
-| `HY_MT2_MAX_BATCH_CHARS_CJK` | `translate.py` | `700` | Hy-MT2 max batch chars (CJK) |
-| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `translate.py` | `1000` | Hy-MT2 max batch chars (non-CJK) |
+| `HY_MT2_MAX_BATCH_CUES` | `translate.py` | `12` | Hy-MT2 max window cues (legacy alias) |
+| `HY_MT2_MAX_BATCH_CHARS_CJK` | `translate.py` | `700` | Hy-MT2 max window chars (CJK) |
+| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `translate.py` | `1000` | Hy-MT2 max window chars (non-CJK) |
+| `FUNASR_PREPROCESS` | `presets.py` | unset | ASR preprocessing profile override (auto preset only) |
+| `TRANSLATION_CONTEXT_MODE` | `presets.py` | unset | Context mode override (auto preset only) |
+| `TRANSLATION_PROMPT_PROFILE` | `presets.py` | unset | Prompt profile override (auto preset only) |
 | `LLAMA_SERVER_THREADS` | `local_server.py` | `0` | Local server threads |
 | `LLAMA_SERVER_MLOCK` | `local_server.py` | `0` | Enable mlock (1 = on) |
-| `CLOUD_RESCUE_ENABLED` | `translate.py` | `0` | Enable cloud rescue (1 = on) |
-| `CLOUD_RESCUE_MODEL` | `translate.py` | unset | Cloud rescue model |
-| `CLOUD_RESCUE_BATCH` | `translate.py` | `10` | Cloud rescue batch size |
 | `FUNASR_VAD_UNITS` | `local_asr.py` | `ms` | VAD output time units |
 | `FUNASR_OUTPUT_FLAG` | `local_asr.py` | auto-detect | VAD/ASR output file flag |
 | `FFMPEG_BIN` | `local_asr.py` | ffmpeg on PATH | ffmpeg binary path |
@@ -415,8 +466,14 @@ Tests live in `tests/` and cover:
 - `test_fansub_upgrade.py` — `postprocess`, `ass_io` (incl. `font_for_language` / font flags).
 - `test_cjk.py` — `src/cjk.py` detection, width, and kinsoku line breaking.
 - `test_cli_flags.py` — `--json-progress`, `--ass-font`/`--ass-fontsize` wiring.
+- `test_pipeline_modes.py` — GUI run-config per mode (no `--local` leakage, offline strips cloud env).
+- `test_asr_preprocess.py` — preprocessing filter strings, auto→basic, duration-mismatch fallback.
+- `test_presets.py` — preset table values, precedence (explicit > preset > env > default), addenda.
+- `test_context_windows.py` — window builder, context modes, prompts, TM interaction, fallback ladder.
+- `test_result_json.py` — `--result-json` schema, final-line contract, untranslated flagging.
+- `test_quality_extended.py` — tag/markup leakage, CJK residue, duplicates, overlap.
 
-Run with `python -m pytest -q` (currently 251 passing, no network / keys / binaries required).
+Run with `python -m pytest -q` (currently 320 passing, no network / keys / binaries required).
 
 **Manual validation checklist:**
 1. YouTube URL with manual subtitles → SRT with correct timestamps and translated English text.
@@ -424,12 +481,13 @@ Run with `python -m pytest -q` (currently 251 passing, no network / keys / binar
 3. Local video with no subtitles → FunASR transcription → English translation.
 4. Local model path (`--local --local-model model.gguf`) → server auto-starts → translation succeeds.
 5. Existing server path (`--local` without `--local-model`) → connects to running server.
-6. Local Hy-MT2: confirm effective batch is reduced and cue count matches.
+6. Local Hy-MT2: confirm effective window size is reduced and cue count matches.
 7. Local media CJK: confirm ASR tags are stripped and cues are shorter for CJK.
-8. Cloud rescue: enabled from a forced local failure; only failed cues re-translated; no rescue when disabled.
-9. GUI mode: run translation, verify log streaming, verify "Open Output Folder" works after success.
+8. Cloud rescue: REMOVED — verify no `--cloud-rescue*` flag exists and no docs describe it as active.
+9. GUI mode: run translation, verify progress bar updates from JSON progress, Review/Quality tabs populate from result JSON, log drawer stays collapsed.
 10. `python tools/check_srt.py output.srt` → verify average/max cue durations are reasonable.
-11. Frozen build: `build_exe.bat`, run `TranslationAgent.exe`, verify vendor binaries + QML + logs.
+11. Preprocessing benchmark: `python tools/benchmark_preprocess.py --media sample.mp4` → comparable per-profile metrics.
+12. Frozen build: `build_exe.bat`, run `TranslationAgent.exe`, verify vendor binaries + QML + fonts + logs.
 
 ---
 
@@ -450,10 +508,12 @@ Run with `python -m pytest -q` (currently 251 passing, no network / keys / binar
 | **TranslationWorker** | `backend.controllers.translation.TranslationWorker`; QRunnable that runs `translate.main()` off the UI thread. |
 | **Translation memory (TM)** | SQLite cache of exact source→target lines, keyed by language/model/glossary hash. |
 | **Glossary** | Plain-text source→target term list injected into prompts for consistent terminology. |
-| **Cloud rescue** | Optional re-translation of only the failed local cues via a cloud model. |
-| **Dynamic batching** | Character/count-aware splitting of cue batches so small CPU models stay reliable. |
-| **Fallback ladder** | Retry → split-in-half → per-item fallback used when a numbered batch fails. |
-| **Quality report** | JSON diagnostics of CPS / duration / char-count / line-count / empty cues. |
+| **Cloud rescue** | REMOVED. Local translation never falls back to the cloud; users pick cloud or local per run. |
+| **Content preset** | `src/presets.py` scenario profile (auto/drama/anime/music/documentary/variety/lecture) tuning ASR, preprocessing, context mode, and prompt addenda. |
+| **Context window** | `src/translation_windows.TranslationWindow`; current cues plus read-only before/after context; the primary translation unit. |
+| **Result JSON** | Machine-readable run output (`--result-json`) consumed by the GUI Review/Quality tabs. |
+| **Fallback ladder** | Retry → split-in-half → per-item fallback used when a numbered window fails. |
+| **Quality report** | JSON diagnostics of CPS / duration / char-count / line-count / empty cues / tag leakage / CJK residue / duplicates / overlaps. |
 | **_MEIPASS** | PyInstaller's temp extraction directory (when frozen). |
 | **QSettings** | Qt's persistent settings (registry on Windows). |
 
@@ -472,7 +532,11 @@ Run with `python -m pytest -q` (currently 251 passing, no network / keys / binar
 
 ## 8. Key Design Invariants (Do Not Break)
 
-1. **Timestamps are sacred.** `start`/`end` are never modified for YouTube or cloud-translated output. Only `text` is replaced.
+1. **Timestamps are sacred.** `start`/`end` are preserved for YouTube or
+   cloud-translated output; only `text` is replaced. The **only** exception is the
+   fansub post-processing overlap snap in `postprocess.snap_overlaps`, which trims
+   a cue's `end` *only* when two consecutive cues actually overlap, never below
+   300 ms duration (see §postprocess).
 2. **Cue count in == cue count out.** The numbered-item protocol guarantees this; fallback to per-item translation on misalignment. Never silently drop/merge/reorder cues.
 3. **Target language is fixed to English.**
 4. **Foreignization is the translation philosophy.** Preserve author voice, culture, honorifics, period register. Never sanitize, domesticate, or inject modern slang. Keep `_FOREIGNIZATION_DIRECTIVE` and `_HY_MT2_STYLE` intact.
@@ -571,7 +635,7 @@ To expose a new field to QML, add it to `AppBridge` in `backend/bridge.py` as a 
 | `--file` | -- | Local mode | Local media path |
 | `--model` | `OPENAI_MODEL` | No | Override model |
 | `--out` | `<title>.srt` | No | Output path |
-| `--batch` | `40` | No | Cues per translation call |
+| `--batch` | `8` | No | Cues per translation call |
 | `--local` | off | No | Use llama.cpp server |
 | `--local-host` | `127.0.0.1` | No | Server host |
 | `--local-port` | `8080` | No | Server port |
@@ -583,14 +647,37 @@ To expose a new field to QML, add it to `AppBridge` in `backend/bridge.py` as a 
 | `--asr-vad-model` | `./gguf/fsmn-vad.gguf` | No | VAD GGUF |
 | `--asr-lang` | `auto` | No | ASR source language (`auto`/`zh`/`en`/`ja`/`ko`/`yue`) |
 | `--asr-threads` | `4` | No | FunASR CPU threads |
-| `--asr-max-segment-ms` | `7000` | No | Max ASR segment length |
+| `--asr-max-segment-ms` | `6000` | No | Max ASR segment length |
 | `--asr-max-end-silence-ms` | `250` | No | Trailing silence for VAD |
 | `--asr-speech-noise-threshold` | `0.55` | No | VAD speech/noise threshold |
 | `--asr-noise-db` | `-35` | No | ffmpeg silencedetect noise floor |
-| `--asr-min-silence-s` | `0.20` | No | Min silence for ffmpeg silence detection |
-| `--asr-max-cue-duration-ms` | `3000` | No | Max subtitle cue duration |
+| `--asr-min-silence-s` | `0.25` | No | Min silence for ffmpeg silence detection |
+| `--asr-max-cue-duration-ms` | `3200` | No | Max subtitle cue duration |
 | `--asr-max-cue-chars` | `70` | No | Max subtitle cue character count |
+| `--asr-max-cue-chars-cjk` | `48` | No | Max subtitle cue character count (CJK) |
 | `--asr-no-tags` | off | No | Strip SenseVoice language tags |
+| `--asr-keep-tags` | off | No | Keep ASR `<|...|>` tags (disable default stripping) |
+| `--asr-preprocess` | `auto` | No | FFmpeg preprocessing profile (`auto`/`none`/`basic`/`loudnorm`/`denoise`) |
+| `--content-preset` | `auto` | No | Scenario preset (`auto`/`drama`/`anime`/`music`/`documentary`/`variety`/`lecture`) |
+| `--prompt-profile` | preset | No | Prompt addendum profile (general = none) |
+| `--context-mode` | preset/backend | No | Translation context level (`off`/`light`/`standard`/`deep`) |
+| `--context-summary` | off | No | Cloud-only rolling scene summary |
+| `--source-lang` | unset | No | YouTube: force a source track (ja/zh/zh-TW/ko/yue/en); Local: translation source hint when ASR is auto/unknown |
+| `--format` | `srt` | No | Output format (`srt` or `ass`) |
+| `--ass-font` | source-detect | No | Override ASS font name |
+| `--ass-fontsize` | `52` (effective) | No | Override ASS font size |
+| `--glossary` | `TRANSLATION_GLOSSARY` | No | Glossary file path |
+| `--translation-memory` | `auto` | No | TM mode (`auto`/`on`/`off`) |
+| `--quality-report` | unset | No | Write a JSON quality report |
+| `--result-json` | unset | No | Write machine-readable result JSON for GUI review |
+| `--strict-quality` | off | No | Exit 1 on serious quality errors |
+| `--json-progress` | off | No | Emit machine-readable progress lines |
+| `--local-threads` | `0` | No | Local server CPU threads |
+| `--local-mlock` | off | No | Lock local model in RAM |
+
+Removed flags (do not reintroduce): `--cloud-rescue`, `--cloud-rescue-model`,
+`--cloud-rescue-batch`. Cloud rescue was removed by product decision; local
+translation never falls back to the cloud.
 
 ### 5.2 Exit Codes
 
@@ -638,13 +725,14 @@ The GUI is **not** a subprocess wrapper -- it calls the CLI logic in-process wit
 | `asr/model` | `""` | No |
 | `asr/vadModel` | `""` | No |
 | `asr/threads` | `4` | No |
-| `asr/maxSegmentMs` | `7000` | No |
+| `asr/maxSegmentMs` | `6000` | No |
 | `asr/maxEndSilenceMs` | `250` | No |
 | `asr/speechNoiseThreshold` | `0.55` | No |
 | `asr/noiseDb` | `-35` | No |
-| `asr/minSilenceS` | `0.20` | No |
-| `asr/maxCueDurationMs` | `3000` | No |
+| `asr/minSilenceS` | `0.25` | No |
+| `asr/maxCueDurationMs` | `3200` | No |
 | `asr/maxCueChars` | `70` | No |
+| `asr/maxCueCharsCjk` | `48` | No |
 | `asr/noTags` | `false` | No |
 | `local/model` | `""` | No |
 
@@ -851,17 +939,29 @@ When the model name matches `_is_hy_mt2(model)` (contains `hy-mt2` or `hy_mt2`),
 **Responsibility:** Post-translation quality diagnostics for the generated SRT.
 
 **Key functions:**
-- `analyze_cues(cues) -> list[CueIssue]` — per-cue issues (CPS, chars, duration, lines, empty text).
-- `build_report(cues, *, untranslated_count=0) -> QualityReport` — aggregated counts + issues.
+- `analyze_cues(cues) -> list[CueIssue]` — per-cue issues (CPS, chars, duration, lines, empty text, ASR/fansub tag leakage, untranslated marker, CJK residue, duplicate consecutive translation, overlap).
+- `build_report(cues, *, untranslated_count=0) -> QualityReport` — aggregated counts + issues (incl. `tag_leakage_count`, `cjk_residue_count`, `duplicate_count`, `overlap_count`).
 - `QualityReport.to_dict() / to_json(indent=2)` — serializable.
 - `print_summary(cues, *, untranslated_count=0) -> QualityReport`.
 
-### 4.17 `src/rescue.py`
+Severity policy: leakage/empty/untranslated-marker are errors; small CJK residue
+(ratio ≤ 0.5 — likely a retained name/honorific/glossary term) is a warning;
+mostly-CJK lines are errors; duplicates/overlaps/CPS/length/duration are warnings.
+`--strict-quality` fails on any error or untranslated cue; warnings alone never fail.
 
-**Responsibility:** Optional cloud re-translation of only the cues that failed local translation.
+### 4.17 `src/presets.py` and `src/translation_windows.py`
 
-**Key function:** `rescue_failed_cues(*, cues, failed_indices, client, model, source_language=None, batch_size=10, max_retries=3, glossary=None) -> dict[int, str]`.
-Returns a mapping of successfully rescued `{cue_index: translation}` only; never touches already-translated cues.
+**`src/presets.py`:** frozen `ContentPreset` dataclasses (`PRESETS`) for
+auto/drama/anime/music/documentary/variety/lecture plus
+`resolve_effective_settings(args)` enforcing precedence
+explicit CLI/GUI value > content preset > environment variable > built-in default,
+and `PROMPT_ADDENDA` / `get_prompt_addendum(profile)` for scoped prompt addenda.
+
+**`src/translation_windows.py`:** the context-first engine. `TranslationWindow`
+(start_index, cues, before_context pairs, after_context sources),
+`CONTEXT_PROFILES` (off/light/standard/deep → before/after/memory budgets),
+`build_windows()` (cue-count / char / duration / scene-gap constraints; never
+drops or reorders cues), and the cloud/Hy-MT2 context prompt builders.
 
 ### 4.18 `src/postprocess.py` and `src/ass_io.py`
 
@@ -869,4 +969,49 @@ Returns a mapping of successfully rescued `{cue_index: translation}` only; never
 
 ---
 
-```
+## 17. Archived documentation (consolidated into this file)
+
+To reduce repository-root clutter, the following historical documents were folded
+into this canonical reference and **moved to `docs/archive/`** (content preserved):
+
+- **`PROJECT.md`** (now `docs/archive/PROJECT.md`) — the developer narrative/history
+  ("Translation Agent — Project Documentation"). Unique, still-relevant parts
+  preserved here: the fansub philosophy (foreignization over fluency,
+  `[Translator's Note]` convention), the recommended roadmap, and known-gaps notes.
+- **`CLAUDE.md`** (now `docs/archive/CLAUDE.md`) — Claude Code guidance. Unique parts
+  preserved: Windows platform conventions (use `python`, not `python3`; `copy`, not
+  `cp`; backslash paths) and the key invariants list below.
+- **`TASKS.md`** (now `docs/archive/TASKS.md`) — the implementation task tracker. It
+  recorded the phases (baseline tests, batching, glossary/TM, local server warmup,
+  ASR tag stripping, quality diagnostics, CLI updates, GUI changes,
+  model download, benchmark, test suite, CJK detection). Every item was completed.
+  (Cloud rescue, originally on that list, was later removed by product decision.)
+- **`updated implementation plan.md`** (now `docs/archive/IMPLEMENTATION_PLAN.md`) —
+  the original multi-phase plan spec (~3.2k lines). Fully superseded by the
+  completed work described in this file; no open tasks remain.
+
+### Key invariants (preserved from CLAUDE.md / PROJECT.md)
+
+- Original `start`/`end` times are preserved — only `text` is replaced — with the
+  **single exception** of the post-processing overlap snap
+  (`postprocess.snap_overlaps`), which trims a cue's `end` only when consecutive
+  cues overlap, and never below 300 ms. For locally-ASR'd cues, timing is *created*
+  by the ASR pass (keyframe snap), so it is not "original" YouTube timing.
+- Cue count out == cue count in (numbered-item protocol). Never drop/merge/reorder.
+- Target language is English, fixed by design.
+- The returned title from `fetch_subs.py` is YouTube's **English** title (used for
+  the SRT filename), not a translation we produce.
+- Local ASR is **FunASR + SenseVoiceSmall only**; Whisper.cpp is removed and must
+  not be reintroduced.
+- `_FOREIGNIZATION_DIRECTIVE` / `_HY_MT2_STYLE` prompt invariants stay intact.
+- Cloud endpoints require a real key; local servers accept a placeholder.
+- Never block the QML thread — the pipeline runs on the `QThreadPool`, the CLI is
+  invoked in-process with patched streams.
+
+### Recommended roadmap (from PROJECT.md, still open)
+
+- Validate end-to-end output on a range of videos (manual vs. auto captions, various
+  source languages, offline Hy-MT2 path).
+- Consider graceful handling when `vendor/` binaries are absent at runtime (currently
+  only enforced at build time).
+- See `IMPROVEMENTS_TRIAGE.md` for the Deferred backlog.

@@ -21,26 +21,48 @@ cp .env.example .env        # then edit .env and fill in your credentials
 | Variable         | Required | Meaning                                                        |
 | ---------------- | -------- | ------------------------------------------------------------- |
 | `OPENAI_API_KEY` | yes      | API key for your OpenAI-compatible endpoint.                  |
-| `OPENAI_MODEL`   | yes      | Model used for translation (e.g. `gpt-4o-mini`).              |
+| `OPENAI_MODEL`   | yes      | Model used for translation (e.g. `gpt-5-mini`, or an OpenRouter slug like `openai/gpt-5-mini`). |
 | `OPENAI_BASE_URL`| no       | Base URL for any OpenAI-compatible API; leave blank for OpenAI, or `https://openrouter.ai/api/v1` for OpenRouter. |
 
 ## Usage
 
+There are exactly three pipeline modes:
+
 ```bash
+# 1. YouTube -> Cloud: fetch YouTube subtitles, translate with a cloud LLM
 python translate.py "<youtube_url>"
 python translate.py "<youtube_url>" --model gpt-4o --out my_subs.srt --batch 30
+
+# 2. Local File -> Cloud: transcribe locally (SenseVoiceSmall), translate in the cloud
+python translate.py --file my_video.mp4 --asr-lang ja
+
+# 3. Local File -> Fully Offline: local ASR + local llama.cpp translation, no cloud
+python translate.py --file my_video.mp4 --asr-lang ja --local
 ```
 
 - Output is written to `<video_title>.srt` in the current directory by default
   (`--format ass` writes an Aegisub-compatible `.ass` instead).
 - `--out` overrides the output path (a `.ass`/`.srt` extension overrides `--format`).
 - `--model` overrides `OPENAI_MODEL`.
-- `--batch` sets how many subtitle cues are sent per translation call (default 8;
-  automatically reduced to ≤ 12 per request for the local Hy-MT2 model).
+- `--batch` sets the maximum cues per translation window (default 8; capped at
+  8 per window for the local Hy-MT2 model).
+- `--content-preset auto|drama|anime|music|documentary|variety|lecture` tunes
+  ASR segmentation, FFmpeg preprocessing, translation context, and prompt style
+  for the content type. Explicit flags always override preset values.
+- `--context-mode off|light|standard|deep` controls how much surrounding context
+  each translation window carries (default: preset/backend).
+- `--asr-preprocess auto|none|basic|loudnorm|denoise` selects FFmpeg audio
+  conditioning before ASR; duration-safe with automatic fallback.
+- `--result-json <path>` writes a machine-readable result file (cues + quality)
+  used by the GUI Review/Quality tabs.
 - `--json-progress` emits machine-readable `{"type":"progress",...}` lines for the
   GUI (progress bars) without changing the final `Wrote N cues to ...` line.
 - ASS output picks a CJK-capable font from the detected source language by default;
   override with `--ass-font <name>` and/or `--ass-fontsize <size>`.
+- `--source-lang <code>` forces a specific source language for YouTube subtitles
+  (`ja`, `zh`, `zh-TW`, `ko`, `yue`, `en`). A non-English value overrides the
+  English-first shortcut and fetches that language's track (manual preferred,
+  auto-generated fallback); an error is raised if no track exists in that language.
 - When `--asr-lang` is left at `auto` for local files, the source CJK language
   (zh/ja/ko) is auto-detected from the transcript and forwarded to the translation
   prompt.
@@ -59,14 +81,17 @@ python main.py
 `python gui.py` still works as a compatibility launcher, but it now forwards to the
 same PySide6 entry point.
 
-The frontend exposes the same options as the command line: choose a YouTube URL or
-a local file, set the output SRT path and batch size, pick the translation backend
-(cloud API or a local llama.cpp server), and — for local files — the SenseVoiceSmall
-ASR language and binary/model paths. **Run Translation** executes the pipeline on a
-background worker and streams stdout/stderr into the log pane in real time;
-**Open Output Folder** opens the generated subtitle location when done. The ASR
-binary/model paths default to `./gguf/*.gguf` and the binaries on PATH (override
-via the fields or the `FUNASR_*` env vars).
+The frontend is a compact professional workspace: a header bar with the pipeline
+mode (YouTube Cloud / Local Cloud / Offline), content preset, source language,
+Run button, and status pill; **Run**, **Review**, and **Quality** tabs; and a
+collapsible bottom log drawer. The Review tab shows every final cue (filter by
+failed/warnings, search, double-click to copy); the Quality tab summarizes the
+quality report with an issue list. Progress comes from parsed JSON progress
+lines, and results load from the CLI's `--result-json` output. Advanced settings
+(batch, context mode, preprocessing, ASR tuning, glossary, TM mode, strict
+quality, cloud credentials) live in a collapsed drawer. **Run** executes the
+pipeline on a background worker; **Open Output Folder** opens the generated
+subtitle location when done.
 
 ### Building a Windows executable
 
@@ -98,20 +123,25 @@ pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder 
      original-language track is fetched (manual subtitles first, auto-generated
      captions as fallback).
    If the video has no subtitles at all, the tool exits with a clear message.
-4. Cues are translated in batches via the LLM, using numbered items so cue
-   order and count stay aligned with the original timestamps. The translator
-   follows a **foreignization** philosophy (see `src/translate.py`): it preserves
-   the original author's voice, cultural context, honorifics, and period
-   register, and never sanitizes, domesticates, or injects modern target-culture
-   slang. The source language (from YouTube) is injected into the system prompt.
+4. Cues are translated in context-aware windows via the LLM, using numbered items
+   so cue order and count stay aligned with the original timestamps. Each window
+   carries read-only before/after context (previous translated pairs, upcoming
+   source lines) so pronouns, speaker continuity, and named entities stay
+   consistent. The translator follows a **foreignization** philosophy (see
+   `src/translate.py`): it preserves the original author's voice, cultural
+   context, honorifics, and period register, and never sanitizes, domesticates,
+   or injects modern target-culture slang. The source language (from YouTube) is
+   injected into the system prompt.
 5. Translation failures (empty replies, source echoes, CJK residue) are never
    silently shipped — failed cues are marked `[untranslated]`, counted, logged
-   with their source text, and optionally rescued via cloud LLM.
+   with their source text, and surfaced in the quality report and GUI Review tab.
 6. A post-processing pass runs line breaking (English word-boundary splitting),
    overlap snapping, translator-note placement, fused-English repair, residual
    CJK stripping, and literal-gloss cleanup.
 7. The translated text is written back into the original cue timestamps, keeping
-   `start`/`end` values intact.
+   `start`/`end` values intact — with the single exception that the post-processing
+   overlap snap trims a cue's `end` only when consecutive cues overlap (never below
+   300 ms), so overlapping cues are corrected without disturbing `start` times.
 
 ## Notes
 
@@ -296,23 +326,24 @@ Notes:
 These are **optional, off-line-friendly** aids that improve the local translation
 path without replacing the model.
 
-### Translation batching (Hy-MT2)
+### Translation windows (context-first)
 
-Hy-MT2 is small, so 40 cues per request is too aggressive on a CPU. When the model
-name is detected as Hy-MT2, the translator automatically uses a smaller effective
-batch:
+Cues are translated as context-aware windows rather than isolated batches. Each
+window carries read-only context — previously translated pairs and the next
+source lines — so pronouns, speaker continuity, and named entities stay
+consistent across cuts:
 
-- Max **12 cues** per request (override `HY_MT2_MAX_BATCH_CUES`).
-- Character-aware batching: ≤ **700** non-whitespace chars for CJK
-  (`HY_MT2_MAX_BATCH_CHARS_CJK`), ≤ **1000** for non-CJK
-  (`HY_MT2_MAX_BATCH_CHARS_NON_CJK`).
-- A robust fallback ladder: `retry → split in half → split further → per-item
-  fallback`. This preserves cue order/count and reduces expensive per-item retries.
-
-```text
-[local] Hy-MT2 detected: using effective batch size 12 instead of requested 40
-[translate] Dynamic batching: 120 cues -> 12 batches
-```
+- `--context-mode off|light|standard|deep` (default: `standard` for both
+  backends — benchmark-verified safe for the local Hy-MT2 model; use `light`
+  for minimal prompts or `deep` for long-form cloud content).
+- Windows split on cue count, character budget, duration, and scene gaps
+  (≥ 0.8 s of silence), never dropping or reordering cues.
+- A rolling memory of recent translated pairs feeds later windows.
+- `--content-preset auto|drama|anime|music|documentary|variety|lecture` tunes
+  ASR, FFmpeg preprocessing, context level, and a scoped prompt addendum in one
+  flag; explicit flags always override preset values.
+- `--context-summary` (cloud only, experimental) maintains a short rolling
+  scene summary included as read-only context.
 
 ### Translation memory
 
@@ -329,6 +360,9 @@ python translate.py --file clip.mkv --local --translation-memory-db ./cache/tm.s
 - `TRANSLATION_MEMORY_DB` (default `./cache/translation_memory.sqlite3`).
 - Cache keys include the source language, model, and glossary hash, so a glossary
   or model change invalidates stale entries.
+- A window whose cues are all exact cache hits is served entirely from the
+  cache; a partially-hit window is translated whole so context stays coherent,
+  and the fresh translations overwrite the cached entries.
 - **Poisoned entries are purged** on startup: source-text passthroughs (where the
   "translation" is identical to the source) and entries with leaked ASR/markup
   tags (`[CHENGYU:`, `<|...|>`) are automatically removed so a bad past run never
@@ -355,20 +389,13 @@ Format (`#` comments, `TAB`, `=` or `->` separators, UTF-8):
 The glossary is injected into the prompt without altering the foreignization
 directive. `TRANSLATION_GLOSSARY` sets it via the environment.
 
-### Cloud rescue
+### Cloud rescue (removed)
 
-If local translation leaves some cues empty/failed, you can let a cloud model
-recover **only those** failed cues (never the whole set, never by default):
-
-```bash
-python translate.py "<url>" --local --cloud-rescue --cloud-rescue-model gpt-4o-mini
-```
-
-- `--cloud-rescue` / `CLOUD_RESCUE_ENABLED` (default off).
-- `--cloud-rescue-model` / `CLOUD_RESCUE_MODEL` — cloud model to use.
-- `--cloud-rescue-batch` / `CLOUD_RESCUE_BATCH` (default 10).
-- Fails gracefully (warns and continues) if no cloud credentials are available.
-- Cannot run when cloud rescue is disabled; cue count is always preserved.
+Cloud rescue was removed by product decision. There is no mixed mode where local
+translation silently falls back to a cloud model: you choose cloud translation
+or local translation per run (the three pipeline modes are YouTube Cloud, Local
+Cloud, and Offline). Failed cues are clearly marked `[untranslated]`, counted in
+the quality report, and visible in the GUI Review tab instead.
 
 ### Subtitle quality diagnostics
 
@@ -405,6 +432,16 @@ python tools/benchmark.py --cases benchmark/cases.json --output benchmark/result
 python tools/benchmark.py --case-id ja-short-dialogue --local
 ```
 
+To choose an ASR preprocessing profile with evidence, `tools/benchmark_preprocess.py`
+runs the same media through each FFmpeg profile (none/basic/loudnorm/denoise) and
+reports cue counts, average cue duration, text volume, processing time, and — with
+a reference transcript (`--reference ref.srt`) — CER/WER:
+
+```bash
+python tools/benchmark_preprocess.py --media sample.mp4 --asr-lang ja \
+    --out-dir bench_preprocess --reference ref.srt --json bench.json
+```
+
 See `benchmark/README.md` for how to add your own test media. The harness runs
 offline and needs no real API keys to start; missing media files produce clear
 errors. Results are JSON so they can be diffed between runs.
@@ -416,18 +453,22 @@ errors. Results are JSON so they can be diffed between runs.
 | `TRANSLATION_GLOSSARY` | unset | Glossary file path |
 | `TRANSLATION_MEMORY_MODE` | `auto` | `auto` \| `on` \| `off` |
 | `TRANSLATION_MEMORY_DB` | `./cache/translation_memory.sqlite3` | TM database path |
-| `HY_MT2_MAX_BATCH_CUES` | `12` | Hy-MT2 max batch cues |
-| `HY_MT2_MAX_BATCH_CHARS_CJK` | `700` | Hy-MT2 max batch chars (CJK) |
-| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `1000` | Hy-MT2 max batch chars (non-CJK) |
+| `HY_MT2_MAX_BATCH_CUES` | `12` | Hy-MT2 max window cues |
+| `HY_MT2_MAX_BATCH_CHARS_CJK` | `700` | Hy-MT2 max window chars (CJK) |
+| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `1000` | Hy-MT2 max window chars (non-CJK) |
+| `FUNASR_PREPROCESS` | unset | Preprocessing profile override (auto preset only) |
+| `TRANSLATION_CONTEXT_MODE` | unset | Context mode override (auto preset only) |
+| `TRANSLATION_PROMPT_PROFILE` | unset | Prompt profile override (auto preset only) |
 | `LLAMA_SERVER_THREADS` | `0` | Local server threads |
 | `LLAMA_SERVER_MLOCK` | `0` | Local server mlock (1 = on) |
-| `CLOUD_RESCUE_ENABLED` | `0` | Enable cloud rescue (1 = on) |
-| `CLOUD_RESCUE_MODEL` | unset | Cloud rescue model |
-| `CLOUD_RESCUE_BATCH` | `10` | Cloud rescue batch size |
 | `FUNASR_MAX_CUE_CHARS_CJK` | `48` | CJK max cue chars |
 | `FUNASR_KEEP_TAGS` | `0` | Keep ASR tags (1 = on) |
 | `FUNASR_INCOMPLETE_WARN_SECONDS` | `8.0` | Min uncovered tail to warn about |
 | `FUNASR_FORCE_FFMPEG_VAD` | `0` | Force ffmpeg VAD (skip binary VAD) |
+
+Removed variables (do not reintroduce): `CLOUD_RESCUE_ENABLED`,
+`CLOUD_RESCUE_MODEL`, `CLOUD_RESCUE_BATCH`, `CLOUD_RESCUE_API_KEY`,
+`CLOUD_RESCUE_BASE_URL`. Cloud rescue was removed by product decision.
 
 ## Model note
 

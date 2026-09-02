@@ -5,7 +5,7 @@ import os
 import sys
 
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QFontDatabase
 from PySide6.QtQml import QQmlApplicationEngine
 
 from backend.bridge import AppBridge, _base_dir, setup_logging
@@ -15,6 +15,24 @@ from src.local_server import shutdown_servers
 def _resource_path(*parts: str) -> str:
     base = getattr(sys, "_MEIPASS", _base_dir())
     return os.path.join(base, *parts)
+
+
+def _load_bundled_fonts() -> None:
+    """Register bundled CJK fonts (e.g. Noto Sans CJK) with Qt.
+
+    Missing directory is fine — the app falls back to system fonts.
+    """
+    font_dir = _resource_path("assets", "fonts")
+    if not os.path.isdir(font_dir):
+        return
+    for name in sorted(os.listdir(font_dir)):
+        if name.lower().endswith((".ttf", ".otf", ".ttc")):
+            path = os.path.join(font_dir, name)
+            font_id = QFontDatabase.addApplicationFont(path)
+            if font_id < 0:
+                logging.getLogger("translation_agent").warning(
+                    "Could not load bundled font: %s", path
+                )
 
 
 def _resolve_qml_dirs(frozen_base: str | None):
@@ -69,6 +87,8 @@ def main() -> int:
     app.setOrganizationName("Translation Agent")
     # Stop any bundled llama-server the app started when the user quits.
     app.aboutToQuit.connect(shutdown_servers)
+
+    _load_bundled_fonts()
 
     engine = QQmlApplicationEngine()
 

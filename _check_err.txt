@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\translation-agent\_check_youtube_ui.py", line 69, in <module>
+    assert rows[0]["isBest"] is True, "best row must come first"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: best row must come first

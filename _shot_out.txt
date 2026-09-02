@@ -1,0 +1,15 @@
+QFontDatabase: Cannot find font directory C:/Users/Njoro/AppData/Local/Programs/Python/Python312/Lib/site-packages/PySide6/lib/fonts.
+Note that Qt no longer ships fonts. Deploy some (from https://dejavu-fonts.github.io/ for example) or switch to fontconfig.
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:130: ReferenceError: hovered is not defined
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:130: ReferenceError: hovered is not defined
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:130: ReferenceError: hovered is not defined
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:15:5: Unable to assign [undefined] to bool
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:15:5: Unable to assign [undefined] to bool
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:130: ReferenceError: hovered is not defined
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:130: ReferenceError: hovered is not defined
+file:///C:/xampp/htdocs/translation-agent/ui/qml/components/YouTubeVideoPanel.qml:130: ReferenceError: hovered is not defined
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\translation-agent\_shot_youtube.py", line 81, in snap
+    img = window.grabWindow()
+          ^^^^^^^^^^^^^^^^^
+AttributeError: 'PySide6.QtGui.QWindow' object has no attribute 'grabWindow'

@@ -14,3 +14,4 @@ build/
 # Runtime debug log (written next to the exe)
 debug.log
 
+ui_shots/

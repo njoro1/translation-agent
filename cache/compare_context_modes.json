@@ -1,0 +1,40 @@
+{
+  "media": "cache\\compare_media.mp4",
+  "reference": "cache\\compare_ref.srt",
+  "cue_count": 232,
+  "ref_count": 367,
+  "results": [
+    {
+      "mode": "light",
+      "runtime_s": 7026.6,
+      "model_calls": 95,
+      "untranslated": 0,
+      "batch_failures": 11,
+      "window_splits": 11,
+      "per_item_retries": 0,
+      "per_item_rejections": 0,
+      "out_cues_scored": 232,
+      "out_cues_unmatched": 0,
+      "fwd_similarity": 0.5689,
+      "fwd_exact_rate": 0.0216,
+      "ref_similarity": 0.4841,
+      "ref_exact_rate": 0.0136
+    },
+    {
+      "mode": "standard",
+      "runtime_s": 6120.2,
+      "model_calls": 98,
+      "untranslated": 0,
+      "batch_failures": 9,
+      "window_splits": 9,
+      "per_item_retries": 0,
+      "per_item_rejections": 0,
+      "out_cues_scored": 232,
+      "out_cues_unmatched": 0,
+      "fwd_similarity": 0.571,
+      "fwd_exact_rate": 0.0216,
+      "ref_similarity": 0.4875,
+      "ref_exact_rate": 0.0136
+    }
+  ]
+}

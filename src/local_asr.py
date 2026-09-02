@@ -211,7 +211,32 @@ def _wav_duration(path: Path) -> float:
         return frames / float(rate)
 
 
-def _extract_wav(media_path: Path, wav_path: Path) -> None:
+ASR_PREPROCESS_PROFILES = {
+    "none": None,
+    "basic": "highpass=f=80",
+    "loudnorm": "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11:linear=true",
+    "denoise": "highpass=f=80,afftdn=nf=-25:tn=true,loudnorm=I=-16:TP=-1.5:LRA=11:linear=true",
+}
+
+
+def _resolve_preprocess_profile(profile: str | None) -> str:
+    """Resolve the safe default used when no content preset overrides it."""
+    profile = (profile or "auto").strip().lower()
+    if profile == "auto":
+        return "basic"
+    if profile not in ASR_PREPROCESS_PROFILES:
+        raise ValueError(
+            "Invalid ASR preprocessing profile: "
+            f"{profile!r}. Choose auto, none, basic, loudnorm, or denoise."
+        )
+    return profile
+
+
+def _preprocess_filter(profile: str) -> str | None:
+    return ASR_PREPROCESS_PROFILES[_resolve_preprocess_profile(profile)]
+
+
+def _extract_wav(media_path: Path, wav_path: Path, profile: str = "basic") -> None:
     cmd = [
         _ffmpeg_exe(),
         "-y",
@@ -219,13 +244,74 @@ def _extract_wav(media_path: Path, wav_path: Path) -> None:
         "-loglevel", "error",
         "-i", str(media_path),
         "-vn",
-        "-af", "loudnorm",  # loudness-normalize BEFORE VAD sees the audio
         "-ac", "1",
         "-ar", "16000",
-        "-acodec", "pcm_s16le",
+        "-c:a", "pcm_s16le",
         str(wav_path),
     ]
+    audio_filter = _preprocess_filter(profile)
+    if audio_filter:
+        cmd[8:8] = ["-af", audio_filter]
     _run(cmd)
+
+
+def _media_duration(path: Path) -> float:
+    """Return a media duration without decoding it; 0 means unavailable."""
+    ffprobe = _ffprobe_exe()
+    if ffprobe:
+        try:
+            p = subprocess.run(
+                [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60, creationflags=_SUBPROCESS_CREATION_FLAGS,
+            )
+            if p.returncode == 0:
+                return float(p.stdout.strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    try:
+        return _wav_duration(path)
+    except (OSError, wave.Error):
+        return 0.0
+
+
+def _prepare_asr_audio(media_path: Path, wav_path: Path, profile: str = "auto") -> Path:
+    """Extract duration-safe ASR audio, falling back to less processing safely."""
+    requested = _resolve_preprocess_profile(profile)
+    original_duration = _media_duration(media_path)
+    candidates = [requested]
+    if requested not in ("basic", "none"):
+        candidates.append("basic")
+    if "none" not in candidates:
+        candidates.append("none")
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            _extract_wav(media_path, wav_path, candidate)
+            processed_duration = _wav_duration(wav_path)
+            mismatch_ms = abs(processed_duration - original_duration) * 1000
+            if original_duration > 0 and mismatch_ms > 50:
+                raise RuntimeError(
+                    f"duration mismatch {mismatch_ms:.1f} ms exceeds 50 ms"
+                )
+            if candidate != requested:
+                print(
+                    f"[asr] WARNING: preprocessing fallback {requested} -> {candidate}",
+                    flush=True,
+                )
+            print(f"[asr] Preprocessing profile: {candidate}", flush=True)
+            return wav_path
+        except Exception as exc:  # noqa: BLE001 - fallback is intentionally broad
+            last_error = exc
+            if candidate != candidates[-1]:
+                print(
+                    f"[asr] WARNING: preprocessing {candidate} failed ({exc}); "
+                    "trying fallback.",
+                    flush=True,
+                )
+    raise RuntimeError(f"Could not prepare ASR audio: {last_error}")
 
 
 def _cut_wav(wav_path: Path, start: float, end: float, out_path: Path) -> None:
@@ -1143,6 +1229,7 @@ def transcribe_local_file(
     no_tags: bool = False,
     max_cue_chars_cjk: int | None = None,
     keep_tags: bool | None = None,
+    preprocess: str = "auto",
 ) -> tuple[list[Cue], str | None]:
     """
     Transcribe a local media file using FunASR SenseVoiceSmall.
@@ -1263,7 +1350,7 @@ def transcribe_local_file(
         temp_dir = Path(td)
 
         wav_path = temp_dir / "audio16k.wav"
-        _extract_wav(media_path, wav_path)
+        _prepare_asr_audio(media_path, wav_path, preprocess)
 
         duration = _wav_duration(wav_path)
         if duration <= 0.1:
@@ -1384,4 +1471,3 @@ def transcribe_local_file(
     maybe_warn_incomplete(cues, duration)
 
     return cues, source_language
-

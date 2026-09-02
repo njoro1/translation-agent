@@ -86,7 +86,6 @@ pyinstaller --noconfirm --onefile --windowed --name TranslationAgent ^
     --add-data "vendor\llama;vendor\llama" ^
     --add-data "ui/qml;ui/qml" ^
     --add-data "ui/qml/components;ui/qml/components" ^
-    --add-data "ui/qml/views;ui/qml/views" ^
     --add-data "%PYSIDE6_DIR%\qml\Qt;PySide6/qml/Qt" ^
     --add-data "%PYSIDE6_DIR%\qml\QtQml;PySide6/qml/QtQml" ^
     --add-data "%PYSIDE6_DIR%\qml\QtQuick;PySide6/qml/QtQuick" ^
@@ -107,6 +106,7 @@ pyinstaller --noconfirm --onefile --windowed --name TranslationAgent ^
     --hidden-import src.config ^
     --hidden-import src.fetch_subs ^
     --hidden-import src.translate ^
+    --hidden-import src.youtube_media ^
     --hidden-import src.srt_io ^
     --hidden-import src.local_asr ^
     --hidden-import src.local_server ^

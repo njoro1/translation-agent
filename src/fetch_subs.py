@@ -138,6 +138,33 @@ def _resolve_transcript(transcript_list, lang: str | None):
     return None
 
 
+def _resolve_language_transcript(transcript_list, lang: str):
+    """Resolve a specific source-language track (manual preferred, auto fallback).
+
+    Unlike ``_resolve_transcript``, this returns ``None`` instead of falling back to
+    *any* track, so an explicitly-requested language that is unavailable yields a
+    clear, actionable error rather than accidentally shipping the wrong language.
+
+    ``lang`` may be a region-qualified code (e.g. ``zh-TW``); a list of candidate
+    codes is built so both the exact code and its base language are tried.
+    """
+    candidates: list[str] = [lang]
+    base = lang.split("-")[0].strip().lower()
+    if base and base != lang.strip().lower():
+        candidates.append(base)
+    candidates = list(dict.fromkeys(candidates))  # dedupe, preserve order
+
+    try:
+        return transcript_list.find_manually_created_transcript(candidates)
+    except NoTranscriptFound:
+        pass
+    try:
+        return transcript_list.find_generated_transcript(candidates)
+    except NoTranscriptFound:
+        pass
+    return None
+
+
 def _resolve_english_transcript(transcript_list):
     """Return an English track (manual preferred, then generated), or None.
 
@@ -170,7 +197,9 @@ def _snippets_to_cues(snippets) -> list[Cue]:
     return cues
 
 
-def fetch_original_subtitles(url: str) -> tuple[list[Cue], str | None, str | None]:
+def fetch_original_subtitles(
+    url: str, preferred_lang: str | None = None
+) -> tuple[list[Cue], str | None, str | None]:
     """Fetch subtitles for a YouTube URL, preferring an existing English track.
 
     Returns (cues, english_video_title, source_language_code). The title used for
@@ -183,6 +212,13 @@ def fetch_original_subtitles(url: str) -> tuple[list[Cue], str | None, str | Non
     caller writes them as-is and skips translation. Only when no English track
     exists do we fall back to the video's original-language track, which the caller
     then translates.
+
+    ``preferred_lang`` (optional) forces a specific source language (e.g. ``ja``,
+    ``zh``, ``ko``, ``zh-TW``, ``en``). When set to a non-English language the
+    English-first shortcut is skipped and that language's track is used (manual
+    preferred, auto-generated fallback). If the requested language has no available
+    track, a RuntimeError is raised rather than silently shipping another language.
+    Non-breaking: when ``preferred_lang`` is ``None`` behavior is unchanged.
     """
     video_id = extract_video_id(url)
     title, lang = _yt_dlp_metadata(url)
@@ -195,6 +231,36 @@ def fetch_original_subtitles(url: str) -> tuple[list[Cue], str | None, str | Non
 
     def _english_title() -> str | None:
         return _fetch_english_title(video_id) or title
+
+    requested_source = (preferred_lang or "").strip().lower() or None
+
+    # An explicit English source-language request resolves the English track.
+    if requested_source in ("en", "english", "eng"):
+        transcript = _resolve_language_transcript(transcript_list, "en")
+        if transcript is None:
+            raise RuntimeError(
+                "No English subtitles (manual or auto-generated) are available "
+                f"for this video (requested --source-lang {preferred_lang!r})."
+            )
+        cues = _snippets_to_cues(transcript.fetch())
+        if not cues:
+            raise RuntimeError("Retrieved subtitles were empty for this video.")
+        return cues, _english_title(), "en"
+
+    # An explicit non-English source-language request overrides English-first.
+    if requested_source:
+        transcript = _resolve_language_transcript(transcript_list, requested_source)
+        if transcript is None:
+            raise RuntimeError(
+                "No subtitles (manual or auto-generated) are available in the "
+                f"requested source language {preferred_lang!r} for this video."
+            )
+        snippets = transcript.fetch()
+        source_lang = getattr(snippets, "language_code", None) or requested_source
+        cues = _snippets_to_cues(snippets)
+        if not cues:
+            raise RuntimeError("Retrieved subtitles were empty for this video.")
+        return cues, _english_title(), source_lang
 
     # 1) Prefer the existing English subtitle (YouTube's own translation).
     english = _resolve_english_transcript(transcript_list)

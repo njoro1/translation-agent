@@ -38,6 +38,12 @@ class TestJsonProgress:
         assert parsed.ass_font == "Noto Sans"
         assert parsed.ass_fontsize == 60
 
+    def test_source_lang_flag_present_in_parser(self):
+        parsed = translate._parse_args(["--source-lang", "ja"])
+        assert parsed.source_lang == "ja"
+        # Default is unset (None) so behavior is unchanged without the flag.
+        assert translate._parse_args([]).source_lang is None
+
 
 class TestUntranslatedMarkerPreserved:
     """The final output sanitizer must never strip or alter [untranslated]."""

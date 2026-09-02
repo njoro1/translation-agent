@@ -1,8 +1,9 @@
 """Faithful English translation of subtitle cues via an OpenAI-compatible LLM.
 
-Cues are translated in batches (default 8) for context and token efficiency.
-Each batch is sent as numbered items and the model returns the same numbers,
-so cue order/count stays aligned with the original timestamps.
+Cues are translated as context-aware windows: each window carries read-only
+before/after context (previous translated pairs, upcoming source lines) while
+the numbered-item protocol keeps cue order/count aligned with the original
+timestamps. See src/translation_windows.py for the window engine.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import time
 
 from openai import OpenAI
 
-from .batching import chunk_texts, is_cjk_language
+from .batching import is_cjk_language
 from .srt_io import Cue
 
 
@@ -179,6 +180,7 @@ def build_system_prompt(
     chengyu: bool = False,
     classical: bool = False,
     emotion: bool = False,
+    addendum: str | None = None,
 ) -> str:
     """Fill the foreignization directive's language placeholders.
 
@@ -189,6 +191,9 @@ def build_system_prompt(
     (chengyu literal+functional rendering, Classical-Chinese register, and
     SenseVoice emotion-tag register awareness). These are appended to — never a
     replacement of — ``_FOREIGNIZATION_DIRECTIVE``.
+
+    ``addendum`` (content-preset prompt profile) is a short scoped note
+    appended after the directive; it never replaces or weakens it.
     """
     src = source_language or "the video's original language"
     prompt = (
@@ -217,6 +222,9 @@ def build_system_prompt(
             "<HAPPY>, <SAD>, <LAUGH>, use it to inform the natural register of "
             "the translation. Do not reproduce the tag in your output."
         )
+
+    if addendum:
+        prompt = prompt + "\n\n" + addendum.strip()
 
     if glossary:
         prompt = prompt + "\n\n" + glossary
@@ -253,10 +261,10 @@ HY_MT2_TOP_P = 0.6
 HY_MT2_TOP_K = 20
 HY_MT2_REPETITION_PENALTY = 1.05
 
-# --- Hy-MT2 dynamic batching defaults ---------------------------------------
-# Hy-MT2 is a tiny CPU model; 40 cues per batch is too aggressive and increases
-# the chance of missing numbered lines, malformed output, or context overflow.
-# These limits can be overridden via environment variables.
+# --- Hy-MT2 context-window budgets ------------------------------------------
+# Hy-MT2 is a tiny CPU model; oversized windows increase the chance of missing
+# numbered lines, malformed output, or context overflow. These limits can be
+# overridden via environment variables.
 import os as _os
 
 HY_MT2_DEFAULT_MAX_BATCH_CUES = int(
@@ -452,7 +460,7 @@ def _parse_numbered(response: str, expected: int) -> list[str] | None:
 
 # --- Output validation ------------------------------------------------------
 # Detects model replies that are NOT real translations so they can be retried,
-# rescued, flagged, or counted. The offline path has no cloud rescue, so a bad
+# flagged, or counted. A bad reply must not reach the output as a translation.
 # reply used to become the SRT line verbatim (see SUBTITLE_QUALITY_REPORT §3): a
 # third of the analyzed cues were untranslated Chinese shipped as "translated".
 _CJK_IDEOGRAPHS = "\u3400-\u4dbf\u4e00-\u9fff"  # CJK Ext A + Unified Ideographs
@@ -579,7 +587,7 @@ def _translate_one(
     if metrics is not None:
         metrics.print_call(resp, "single item")
     # Never fall back to the source text here: an empty reply is a failure, and
-    # the caller decides how to surface it (retry / rescue / flag) instead of
+    # the caller decides how to surface it (retry / flag) instead of
     # silently shipping the untranslated source as if it were a translation.
     return (resp.choices[0].message.content or "").strip()
 
@@ -598,6 +606,7 @@ def _translate_group(
     extra_body: dict | None = None,
     temperature: float = 0.3,
     metrics: _PerfMetrics | None = None,
+    user_content_builder=None,
 ) -> list[str] | None:
     """Translate a group of texts with a robust fallback ladder.
 
@@ -607,6 +616,11 @@ def _translate_group(
         3. Try _translate_batch with retries (STRICT instruction on retry).
         4. If still failing and len(texts) > 1, split in half and recurse.
         5. If depth exceeds MAX_SPLIT_DEPTH, fall back to per-item.
+
+    ``user_content_builder(texts, attempt) -> str``, when provided, builds the
+    user message for each attempt (used by the context-window engine so
+    before/after context survives recursive splitting). It overrides both the
+    default numbered block and the Hy-MT2 skill prompt.
 
     Returns a list of translations (same length as ``texts``) or None if the
     group could not be translated at all (caller decides what to do).
@@ -623,8 +637,10 @@ def _translate_group(
             temperature=temperature, metrics=metrics,
         )
 
-    # Single item: translate directly.
-    if len(texts) == 1:
+    # Single item without a context builder: translate directly. With a
+    # builder (context-window path), even a one-cue window keeps its context
+    # by going through the batch protocol first.
+    if len(texts) == 1 and user_content_builder is None:
         return _per_item_translate(
             client, model, texts, system_prompt,
             source_language=source_language, hy_mt2=hy_mt2,
@@ -636,7 +652,9 @@ def _translate_group(
     translated: list[str] | None = None
     for attempt in range(max_retries):
         try:
-            if hy_mt2:
+            if user_content_builder is not None:
+                user_content = user_content_builder(texts, attempt)
+            elif hy_mt2:
                 user_content = build_hy_mt2_user_prompt(
                     texts, source_language, glossary=glossary
                 )
@@ -678,6 +696,7 @@ def _translate_group(
             max_retries=max_retries, depth=depth + 1,
             glossary=glossary, extra_body=extra_body,
             temperature=temperature, metrics=metrics,
+            user_content_builder=user_content_builder,
         )
         right_result = _translate_group(
             client, model, right, system_prompt,
@@ -685,6 +704,7 @@ def _translate_group(
             max_retries=max_retries, depth=depth + 1,
             glossary=glossary, extra_body=extra_body,
             temperature=temperature, metrics=metrics,
+            user_content_builder=user_content_builder,
         )
         if left_result is not None and right_result is not None:
             return left_result + right_result
@@ -733,9 +753,8 @@ def _translate_one_checked(
 
     Returns the translated text, or ``""`` when the model produced nothing
     usable (empty reply, source echo, Hangul, or mostly-CJK output). It never
-    returns the source text as a "translation": offline runs have no cloud
-    rescue, so a failed cue must be surfaced as a failure (counted / flagged /
-    rescued) rather than silently shipped untranslated.
+    returns the source text as a "translation": a failed cue must be surfaced
+    as a failure (counted / flagged) rather than silently shipped untranslated.
 
     The second attempt drops the llama.cpp-only sampling params (``extra_body``)
     and slightly raises temperature for diversity — a cheap "degraded prompt"
@@ -789,7 +808,7 @@ def _per_item_translate(
 
     Each item goes through ``_translate_one_checked``, so a failed cue comes
     back as ``""`` (never the source text). Callers treat ``""`` as
-    "untranslated" and either rescue it, count it, or flag it in the output.
+    "untranslated" and count or flag it in the output.
     """
     results: list[str] = []
     for text in texts:
@@ -805,6 +824,49 @@ def _per_item_translate(
 
 
 
+def _maybe_update_scene_summary(
+    client,
+    model,
+    summary: str,
+    recent_sources: list[str],
+    metrics: _PerfMetrics | None = None,
+) -> str:
+    """Refresh the rolling cloud scene summary (2-3 sentences max).
+
+    Never raises: on any failure the previous summary is kept. The summary is
+    read-only context — it can never alter cue count or numbering.
+    """
+    try:
+        excerpt = "\n".join(f"- {s}" for s in recent_sources[-40:] if s)
+        old = f"Current summary:\n{summary}\n\n" if summary else ""
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "You maintain a brief running summary of a video's "
+                        "story so subtitle translations stay coherent.\n\n"
+                        f"{old}New dialogue excerpt:\n{excerpt}\n\n"
+                        "Update the summary in at most 3 short sentences: "
+                        "who is present, where they are, and the current "
+                        "situation/tone. Output ONLY the summary text."
+                    ),
+                }
+            ],
+            temperature=0.2,
+        )
+        if metrics is not None:
+            metrics.print_call(resp, "scene summary")
+        text = (resp.choices[0].message.content or "").strip()
+        text = " ".join(text.split())
+        return text[:600] if text else summary
+    except Exception as exc:  # noqa: BLE001 - summary is best-effort only
+        print(f"[context] Scene summary update failed (kept previous): {exc}",
+              flush=True)
+        return summary
+
+
 def translate_cues(
     cues: list[Cue],
     client: OpenAI,
@@ -815,19 +877,57 @@ def translate_cues(
     *,
     glossary: str | None = None,
     translation_memory=None,
-    rescue_handler=None,
+    context_mode: str | None = None,
+    prompt_profile: str | None = None,
+    progress_callback=None,
+    scene_summary_enabled: bool = False,
 ) -> list[str]:
     """Translate cue texts into English, preserving order. Returns translations.
 
-    New keyword-only arguments (additive — existing callers ignore them):
+    Cues are translated as context-aware :class:`TranslationWindow` units:
+    each window carries read-only before/after context while the numbered-item
+    protocol keeps cue count in == cue count out.
+
+    Keyword-only arguments (additive — existing callers ignore them):
         glossary: Formatted glossary string injected into prompts.
         translation_memory: A ``TranslationMemory`` instance (or None).
-        rescue_handler: A callable(cues, failed_indices) -> dict[int, str]
-            that re-translates failed cues via cloud (or None).
+        context_mode: off/light/standard/deep; None -> backend default
+            (light for local Hy-MT2, standard for cloud).
+        prompt_profile: Content-preset profile selecting a scoped prompt
+            addendum (never replaces the core directive).
+        progress_callback: ``callable(done, total, stage)`` invoked after each
+            window finalizes.
+        scene_summary_enabled: Cloud-only rolling scene summary (experimental).
     """
     import hashlib
 
+    from .presets import get_prompt_addendum
+    from .translation_windows import (
+        CONTEXT_PROFILES,
+        DEFAULT_MAX_WINDOW_CUES,
+        DEFAULT_MAX_WINDOW_DURATION_MS,
+        DEFAULT_SCENE_GAP_MS,
+        HY_MT2_MAX_CHARS_CJK,
+        HY_MT2_MAX_CHARS_NON_CJK,
+        HY_MT2_MAX_WINDOW_CUES,
+        build_cloud_user_content,
+        build_hy_mt2_context_user_content,
+        build_windows,
+        resolve_context_mode,
+    )
+
+    total = len(cues)
+    if total == 0:
+        return []
+
+    texts = [c.text for c in cues]
+    results: list[str] = [""] * total
+
     hy_mt2 = _is_hy_mt2(model)
+    addendum = get_prompt_addendum(prompt_profile)
+    if addendum:
+        print(f"[prompt] Content addendum applied ({prompt_profile}).", flush=True)
+
     if hy_mt2:
         system_prompt: str | None = None
         temperature = HY_MT2_TEMPERATURE
@@ -843,34 +943,44 @@ def translate_cues(
             flush=True,
         )
     else:
-        system_prompt = build_system_prompt(source_language, glossary=glossary)
+        system_prompt = build_system_prompt(
+            source_language, glossary=glossary, addendum=addendum
+        )
         temperature = 0.3
         extra_body = None
 
-    # --- Determine effective batch limits ----------------------------------
+    # --- Context mode resolution --------------------------------------------
+    # Precedence: explicit flag/preset value > backend default.
+    mode = resolve_context_mode(context_mode, local=hy_mt2)
+    before_pairs, after_cues, memory_pairs = CONTEXT_PROFILES[mode]
+    if scene_summary_enabled and hy_mt2:
+        print(
+            "[context] --context-summary is cloud-only; ignoring for Hy-MT2.",
+            flush=True,
+        )
+        scene_summary_enabled = False
+    use_context = mode != "off"
+    print(
+        f"[context] mode={mode}"
+        + (f", summary={'on' if scene_summary_enabled else 'off'}" if not hy_mt2 else "")
+        + ("" if use_context else " (no context sections)")
+        + f"; before={before_pairs} after={after_cues} memory={memory_pairs}",
+        flush=True,
+    )
+
+    # --- Window budgets ------------------------------------------------------
     if hy_mt2:
-        effective_batch = min(batch_size, HY_MT2_DEFAULT_MAX_BATCH_CUES)
-        if effective_batch < batch_size:
-            print(
-                f"[local] Hy-MT2 detected: using effective batch size "
-                f"{effective_batch} instead of requested {batch_size}",
-                flush=True,
-            )
-        if is_cjk_language(source_language):
-            max_batch_chars = HY_MT2_MAX_BATCH_CHARS_CJK
-        else:
-            max_batch_chars = HY_MT2_MAX_BATCH_CHARS_NON_CJK
+        max_window_cues = max(1, min(batch_size, HY_MT2_MAX_WINDOW_CUES))
+        max_window_chars = (
+            HY_MT2_MAX_CHARS_CJK
+            if is_cjk_language(source_language)
+            else HY_MT2_MAX_CHARS_NON_CJK
+        )
     else:
-        # Cloud: keep existing batch_size, use a generous char budget so
-        # batching is primarily item-count based (non-breaking).
-        effective_batch = batch_size
-        max_batch_chars = 8000
+        max_window_cues = max(1, min(batch_size, DEFAULT_MAX_WINDOW_CUES))
+        max_window_chars = 8000
 
-    texts = [c.text for c in cues]
-    total = len(texts)
-    results: list[str] = [""] * total
-
-    # --- Fansub augmentations: chengyu flagging + emotion tags --------------
+    # --- Fansub augmentations: chengyu flagging ------------------------------
     # ``prompt_texts`` are what actually reaches the model:
     #   * For a Chinese (zh) source, 4-char idioms are wrapped in [CHENGYU:...]
     #     so the model renders a literal + functional meaning, not a flat gloss.
@@ -882,8 +992,8 @@ def translate_cues(
     # model does not follow the "remove the [CHENGYU:...] markup" instruction
     # and echoes the brackets back-to-back with no separators, producing run-on
     # ("childDidn't", "eyebrowsApply") and leaked-marker subtitles. Plain source
-    # yields clean, well-formed translations (see SUBTITLE_QUALITY_REPORT and
-    # the 50元 regression). Cloud models that honor the directive still get it.
+    # yields clean, well-formed translations. Cloud models that honor the
+    # directive still get it.
     is_chinese_source = bool(source_language and str(source_language).lower() in (
         "zh", "chinese", "zho", "chi", "chs", "cht", "zh-cn", "zh-tw"
     ))
@@ -893,15 +1003,14 @@ def translate_cues(
         for t in texts
     ]
 
-    # --- Translation memory lookup -----------------------------------------
+    # --- Translation memory lookup (per cue) ---------------------------------
     model_profile = "hy-mt2-local" if hy_mt2 else f"cloud:{model}"
     g_hash = hashlib.sha256((glossary or "").encode("utf-8")).hexdigest()
 
-    need_translation = list(range(total))
+    tm_hit: dict[int, bool] = {}
     if translation_memory and translation_memory.enabled:
-        tm_hits = 0
-        still_needed: list[int] = []
-        for idx in need_translation:
+        hits = 0
+        for idx in range(total):
             cached = translation_memory.get(
                 source_language=source_language,
                 source_text=texts[idx],
@@ -910,156 +1019,228 @@ def translate_cues(
             )
             if cached:
                 results[idx] = cached
-                tm_hits += 1
-            else:
-                still_needed.append(idx)
-        need_translation = still_needed
-        if tm_hits:
-            print(f"[tm] {tm_hits} cache hits, {len(need_translation)} to translate", flush=True)
+                tm_hit[idx] = True
+                hits += 1
+        if hits:
+            print(
+                f"[tm] {hits} cache hits, {total - hits} to translate",
+                flush=True,
+            )
 
-    # --- Dynamic batching + fallback ladder --------------------------------
-    if need_translation:
-        batch_texts = [texts[idx] for idx in need_translation]
-        batches = chunk_texts(
-            batch_texts,
-            max_items=effective_batch,
-            max_total_chars=max_batch_chars,
-            source_language=source_language,
+    # --- Build context windows ------------------------------------------------
+    windows = build_windows(
+        cues,
+        max_window_cues=max_window_cues,
+        max_window_duration_ms=DEFAULT_MAX_WINDOW_DURATION_MS,
+        scene_gap_ms=DEFAULT_SCENE_GAP_MS,
+        max_current_chars=max_window_chars,
+    )
+    print(
+        f"[translate] Context windows: {total} cues -> {len(windows)} "
+        f"windows (mode={mode}, max {max_window_cues} cues / "
+        f"{max_window_chars} chars per window)",
+        flush=True,
+    )
+
+    rolling_memory: list[tuple[str, str]] = []
+    summary_text = ""
+    windows_since_summary = 0
+    metrics = _PerfMetrics()
+    done_count = 0
+
+    def _extend_rolling(idxs: list[int]) -> None:
+        if memory_pairs <= 0:
+            return
+        for gi in idxs:
+            tr = results[gi]
+            if tr and tr.strip():
+                rolling_memory.append((texts[gi], tr))
+        del rolling_memory[:-memory_pairs]
+
+    for wi, window in enumerate(windows):
+        idxs = list(
+            range(window.start_index, window.start_index + len(window.cues))
         )
+        subset_original = [texts[gi] for gi in idxs]
+        subset_prompt = [prompt_texts[gi] for gi in idxs]
+
+        # Attach read-only context for THIS attempt.
+        before_ctx = (
+            list(rolling_memory[-before_pairs:]) if use_context and before_pairs else []
+        )
+        nxt = windows[wi + 1] if wi + 1 < len(windows) else None
+        after_ctx = (
+            [c.text or "" for c in nxt.cues[:after_cues]]
+            if use_context and after_cues and nxt is not None
+            else []
+        )
+
+        def _builder(subset: list[str], attempt: int, _b=list(before_ctx),
+                     _a=list(after_ctx)) -> str:
+            strict = (
+                f"STRICT: output exactly {len(subset)} numbered lines, no extra "
+                "text."
+                if attempt > 0
+                else None
+            )
+            if hy_mt2:
+                return build_hy_mt2_context_user_content(
+                    subset,
+                    source_language=source_language,
+                    glossary=glossary,
+                    before_context=_b,
+                    after_context=_a,
+                )
+            return build_cloud_user_content(
+                subset,
+                before_context=_b,
+                after_context=_a,
+                summary=summary_text if use_context else None,
+                strict_note=strict,
+            )
+
+        # Per-window TM decision: an all-hit window is served entirely from
+        # TM (no LLM call); a partial hit window goes to the LLM whole so the
+        # translation stays contextually coherent, then TM is updated.
+        n_hits = sum(1 for gi in idxs if tm_hit.get(gi))
+        if n_hits == len(idxs):
+            done_count += len(idxs)
+            _extend_rolling(idxs)
+            if progress_callback is not None:
+                progress_callback(done_count, total, "translate")
+            continue
+
+        # Per-window system-prompt augmentation: classical-Chinese register
+        # (when any cue looks like 文言文) and emotion-tag awareness (when any
+        # cue carries a SenseVoice emotion prefix).
+        batch_classical = bool(subset_original) and any(
+            _is_classical_chinese(t) for t in subset_original
+        )
+        batch_emotion = any(
+            bool(_SENSEVOICE_TAG_RE.match(t or "")) for t in subset_original
+        )
+        if hy_mt2:
+            window_system_prompt: str | None = None
+        else:
+            window_system_prompt = build_system_prompt(
+                source_language,
+                glossary=glossary,
+                addendum=addendum,
+                chengyu=_chengyu_flag,
+                classical=batch_classical,
+                emotion=batch_emotion,
+            )
+
         print(
-            f"[translate] Dynamic batching: {len(need_translation)} cues "
-            f"-> {len(batches)} batches",
+            f"[translate] window {wi + 1}/{len(windows)}: "
+            f"{len(subset_original)} cues"
+            + (f" ({n_hits} TM hits re-translated for context)" if n_hits else ""),
             flush=True,
         )
 
-        translated_count = 0
-        metrics = _PerfMetrics()
-        for bi, batch_local_indices in enumerate(batches):
-            global_indices = [need_translation[li] for li in batch_local_indices]
-            subset = [texts[gi] for gi in global_indices]
-            prompt_subset = [prompt_texts[gi] for gi in global_indices]
-            print(f"[translate] batch {bi + 1}/{len(batches)}: {len(subset)} cues", flush=True)
+        group_result = _translate_group(
+            client, model, subset_prompt, window_system_prompt,
+            source_language=source_language, hy_mt2=hy_mt2,
+            max_retries=max_retries, glossary=glossary,
+            extra_body=dict(extra_body) if extra_body else None,
+            temperature=temperature, metrics=metrics,
+            user_content_builder=_builder,
+        )
 
-            # Per-batch system prompt augmentation: classical-Chinese register
-            # (when any cue in this batch looks like 文言文) and emotion-tag
-            # awareness (when any cue carries a SenseVoice emotion prefix).
-            batch_classical = bool(subset) and any(
-                _is_classical_chinese(t) for t in subset
-            )
-            batch_emotion = any(bool(_SENSEVOICE_TAG_RE.match(t or "")) for t in subset)
-            if hy_mt2:
-                batch_system_prompt: str | None = None
-            else:
-                batch_system_prompt = build_system_prompt(
-                    source_language,
-                    glossary=glossary,
-                    chengyu=_chengyu_flag,
-                    classical=batch_classical,
-                    emotion=batch_emotion,
-                )
-
-            group_result = _translate_group(
-                client, model, prompt_subset, batch_system_prompt,
+        used_per_item = group_result is None
+        if used_per_item:
+            group_result = _per_item_translate(
+                client, model, subset_prompt, window_system_prompt,
                 source_language=source_language, hy_mt2=hy_mt2,
-                max_retries=max_retries, glossary=glossary,
-                extra_body=extra_body, temperature=temperature,
-                metrics=metrics,
+                glossary=glossary, extra_body=extra_body,
+                temperature=temperature, metrics=metrics,
             )
 
-            used_per_item = group_result is None
-            if used_per_item:
-                group_result = _per_item_translate(
-                    client, model, prompt_subset, batch_system_prompt,
-                    source_language=source_language, hy_mt2=hy_mt2,
-                    glossary=glossary, extra_body=extra_body,
-                    temperature=temperature, metrics=metrics,
-                )
+        # Validate every returned line. A reply that is empty, echoes the
+        # source, or is full of non-target scripts (CJK / Hangul) is NOT a
+        # translation — it must never reach the SRT or the translation
+        # memory. Such lines are left "" so callers can count and flag
+        # them explicitly instead of shipping untranslated text.
+        failed_local: list[int] = []
+        for li, (src, tr) in enumerate(zip(subset_original, group_result)):
+            if not tr or not tr.strip() or looks_untranslated(src, tr, source_language):
+                failed_local.append(li)
+                results[idxs[li]] = ""
+            else:
+                results[idxs[li]] = _strip_sensevoice_tag(tr)
+                if _cjk_count(tr) > 0:
+                    print(
+                        f"[translate] Cue {idxs[li]} has residual "
+                        f"CJK in English output: {tr!r}",
+                        flush=True,
+                    )
 
-            # Validate every returned line. A reply that is empty, echoes the
-            # source, or is full of non-target scripts (CJK / Hangul) is NOT a
-            # translation — it must never reach the SRT or the translation
-            # memory. Such lines are left "" so callers can count / rescue /
-            # flag them explicitly instead of shipping untranslated text.
-            # Validation compares against the ORIGINAL source (no chengyu
-            # markup), and any SenseVoice emotion tag is stripped from the
-            # final translation so it never reaches the output file.
-            failed_local: list[int] = []
-            for li, (src, tr) in enumerate(zip(subset, group_result)):
-                if not tr or not tr.strip() or looks_untranslated(src, tr, source_language):
-                    failed_local.append(li)
-                    results[global_indices[li]] = ""
-                else:
-                    results[global_indices[li]] = _strip_sensevoice_tag(tr)
-                    if _cjk_count(tr) > 0:
-                        print(
-                            f"[translate] Cue {global_indices[li]} has residual "
-                            f"CJK in English output: {tr!r}",
-                            flush=True,
-                        )
-
-            # A *batch* that smuggled untranslated lines through alignment gets
-            # one clean per-item retry with a single-cue prompt. Single-cue
-            # groups were already handled by _translate_one_checked (which has
-            # its own retry), so they are not re-tried here.
-            if failed_local and not used_per_item and len(subset) > 1:
-                print(
-                    f"[translate] Retrying {len(failed_local)} rejected cue(s) "
-                    f"per-item: {[subset[li] for li in failed_local]!r}",
-                    flush=True,
-                )
-                retried = _per_item_translate(
-                    client, model, [prompt_subset[li] for li in failed_local],
-                    batch_system_prompt,
-                    source_language=source_language, hy_mt2=hy_mt2,
-                    glossary=glossary, extra_body=extra_body,
-                    temperature=temperature, metrics=metrics,
-                )
-                for li, retr in zip(failed_local, retried):
-                    if retr and retr.strip():
-                        if not looks_untranslated(
-                            subset[li], retr, source_language
-                        ):
-                            results[global_indices[li]] = _strip_sensevoice_tag(retr)
-
-            # Cache only *validated* translations in the translation memory.
-            # Storing the source echo would poison every future run (a failed
-            # cue would then be replayed straight from cache as "translated").
-            if translation_memory and translation_memory.enabled:
-                stored = 0
-                for gi in global_indices:
-                    translation = results[gi]
-                    src = texts[gi]
-                    if (
-                        translation
-                        and translation.strip()
-                        and not looks_untranslated(src, translation, source_language)
+        # A *window* that smuggled untranslated lines through alignment gets
+        # one clean per-item retry with a single-cue prompt. Single-cue
+        # groups were already handled by _translate_one_checked (which has
+        # its own retry), so they are not re-tried here.
+        if failed_local and not used_per_item and len(subset_original) > 1:
+            print(
+                f"[translate] Retrying {len(failed_local)} rejected cue(s) "
+                f"per-item: {[subset_original[li] for li in failed_local]!r}",
+                flush=True,
+            )
+            retried = _per_item_translate(
+                client, model, [subset_prompt[li] for li in failed_local],
+                window_system_prompt,
+                source_language=source_language, hy_mt2=hy_mt2,
+                glossary=glossary, extra_body=extra_body,
+                temperature=temperature, metrics=metrics,
+            )
+            for li, retr in zip(failed_local, retried):
+                if retr and retr.strip():
+                    if not looks_untranslated(
+                        subset_original[li], retr, source_language
                     ):
-                        translation_memory.put(
-                            source_language=source_language,
-                            source_text=src,
-                            translated_text=translation,
-                            model_profile=model_profile,
-                            glossary_hash=g_hash,
-                        )
-                        stored += 1
-                if stored:
-                    print(f"[tm] Stored {stored} new translations", flush=True)
+                        results[idxs[li]] = _strip_sensevoice_tag(retr)
 
-            translated_count += len(batch_local_indices)
-            print(f"  translated {translated_count}/{len(need_translation)}", flush=True)
+        # Cache every *validated* translation in the translation memory
+        # (including partial-TM windows, whose entries are overwritten with
+        # the fresh in-context translations).
+        if translation_memory and translation_memory.enabled:
+            stored = 0
+            for gi in idxs:
+                translation = results[gi]
+                src = texts[gi]
+                if (
+                    translation
+                    and translation.strip()
+                    and not looks_untranslated(src, translation, source_language)
+                ):
+                    translation_memory.put(
+                        source_language=source_language,
+                        source_text=src,
+                        translated_text=translation,
+                        model_profile=model_profile,
+                        glossary_hash=g_hash,
+                    )
+                    stored += 1
+            if stored:
+                print(f"[tm] Stored {stored} new translations", flush=True)
 
-        metrics.print_summary()
+        _extend_rolling(idxs)
+        done_count += len(idxs)
+        if progress_callback is not None:
+            progress_callback(done_count, total, "translate")
 
-    # --- Cloud rescue for failed cues --------------------------------------
-    if rescue_handler:
-        failed = [i for i, r in enumerate(results) if not r or not r.strip()]
-        if failed:
-            try:
-                rescued = rescue_handler(cues=cues, failed_indices=failed)
-                for idx, text in rescued.items():
-                    results[idx] = text
-            except Exception as exc:  # noqa: BLE001
-                print(f"[rescue] Cloud rescue failed: {exc}", flush=True)
+        # Rolling cloud scene summary: refresh periodically; failure keeps
+        # the previous summary and never affects alignment.
+        if scene_summary_enabled and not hy_mt2:
+            windows_since_summary += 1
+            if windows_since_summary >= 15 or wi == 0:
+                windows_since_summary = 0
+                summary_text = _maybe_update_scene_summary(
+                    client, model, summary_text,
+                    [t for t in texts[max(0, idxs[0] - 20): idxs[-1] + 1]],
+                    metrics=metrics,
+                )
+
+    metrics.print_summary()
 
     # --- Untranslated summary ----------------------------------------------
     # Failures are now always "" (never the source text), so a partial output is

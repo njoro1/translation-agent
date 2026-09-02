@@ -1,0 +1,13 @@
+inspect requested, loading: True
+loading done. error: ''
+hasInfo: True
+rows: 18
+codecs: [{'id': 'av1', 'label': 'AV1'}, {'id': 'vp9', 'label': 'VP9'}, {'id': 'h264', 'label': 'H.264'}, {'id': 'best', 'label': 'Best (any)'}]
+resolutions: [{'value': 2160, 'label': '2160p'}, {'value': 1440, 'label': '1440p'}, {'value': 1080, 'label': '1080p'}, {'value': 720, 'label': '720p'}, {'value': 480, 'label': '480p'}, {'value': 360, 'label': '360p'}, {'value': 240, 'label': '240p'}, {'value': 144, 'label': '144p'}, {'value': 'best', 'label': 'Best'}]
+selectedCodec: av1 selectedRes: best
+selectedOption: {'codec': 'av1', 'resolution': 2160, 'ext': 'mkv', 'fps': 0, 'filesize': 0, 'has_audio': True, 'merge': True, 'label': 'Best AV1 (2160p, video + audio merge)', 'format_selector': 'bestvideo[vcodec^=av01][height=2160]+bestaudio/best'}
+hasSelectionFlag: True
+label: 'Best AV1 (2160p, video + audio merge)'
+size: 0
+saved C:\xampp\htdocs\translation-agent\ui_shots\youtube_real.png
+qml warnings: 0
