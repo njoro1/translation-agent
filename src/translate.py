@@ -24,6 +24,13 @@ class TranslationEndpointError(RuntimeError):
     ladder against the wrong endpoint."""
 
 
+class TranslationCancelled(RuntimeError):
+    """Raised when a GUI-requested cancel is observed between batches.
+
+    translate.py turns this into a clean exit code (2) so the bridge can tell
+    the user the run was stopped on purpose rather than failed."""
+
+
 _FATAL_HTTP_STATUS = {404, 405, 501}
 
 
@@ -881,6 +888,7 @@ def translate_cues(
     prompt_profile: str | None = None,
     progress_callback=None,
     scene_summary_enabled: bool = False,
+    cancel_check=None,
 ) -> list[str]:
     """Translate cue texts into English, preserving order. Returns translations.
 
@@ -898,6 +906,9 @@ def translate_cues(
         progress_callback: ``callable(done, total, stage)`` invoked after each
             window finalizes.
         scene_summary_enabled: Cloud-only rolling scene summary (experimental).
+        cancel_check: Optional ``callable() -> bool`` polled before each
+            window; returning True raises :class:`TranslationCancelled` so a
+            GUI stop button stops promptly between LLM calls.
     """
     import hashlib
 
@@ -1058,6 +1069,10 @@ def translate_cues(
         del rolling_memory[:-memory_pairs]
 
     for wi, window in enumerate(windows):
+        if cancel_check is not None and cancel_check():
+            raise TranslationCancelled(
+                "Translation cancelled by the user."
+            )
         idxs = list(
             range(window.start_index, window.start_index + len(window.cues))
         )

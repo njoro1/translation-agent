@@ -1,4 +1,4 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
@@ -8,6 +8,7 @@ ColumnLayout {
     id: root
 
     property bool expanded: false
+    property bool segExpanded: false
 
     spacing: Theme.sm
 
@@ -49,10 +50,79 @@ ColumnLayout {
         }
     }
 
-    ColumnLayout {
-        visible: root.expanded
-        Layout.fillWidth: true
-        spacing: Theme.sm
+        ColumnLayout {
+            visible: root.expanded
+            Layout.fillWidth: true
+            spacing: Theme.sm
+
+            // --- Appearance ------------------------------------------------------
+            Switch {
+                checked: appBridge.comfortable
+                onToggled: appBridge.setComfortable(checked)
+                text: "Comfortable density (larger hit targets)"
+                font.pixelSize: Theme.fontSmall
+                Accessible.name: "Comfortable density"
+
+                indicator: Rectangle {
+                    implicitWidth: 30
+                    implicitHeight: 16
+                    radius: 8
+                    color: parent.checked ? Theme.accent : Theme.border
+
+                    Rectangle {
+                        x: parent.checked ? parent.width - width - 2 : 2
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12
+                        height: 12
+                        radius: 6
+                        color: "#FFFFFF"
+
+                        Behavior on x { NumberAnimation { duration: 120 } }
+                    }
+                }
+
+                contentItem: Label {
+                    text: parent.text
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fontSmall
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: parent.indicator.width + 6
+                }
+            }
+
+            Switch {
+                checked: appBridge.reducedMotion
+                onToggled: appBridge.setReducedMotion(checked)
+                text: "Reduce motion (fewer animations)"
+                font.pixelSize: Theme.fontSmall
+                Accessible.name: "Reduce motion"
+
+                indicator: Rectangle {
+                    implicitWidth: 30
+                    implicitHeight: 16
+                    radius: 8
+                    color: parent.checked ? Theme.accent : Theme.border
+
+                    Rectangle {
+                        x: parent.checked ? parent.width - width - 2 : 2
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12
+                        height: 12
+                        radius: 6
+                        color: "#FFFFFF"
+
+                        Behavior on x { NumberAnimation { duration: 120 } }
+                    }
+                }
+
+                contentItem: Label {
+                    text: parent.text
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fontSmall
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: parent.indicator.width + 6
+                }
+            }
 
         // --- Batch / context -------------------------------------------------
         RowLayout {
@@ -164,83 +234,141 @@ ColumnLayout {
             }
         }
 
-        // --- ASR numeric tuning (local modes) ---------------------------------
-        GridLayout {
+        // --- ASR segmentation tuning (local modes, advanced) ------------------
+        ColumnLayout {
             visible: root.isLocalMode
             Layout.fillWidth: true
-            columns: 2
-            columnSpacing: Theme.sm
-            rowSpacing: Theme.xs
+            spacing: Theme.xs
 
-            Component.onCompleted: {
-                // Populate numeric fields from the bridge once.
-                segField.text = appBridge.asrMaxSegmentMs
-                silenceField.text = appBridge.asrMaxEndSilenceMs
-                threshField.text = appBridge.asrSpeechNoiseThreshold
-                noiseField.text = appBridge.asrNoiseDb
-                minSilenceField.text = appBridge.asrMinSilenceS
-                cueDurField.text = appBridge.asrMaxCueDurationMs
-                cueCharsField.text = appBridge.asrMaxCueChars
-                cueCharsCjkField.text = appBridge.asrMaxCueCharsCjk
+            // Collapsed sub-group: these are expert knobs most users never touch.
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 30
+                radius: Theme.radiusSm
+                color: segMouse.containsMouse ? Theme.surfaceAlt : Theme.surface
+                border.color: Theme.border
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.sm
+                    anchors.rightMargin: Theme.sm
+
+                    Label {
+                        text: root.segExpanded ? "\u25BC" : "\u25B6"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                    }
+                    FieldLabel { text: "Segmentation (advanced)" }
+                    Item { Layout.fillWidth: true }
+                }
+
+                MouseArea {
+                    id: segMouse
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onClicked: root.segExpanded = !root.segExpanded
+                }
+
+                Accessible.role: Accessible.Button
+                Accessible.name: "Segmentation advanced settings, " + (root.segExpanded ? "expanded" : "collapsed")
             }
 
-            FieldLabel { text: "Max segment ms" }
-            CompactTextField {
-                id: segField
+            GridLayout {
+                visible: root.segExpanded
                 Layout.fillWidth: true
-                validator: IntValidator { bottom: 500 }
-                onEditingFinished: appBridge.asrMaxSegmentMs = text
-            }
+                columns: 2
+                columnSpacing: Theme.sm
+                rowSpacing: Theme.xs
 
-            FieldLabel { text: "End silence ms" }
-            CompactTextField {
-                id: silenceField
-                Layout.fillWidth: true
-                validator: IntValidator { bottom: 50 }
-                onEditingFinished: appBridge.asrMaxEndSilenceMs = text
-            }
+                // Declarative bindings (no Component.onCompleted): the fields stay
+                // in sync if a preset or config load changes the bridge values.
+                FieldLabel { text: "Max segment ms" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrMaxSegmentMs
+                    validator: IntValidator { bottom: 500 }
+                    onEditingFinished: appBridge.asrMaxSegmentMs = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Longest audio chunk sent to ASR at once. Lower = more, shorter cues but slower."
+                }
 
-            FieldLabel { text: "Speech/noise thres" }
-            CompactTextField {
-                id: threshField
-                Layout.fillWidth: true
-                validator: DoubleValidator { bottom: 0.0; top: 1.0 }
-                onEditingFinished: appBridge.asrSpeechNoiseThreshold = text
-            }
+                FieldLabel { text: "End silence ms" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrMaxEndSilenceMs
+                    validator: IntValidator { bottom: 50 }
+                    onEditingFinished: appBridge.asrMaxEndSilenceMs = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Trailing silence (ms) allowed before a segment is considered finished."
+                }
 
-            FieldLabel { text: "Noise dB" }
-            CompactTextField { id: noiseField; Layout.fillWidth: true; onEditingFinished: appBridge.asrNoiseDb = text }
+                FieldLabel { text: "Speech/noise thres" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrSpeechNoiseThreshold
+                    validator: DoubleValidator { bottom: 0.0; top: 1.0 }
+                    onEditingFinished: appBridge.asrSpeechNoiseThreshold = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Silero VAD probability (0–1) above which a frame counts as speech."
+                }
 
-            FieldLabel { text: "Min silence s" }
-            CompactTextField {
-                id: minSilenceField
-                Layout.fillWidth: true
-                validator: DoubleValidator { bottom: 0.05 }
-                onEditingFinished: appBridge.asrMinSilenceS = text
-            }
+                FieldLabel { text: "Noise dB" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrNoiseDb
+                    onEditingFinished: appBridge.asrNoiseDb = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Audio quieter than this dB is filtered out before voice detection."
+                }
 
-            FieldLabel { text: "Max cue duration ms" }
-            CompactTextField {
-                id: cueDurField
-                Layout.fillWidth: true
-                validator: IntValidator { bottom: 500 }
-                onEditingFinished: appBridge.asrMaxCueDurationMs = text
-            }
+                FieldLabel { text: "Min silence s" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrMinSilenceS
+                    validator: DoubleValidator { bottom: 0.05 }
+                    onEditingFinished: appBridge.asrMinSilenceS = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Shortest silence (seconds) that splits one subtitle cue from the next."
+                }
 
-            FieldLabel { text: "Max cue chars" }
-            CompactTextField {
-                id: cueCharsField
-                Layout.fillWidth: true
-                validator: IntValidator { bottom: 10 }
-                onEditingFinished: appBridge.asrMaxCueChars = text
-            }
+                FieldLabel { text: "Max cue duration ms" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrMaxCueDurationMs
+                    validator: IntValidator { bottom: 500 }
+                    onEditingFinished: appBridge.asrMaxCueDurationMs = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "If a single cue runs longer than this, the speech is split into two cues."
+                }
 
-            FieldLabel { text: "Max CJK chars" }
-            CompactTextField {
-                id: cueCharsCjkField
-                Layout.fillWidth: true
-                validator: IntValidator { bottom: 5 }
-                onEditingFinished: appBridge.asrMaxCueCharsCjk = text
+                FieldLabel { text: "Max cue chars" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrMaxCueChars
+                    validator: IntValidator { bottom: 10 }
+                    onEditingFinished: appBridge.asrMaxCueChars = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Hard cap on Latin characters per cue (forces a split when exceeded)."
+                }
+
+                FieldLabel { text: "Max CJK chars" }
+                CompactTextField {
+                    Layout.fillWidth: true
+                    text: appBridge.asrMaxCueCharsCjk
+                    validator: IntValidator { bottom: 5 }
+                    onEditingFinished: appBridge.asrMaxCueCharsCjk = text
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Hard cap on CJK characters per cue (forces a split when exceeded)."
+                }
             }
         }
 
@@ -283,7 +411,7 @@ ColumnLayout {
                 onEditingFinished: appBridge.glossaryPath = appBridge.localPath(text)
             }
             Button {
-                text: "â€¦"
+                text: "…"
                 implicitWidth: 30
                 onClicked: glossaryDialog.open()
 
@@ -292,7 +420,7 @@ ColumnLayout {
                     radius: Theme.radiusSm
                     border.color: Theme.border
                 }
-                contentItem: Label { text: "â€¦"; color: Theme.text; horizontalAlignment: Text.AlignHCenter }
+                contentItem: Label { text: "…"; color: Theme.text; horizontalAlignment: Text.AlignHCenter }
             }
         }
 
@@ -356,7 +484,7 @@ ColumnLayout {
                     Layout.fillWidth: true
                     echoMode: TextInput.Password
                     text: appBridge.apiKey
-                    placeholderText: "sk-â€¦"
+                    placeholderText: "sk-…"
                     onEditingFinished: appBridge.apiKey = text
                 }
             }
@@ -410,7 +538,7 @@ ColumnLayout {
 
                 Button {
                     visible: !appBridge.localModelReady
-                    text: appBridge.localModelDownloading ? "Downloadingâ€¦" : "Download Hy-MT2"
+                    text: appBridge.localModelDownloading ? "Downloading…" : "Download Hy-MT2"
                     enabled: !appBridge.localModelDownloading
                     onClicked: appBridge.downloadLocalModel()
 
@@ -441,7 +569,7 @@ ColumnLayout {
                     onEditingFinished: appBridge.localModel = appBridge.localPath(text)
                 }
                 Button {
-                    text: "â€¦"
+                    text: "…"
                     implicitWidth: 30
                     onClicked: localModelDialog.open()
 
@@ -450,7 +578,7 @@ ColumnLayout {
                         radius: Theme.radiusSm
                         border.color: Theme.border
                     }
-                    contentItem: Label { text: "â€¦"; color: Theme.text; horizontalAlignment: Text.AlignHCenter }
+                    contentItem: Label { text: "…"; color: Theme.text; horizontalAlignment: Text.AlignHCenter }
                 }
             }
 

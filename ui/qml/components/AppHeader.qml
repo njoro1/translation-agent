@@ -1,4 +1,4 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
@@ -44,27 +44,64 @@ Rectangle {
 
         ModePicker {}
 
+        Item { Layout.fillWidth: true }
+
         PresetPicker {
             objectName: "presetPicker"
-            Layout.preferredWidth: 128
+            Layout.preferredWidth: 118
+        }
+
+        FieldLabel {
+            text: window.isYouTubeMode ? "Source language" : "Spoken language"
+        }
+
+        // Light / dark theme toggle (S-02).
+        Button {
+            id: themeToggle
+            implicitWidth: 32
+            implicitHeight: 28
+            onClicked: appBridge.toggleTheme()
+            Accessible.name: Theme.isDark ? "Switch to light theme" : "Switch to dark theme"
+            background: Rectangle {
+                radius: Theme.radiusSm
+                color: themeToggle.hovered ? Theme.surfaceAlt : "transparent"
+                border.color: Theme.border
+            }
+            contentItem: Label {
+                text: Theme.isDark ? "\u2600" : "\u263E"
+                color: Theme.text
+                font.pixelSize: Theme.fontLabel
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: Theme.isDark ? "Switch to the light theme" : "Switch to the dark theme"
         }
 
         CompactComboBox {
             id: langCombo
-            Layout.preferredWidth: 96
+            Layout.preferredWidth: 102
             editable: true
-            editText: appBridge.sourceLang
-            model: ["", "ja", "zh", "zh-TW", "ko", "yue", "en"]
-            onAccepted: appBridge.sourceLang = editText.trim()
-            onActivated: appBridge.sourceLang = editText.trim()
+            editText: window.isYouTubeMode ? appBridge.sourceLang : appBridge.asrLanguage
+            model: ["auto", "ja", "zh", "zh-TW", "ko", "yue", "en"]
+            onAccepted: window.isYouTubeMode
+                       ? (appBridge.sourceLang = langCombo.editText.trim())
+                       : (appBridge.asrLanguage = langCombo.editText.trim())
+            onActivated: window.isYouTubeMode
+                       ? (appBridge.sourceLang = langCombo.editText.trim())
+                       : (appBridge.asrLanguage = langCombo.editText.trim())
             ToolTip.visible: hovered
             ToolTip.delay: 500
-            ToolTip.text: "Source language hint (blank = auto-detect)."
+            ToolTip.text: window.isYouTubeMode
+                ? "Source language of the subtitles to translate (auto = detect)."
+                : "Spoken language the ASR transcribes (auto = detect). The translation source defaults to this; override it in Advanced."
+            Accessible.name: window.isYouTubeMode ? "Source language" : "Spoken language"
         }
 
-        Item { Layout.fillWidth: true }
-
-        RunButton {}
+        RunButton {
+            objectName: "runButton"
+        }
 
         StatusPill {}
     }

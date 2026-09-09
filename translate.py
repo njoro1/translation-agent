@@ -378,6 +378,35 @@ def _json_progress(args, stage: str, done: int, total: int) -> None:
     )
 
 
+# --- Cooperative cancellation (GUI stop button) ------------------------------
+# The GUI worker calls translate.main() in-process; the bridge flips this flag
+# from its Slot and the pipeline polls it between stages/batches. It is only
+# ever reset at the start of a run, so a cancel clicked mid-run cannot leak
+# into the next one.
+_cancel_requested = False
+
+
+def request_cancel() -> None:
+    """Ask the running pipeline to stop cleanly at the next checkpoint."""
+    global _cancel_requested
+    _cancel_requested = True
+
+
+def reset_cancel() -> None:
+    """Clear a previous cancel request so it cannot leak into the next run.
+
+    The GUI worker runs translate.main() in-process, so without this a single
+    Stop click would make every later run abort immediately.
+    """
+    global _cancel_requested
+    _cancel_requested = False
+
+
+def _poll_cancel() -> bool:
+    """cancel_check predicate passed into the translation loop."""
+    return _cancel_requested
+
+
 def _run_pipeline(
     args: argparse.Namespace, settings, fetched: tuple[list, str | None, str | None]
 ) -> int:
@@ -450,7 +479,7 @@ def _run_pipeline(
     else:
         print(f"Fetched {len(cues)} cues. Translating into English...")
         client = make_client(settings)
-        from src.translate import TranslationEndpointError
+        from src.translate import TranslationEndpointError, TranslationCancelled
 
         def _translation_progress(done: int, total: int, stage: str) -> None:
             _json_progress(args, stage, done, total)
@@ -464,10 +493,22 @@ def _run_pipeline(
                 context_mode=getattr(args, "context_mode", None),
                 prompt_profile=getattr(args, "prompt_profile", None),
                 progress_callback=_translation_progress,
+                cancel_check=_poll_cancel,
                 scene_summary_enabled=bool(
                     getattr(args, "context_summary", False)
                 ),
             )
+        except TranslationCancelled:
+            print(
+                "Cancelled by user; stopping at the next batch boundary. "
+                "No output file was written.",
+                flush=True,
+            )
+            # Close TM before returning so the SQLite handle is never left
+            # open on the cancelled path.
+            if tm is not None:
+                tm.close()
+            return 2
         except TranslationEndpointError as exc:
             print(f"error: {exc}", file=sys.stderr, flush=True)
             print(
@@ -712,6 +753,9 @@ def _download_youtube_media(args) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A cancel requested during a previous in-process run must never leak into
+    # this one (the GUI reuses this module for every run).
+    reset_cancel()
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     from src.presets import resolve_effective_settings
 

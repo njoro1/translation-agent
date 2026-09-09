@@ -1,12 +1,14 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import ".."
 
-// YouTube media download panel: inspect available codecs (AV1 / VP9 / H.264)
+// YouTube video download panel: inspect available codecs (AV1 / VP9 / H.264)
 // and resolutions for the entered URL, pick a codec + resolution, see the
-// resulting file size, and download the video and/or its English subtitle
-// track. Only shown in YouTube mode.
+// resulting file size, and download the video with live progress and cancel.
+// Subtitle downloading lives in YouTubeSubtitlePanel so the two run
+// independently. Only shown in YouTube mode.
 SectionPanel {
     id: root
 
@@ -16,7 +18,7 @@ SectionPanel {
 
     function humanSize(bytes) {
         if (!bytes || bytes <= 0)
-            return "unknown (video + audio merge)"
+            return "unknown until download (video + audio are merged)"
         var units = ["B", "KB", "MB", "GB", "TB"]
         var n = bytes
         var i = 0
@@ -27,7 +29,8 @@ SectionPanel {
         return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i]
     }
 
-    title: "YouTube Video"
+    title: "Also download the video (optional)"
+    expanded: false
     visible: window.isYouTubeMode
     Layout.fillWidth: true
 
@@ -365,14 +368,26 @@ SectionPanel {
         }
 
         // --- Download actions -----------------------------------------------
+        Label {
+            Layout.fillWidth: true
+            visible: !root.hasInfo && !appBridge.youtubeInfoLoading
+                     && appBridge.youtubeInfoError === ""
+                     && appBridge.url.trim() !== ""
+            text: "Click \u201CInspect formats\u201D above to see the available " +
+                  "codecs and resolutions before downloading."
+            color: Theme.textMuted
+            font.pixelSize: Theme.fontSmall
+            wrapMode: Text.WordWrap
+        }
+
         RowLayout {
             visible: root.hasInfo
             Layout.fillWidth: true
             spacing: Theme.sm
 
             Button {
-                text: "Download video"
-                enabled: !appBridge.youtubeDownloading && root.hasSelection
+                text: appBridge.youtubeVideoDownloading ? "Downloading…" : "Download video"
+                enabled: !appBridge.youtubeVideoDownloading && root.hasSelection
                 onClicked: appBridge.downloadYouTubeVideo()
 
                 background: Rectangle {
@@ -391,22 +406,19 @@ SectionPanel {
             }
 
             Button {
-                text: "Download English subtitle"
-                enabled: !appBridge.youtubeDownloading
-                         && appBridge.youtubeHasEnglishSubtitle
-                onClicked: appBridge.downloadYouTubeSubtitle()
+                visible: appBridge.youtubeVideoDownloading
+                text: "Cancel"
+                onClicked: appBridge.cancelYouTubeVideoDownload()
 
                 background: Rectangle {
                     radius: Theme.radiusSm
-                    color: parent.enabled
-                           ? (parent.hovered ? Theme.surfaceAlt : Theme.surface)
-                           : Theme.surfaceAlt
-                    border.color: Theme.border
+                    color: parent.hovered ? Theme.surfaceAlt : Theme.surface
+                    border.color: Theme.error
                     border.width: 1
                 }
                 contentItem: Label {
                     text: parent.text
-                    color: parent.enabled ? Theme.text : Theme.textMuted
+                    color: Theme.error
                     font.pixelSize: Theme.fontSmall
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
@@ -414,45 +426,75 @@ SectionPanel {
             }
         }
 
-        Label {
-            Layout.fillWidth: true
-            visible: root.hasInfo && !appBridge.youtubeHasEnglishSubtitle
-            text: "No English subtitle track is available for this video."
-            color: Theme.textMuted
-            font.pixelSize: Theme.fontSmall
-            wrapMode: Text.WordWrap
-        }
-
-        Label {
-            Layout.fillWidth: true
-            visible: root.hasInfo
-            text: "Saving to: " + appBridge.youtubeDownloadDir
-            color: Theme.textMuted
-            font.pixelSize: Theme.fontSmall
-            elide: Text.ElideMiddle
-        }
-
-        // --- Download progress / result -------------------------------------
-        Label {
-            Layout.fillWidth: true
-            visible: appBridge.youtubeDownloadStatus !== ""
-            text: appBridge.youtubeDownloadStatus
-            color: Theme.text
-            font.pixelSize: Theme.fontSmall
-            wrapMode: Text.WordWrap
-            maximumLineCount: 12
-        }
-
+        // --- Live download progress ------------------------------------------
         RowLayout {
-            visible: appBridge.youtubeDownloadedVideo !== ""
-                     || appBridge.youtubeDownloadedSubtitle !== ""
+            visible: appBridge.youtubeVideoDownloading
+                     || appBridge.youtubeVideoProgress > 0
             Layout.fillWidth: true
             spacing: Theme.sm
 
+            ProgressBar {
+                id: videoProgress
+                Layout.fillWidth: true
+                from: 0
+                to: 100
+                value: appBridge.youtubeVideoProgress
+                indeterminate: appBridge.youtubeVideoDownloading
+                               && appBridge.youtubeVideoProgress <= 0
+
+                background: Rectangle {
+                    implicitHeight: 6
+                    radius: 3
+                    color: Theme.surfaceAlt
+                    border.color: Theme.border
+                    border.width: 1
+                }
+                contentItem: Item {
+                    implicitHeight: 6
+
+                    Rectangle {
+                        visible: !videoProgress.indeterminate
+                        width: videoProgress.visualPosition * parent.width
+                        height: parent.height
+                        radius: 3
+                        color: Theme.accent
+                    }
+
+                    Rectangle {
+                        visible: videoProgress.indeterminate
+                        anchors.fill: parent
+                        radius: 3
+                        color: Theme.accent
+                        opacity: 0.4
+                    }
+                }
+            }
+
+            Label {
+                visible: !videoProgress.indeterminate
+                text: appBridge.youtubeVideoProgress + "%"
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSmall
+            }
+        }
+
+        // --- Save-to folder ---------------------------------------------------
+        RowLayout {
+            visible: root.hasInfo || appBridge.youtubeDownloadDir !== ""
+            Layout.fillWidth: true
+            spacing: Theme.sm
+
+            Label {
+                Layout.fillWidth: true
+                text: "Saving to: " + appBridge.youtubeDownloadDir
+                color: Theme.textMuted
+                font.pixelSize: Theme.fontSmall
+                elide: Text.ElideMiddle
+            }
+
             Button {
-                visible: appBridge.youtubeDownloadedVideo !== ""
-                text: "Open video folder"
-                onClicked: appBridge.openFolderForPath(appBridge.youtubeDownloadedVideo)
+                text: "Change…"
+                onClicked: downloadDirDialog.open()
 
                 background: Rectangle {
                     radius: Theme.radiusSm
@@ -468,11 +510,34 @@ SectionPanel {
                     verticalAlignment: Text.AlignVCenter
                 }
             }
+        }
+
+        FolderDialog {
+            id: downloadDirDialog
+            title: "Choose the YouTube download folder"
+            onAccepted: appBridge.setYouTubeDownloadDir(selectedFolder)
+        }
+
+        // --- Download progress / result -------------------------------------
+        Label {
+            Layout.fillWidth: true
+            visible: appBridge.youtubeVideoStatus !== ""
+            text: appBridge.youtubeVideoStatus
+            color: Theme.text
+            font.pixelSize: Theme.fontSmall
+            wrapMode: Text.WordWrap
+            maximumLineCount: 12
+        }
+
+        RowLayout {
+            visible: appBridge.youtubeDownloadedVideo !== ""
+            Layout.fillWidth: true
+            spacing: Theme.sm
 
             Button {
-                visible: appBridge.youtubeDownloadedSubtitle !== ""
-                text: "Open subtitle folder"
-                onClicked: appBridge.openFolderForPath(appBridge.youtubeDownloadedSubtitle)
+                visible: appBridge.youtubeDownloadedVideo !== ""
+                text: "Open video folder"
+                onClicked: appBridge.openFolderForPath(appBridge.youtubeDownloadedVideo)
 
                 background: Rectangle {
                     radius: Theme.radiusSm

@@ -1,12 +1,18 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import ".."
 
 ComboBox {
     id: root
 
+    // Optional human label for screen readers / test hooks.
+    property string label: ""
+
     font.pixelSize: Theme.fontBody
     height: Theme.fieldHeight
+
+    Accessible.role: Accessible.ComboBox
+    Accessible.name: root.label !== "" ? root.label : root.displayText
 
     // Test/screenshot hooks: QQuickPopup is not exposed to Python, so the
     // popup is opened/closed through invokable QML functions.
@@ -79,9 +85,14 @@ ComboBox {
         }
         contentItem: ListView {
             clip: true
-            implicitHeight: contentHeight
+            // Capped: an uncapped contentHeight let long lists (e.g. YouTube
+            // resolutions) open a popup taller than the window, putting the
+            // last items permanently out of reach.
+            implicitHeight: Math.min(contentHeight, 320)
             model: root.popup.visible ? root.delegateModel : null
             currentIndex: root.highlightedIndex
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         }
     }
 }

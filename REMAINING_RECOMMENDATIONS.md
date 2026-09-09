@@ -1,4 +1,4 @@
-﻿# Remaining Recommendations
+# Remaining Recommendations
 
 > **STATUS UPDATE (mode-simplification pass):** Cloud rescue has been REMOVED as a
 > product feature. Any rescue item below marked Approved/Deferred is obsolete.
@@ -23,32 +23,32 @@ backlog; this file is the dedicated, forward-looking list for the follow-up pass
 These came out of the same review and are **already done** (kept here for context
 so they are not re-filed):
 
-- [x] P0-1 â€” Cloud rescue endpoint selection (`*CLOUD_RESCUE_*` env vars,
+- [x] P0-1 — Cloud rescue endpoint selection (`*CLOUD_RESCUE_*` env vars,
       pre-local snapshot fallback, local-URL exclusion).
-- [x] P0-2 â€” Transactional environment mutation (`OPENAI_BASE_URL`/`OPENAI_API_KEY`
+- [x] P0-2 — Transactional environment mutation (`OPENAI_BASE_URL`/`OPENAI_API_KEY`
       snapshot + `finally` restore, pre-local config stashed on `args`).
-- [x] P0-3 â€” Translation-memory closure on all exit paths (success,
+- [x] P0-3 — Translation-memory closure on all exit paths (success,
       `--strict-quality` failure, translation-endpoint error); `close()` is
       idempotent.
-- [x] P0-4 â€” Final failed-cue accounting (`_is_failed_text()` over the
+- [x] P0-4 — Final failed-cue accounting (`_is_failed_text()` over the
       post-processed `out_cues`).
-- [x] P0-5 â€” Newline escaping (verified, pinned by tests).
-- [x] P0-6 â€” Documentation/code default sync (`AGENT_DOCUMENTATION.md`,
+- [x] P0-5 — Newline escaping (verified, pinned by tests).
+- [x] P0-6 — Documentation/code default sync (`AGENT_DOCUMENTATION.md`,
       `README.md`, CLI + QSettings tables; rescue env vars documented).
-- [x] P0-7 â€” Timestamp invariant reconciled with overlap-snap (trim `end` only
+- [x] P0-7 — Timestamp invariant reconciled with overlap-snap (trim `end` only
       on overlap, never below 300 ms).
-- [x] P1-1 â€” Source-language precedence (`_is_known_source_code()`).
-- [x] P1-2 â€” `--source-lang` for local files (translation hint when ASR is
+- [x] P1-1 — Source-language precedence (`_is_known_source_code()`).
+- [x] P1-2 — `--source-lang` for local files (translation hint when ASR is
       auto/unknown; help text + AGENT_DOC updated; acceptance tests added).
 
 > **Scope rule for everything below:** keep the pipeline non-breaking
-> â€” never change the cue count, never alter original timestamps beyond the
+> — never change the cue count, never alter original timestamps beyond the
 > documented overlap snap, preserve the final `Wrote {N} cues to {path}` line
 > for the GUI, and do not regress the foreignization directive.
 
 ---
 
-## P1 â€” CJK Quality (higher priority)
+## P1 — CJK Quality (higher priority)
 
 ### 1. ASR presets/profiles (P1-3)
 
@@ -118,19 +118,19 @@ so they are not re-filed):
     found.
   - User `--ass-font` override still wins.
 
-### 7. Local-file `--source-lang` finalization (P1-2 â€” follow-up)
+### 7. Local-file `--source-lang` finalization (P1-2 — follow-up)
 
 - **Status:** Hint behavior is implemented (see above); the deeper semantic
-  decision â€” should `--source-lang` *force* the prompt language even when ASR
-  confidence is high? â€” is deferred.
+  decision — should `--source-lang` *force* the prompt language even when ASR
+  confidence is high? — is deferred.
 - **Proposed decision point for next pass:** keep "hint-only when ASR is
   auto/unknown" (current) vs. "always prefer `--source-lang` for local files".
-- **Acceptance criteria:** pick one and document it in README Â§CLI + AGENT_DOC
+- **Acceptance criteria:** pick one and document it in README §CLI + AGENT_DOC
   5.1; add a test pinning the chosen behavior.
 
 ---
 
-## P2 â€” UX / Frontend (medium priority)
+## P2 — UX / Frontend (medium priority)
 
 ### 8. Cue preview table
 
@@ -158,7 +158,7 @@ so they are not re-filed):
 
 ---
 
-## P3 â€” Optional / Future (low priority)
+## P3 — Optional / Future (low priority)
 
 ### 11. Audio preprocessing
 
@@ -167,7 +167,7 @@ so they are not re-filed):
 
 ### 12. Sound-tag modes
 
-- Recognize and preserve / annotate `â™ª` lines and speaker-koe cues instead of
+- Recognize and preserve / annotate `♪` lines and speaker-koe cues instead of
   translating them. Criterion: configurable mode flag.
 
 ### 13. Translation profiles

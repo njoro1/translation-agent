@@ -1,4 +1,4 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import ".."
 
@@ -7,6 +7,36 @@ Rectangle {
 
     readonly property string state: appBridge.statusState
     readonly property bool running: state === "running" || state === "validating"
+    // Elapsed time only makes sense while a run is active.
+    readonly property bool showTimer: running && elapsedSec >= 1
+    readonly property string stateText: {
+        if (state === "done") return "Done"
+        if (state === "failed") return "Failed"
+        if (state === "cancelled") return "Cancelled"
+        if (state === "validating") return "Validating"
+        if (state === "running") return "Running"
+        return "Ready"
+    }
+    property int elapsedSec: 0
+
+    function _fmt(sec) {
+        var m = Math.floor(sec / 60)
+        var s = sec % 60
+        return m > 0 ? m + "m " + s + "s" : s + "s"
+    }
+
+    Timer {
+        running: root.running
+        repeat: true
+        interval: 1000
+        triggeredOnStart: true
+        onTriggered: root.elapsedSec = root.elapsedSec + 1
+    }
+
+    onRunningChanged: {
+        if (!running)
+            elapsedSec = 0
+    }
 
     radius: 999
     implicitHeight: 26
@@ -14,12 +44,14 @@ Rectangle {
     color: {
         if (state === "done") return Theme.successTint
         if (state === "failed") return Theme.errorTint
+        if (state === "cancelled") return Theme.warningTint
         if (running) return Qt.rgba(0.24, 0.51, 0.96, 0.15)
         return Theme.surfaceAlt
     }
     border.color: {
         if (state === "done") return Theme.success
         if (state === "failed") return Theme.error
+        if (state === "cancelled") return Theme.warning
         if (running) return Theme.accent
         return Theme.border
     }
@@ -37,6 +69,7 @@ Rectangle {
             color: {
                 if (root.state === "done") return Theme.success
                 if (root.state === "failed") return Theme.error
+                if (root.state === "cancelled") return Theme.warning
                 if (root.running) return Theme.accent
                 return Theme.textMuted
             }
@@ -51,13 +84,11 @@ Rectangle {
 
         Label {
             anchors.verticalCenter: parent.verticalCenter
-            text: {
-                if (root.state === "done") return "Done"
-                if (root.state === "failed") return "Failed"
-                if (root.state === "validating") return "Validating"
-                if (root.state === "running") return "Running"
-                return "Ready"
-            }
+            // Show the live elapsed time inside the pill (the old build
+            // computed `showTimer` but never rendered it).
+            text: root.showTimer
+                  ? root.stateText + "  \u00B7  " + root._fmt(root.elapsedSec)
+                  : root.stateText
             color: Theme.text
             font.pixelSize: Theme.fontSmall
             font.bold: true

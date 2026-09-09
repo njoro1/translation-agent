@@ -54,10 +54,21 @@ class TranslationWorker(QRunnable):
                     os.environ[key] = value
                 elif key in os.environ:
                     os.environ.pop(key)
-            rc = translate.main(self.config.argv)
-        except Exception as exc:  # noqa: BLE001 - surface unexpected worker failures
-            self.signals.logLine.emit(f"[error] {exc}\n")
-            rc = 1
+            # translate.main runs in-process, so the bridge's cancelRun() sets
+            # a module-level flag (translate.request_cancel) that the pipeline
+            # polls between batches/windows; no IPC needed. A cancelled run
+            # exits with code 2 (translate._run_pipeline returns it), which
+            # the bridge maps to a distinct "cancelled" state.
+            try:
+                rc = translate.main(self.config.argv)
+            except Exception as exc:  # noqa: BLE001 - surface unexpected worker failures
+                from src.translate import TranslationCancelled
+
+                if isinstance(exc, TranslationCancelled):
+                    rc = 2
+                else:
+                    self.signals.logLine.emit(f"[error] {exc}\n")
+                    rc = 1
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
             for key, previous in old_env.items():

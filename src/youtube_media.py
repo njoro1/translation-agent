@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 from .fetch_subs import _SUBPROCESS_CREATION_FLAGS, extract_video_id
 
@@ -73,12 +74,38 @@ def _ffmpeg_exe() -> str | None:
     return exe
 
 
+# --- yt-dlp resolution --------------------------------------------------------
+def _yt_dlp_cmd() -> list[str]:
+    """Resolve the yt-dlp executable to invoke.
+
+    Order: the ``YT_DLP_BIN`` environment variable (absolute path or command
+    name), ``yt-dlp`` on PATH, then ``python -m yt_dlp`` — the last fallback
+    keeps the GUI usable in bundled environments where the ``yt-dlp`` script
+    exists as a module but no launcher landed on PATH.
+    """
+    env = os.environ.get("YT_DLP_BIN", "").strip()
+    if env:
+        # Accept "C:\\tools\\yt-dlp.exe" as well as "C:\\tools yt-dlp …"-style
+        # pre-quoted strings from users who know what they are doing.
+        if shutil.which(env) or os.path.exists(env):
+            return [env]
+    exe = shutil.which("yt-dlp")
+    if exe:
+        return [exe]
+    return [sys.executable, "-m", "yt_dlp"]
+
+
+_YTDLP_HINT = (
+    "yt-dlp is not installed. Install it with: pip install yt-dlp"
+)
+
+
 # --- Inspection ---------------------------------------------------------------
 def _yt_dlp_json(url: str) -> dict:
     """Run ``yt-dlp --dump-json`` and return the parsed info dict."""
     try:
         result = subprocess.run(
-            ["yt-dlp", "--no-warnings", "--no-playlist", "--dump-json", url],
+            _yt_dlp_cmd() + ["--no-warnings", "--no-playlist", "--dump-json", url],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -88,9 +115,7 @@ def _yt_dlp_json(url: str) -> dict:
             creationflags=_SUBPROCESS_CREATION_FLAGS,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError(
-            "yt-dlp is not installed. Install it with: pip install yt-dlp"
-        ) from exc
+        raise RuntimeError(_YTDLP_HINT) from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("Timed out inspecting the video with yt-dlp.") from exc
     except subprocess.CalledProcessError as exc:
@@ -208,7 +233,13 @@ def _option_from_combined(f: dict, cid: str, height: int) -> dict:
 def _merge_option(cid: str, height: int | None = None) -> dict:
     prefix = _CODEC_PREFIX.get(cid, "")
     height_clause = f"[height={height}]" if height else ""
-    selector = f"bestvideo[vcodec^={prefix}]{height_clause}+bestaudio/best"
+    # Every fallback in the chain must stay codec- (and height-) constrained: a
+    # bare ``/best`` would silently download a *different* codec or resolution
+    # than the user picked when the preferred alternative is unavailable.
+    cap_clause = f"[height<={height}]" if height else ""
+    codec_clause = f"[vcodec^={prefix}]" if prefix else ""
+    fallback = f"bestvideo{codec_clause}{cap_clause}/best{codec_clause}{cap_clause}"
+    selector = f"bestvideo{codec_clause}{height_clause}+bestaudio/{fallback}"
     res_label = f"{height}p" if height else "best"
     return {
         "codec": cid,
@@ -255,7 +286,7 @@ def _merge_option_from_format(
         "has_audio": False,
         "merge": True,
         "label": label,
-        "format_selector": f"{format_id}+bestaudio/best",
+        "format_selector": f"{format_id}+bestaudio/{format_id}",
     }
 
 
@@ -284,32 +315,84 @@ def _option_best() -> dict:
     }
 
 
+def _option_best_height(height: int) -> dict:
+    """Option for "best available (any codec)" capped at ``height`` pixels.
+
+    Used when the codec dropdown says "Best (any)" but the user still picked a
+    resolution: the selector keeps yt-dlp at or below the chosen height instead
+    of ignoring the pick entirely.
+    """
+    h = int(height)
+    cap = f"[height<={h}]"
+    return {
+        "codec": "best",
+        "resolution": h,
+        "ext": "",
+        "fps": 0,
+        "filesize": 0,
+        "has_audio": True,
+        "merge": False,
+        "label": f"Best available (\u2264 {h}p)",
+        "format_selector": f"bestvideo{cap}+bestaudio/best{cap}",
+    }
+
+
 def resolve_video_option(info: dict, codec: str, resolution) -> dict | None:
     """Pick the option dict for a (codec, resolution) selection.
 
     ``codec`` is one of ``"av1"``/``"vp9"``/``"h264"``/``"best"``; ``resolution``
     is an int height or the string ``"best"``. Returns the matching option dict
     (with ``format_selector`` + ``filesize``) or ``None`` if unavailable.
+
+    The returned selector always honours *both* picks:
+
+      * ``codec="best"`` + a height → any codec, but capped at that height.
+      * a specific codec + a height it does not serve → the closest height it
+        does serve (largest ≤ requested, else the smallest available), marked
+        in the label. Never a different codec, never an unconstrained
+        ``/best`` fallback that would download whatever is globally best.
     """
     best = info.get("best") or _option_best()
     if codec == "best":
-        return best
+        if resolution in ("best", None):
+            return best
+        try:
+            return _option_best_height(int(resolution))
+        except (TypeError, ValueError):
+            return best
 
     fam = info.get("matrix", {}).get(codec, {})
     if not fam:
-        # No stream of this codec at all: fall back to a best-of-codec merge.
-        return _merge_option(codec) if codec in _CODEC_PREFIX else None
+        # No stream of this codec at all: a best-of-codec merge, still
+        # constrained to the requested height when one was given.
+        if codec not in _CODEC_PREFIX:
+            return None
+        height = None if resolution in ("best", None) else int(resolution)
+        return _merge_option(codec, height)
 
-    if resolution == "best" or resolution is None:
+    if resolution in ("best", None):
         # Highest available resolution for this codec.
         height = max(int(h) for h in fam.keys())
         return fam[height]
 
-    height = int(resolution)
-    if height in fam:
+    try:
+        requested = int(resolution)
+    except (TypeError, ValueError):
+        height = max(int(h) for h in fam.keys())
         return fam[height]
-    # Requested height not present for this codec: synthesize a merge for it.
-    return _merge_option(codec, height)
+
+    if requested in fam:
+        return fam[requested]
+    # Requested height not served by this codec: fall back to the closest
+    # height that *is* served — prefer the largest ≤ requested, otherwise the
+    # smallest available. Both the codec and "as close as possible" are kept.
+    available = sorted(int(h) for h in fam.keys())
+    lower = [h for h in available if h <= requested]
+    height = max(lower) if lower else min(available)
+    opt = dict(fam[height])
+    base_label = opt.get("label") or f"{height}p"
+    opt["label"] = f"{base_label} (closest to {requested}p)"
+    return opt
 
 
 def _human_size(num: int) -> str:
@@ -369,12 +452,69 @@ def inspect_video(url: str) -> dict:
 
 
 # --- Download -----------------------------------------------------------------
-def _run_yt_dlp(cmd: list[str], progress_cb=None) -> int:
+_PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+
+
+def _translate_ytdlp_error(stderr: str) -> str:
+    """Turn common yt-dlp failures into actionable user guidance."""
+    low = (stderr or "").lower()
+    if "sign in to confirm" in low or "cookies" in low or "age" in low and "confirm" in low:
+        return (
+            "YouTube requires sign-in for this video (age-restricted or "
+            "bot-checked). yt-dlp cannot fetch it anonymously."
+        )
+    if "unable to extract" in low or "player" in low:
+        return (
+            "yt-dlp could not read this video — its extractor is likely "
+            "outdated for YouTube's latest changes. Update it: "
+            "pip install -U yt-dlp"
+        )
+    if "video unavailable" in low or "private video" in low:
+        return "This video is unavailable or private."
+    if "is not a valid url" in low or "unsupported url" in low:
+        return "That does not look like a supported video URL."
+    return ""
+
+
+def _run_yt_dlp(
+    cmd: list[str],
+    progress_cb=None,
+    percent_cb=None,
+    proc_ref: dict | None = None,
+    cancel_check=None,
+) -> int:
+    """Run yt-dlp, streaming its output lines to ``progress_cb``.
+
+    ``--newline`` is passed so progress updates arrive as separate lines; the
+    percentage is parsed out of them and reported via ``percent_cb`` (0-100
+    int). When ``percent_cb`` is given, transient progress ticks are *not*
+    forwarded to ``progress_cb`` (keeps the log readable).
+
+    ``proc_ref`` (if given) receives the running ``Popen`` under ``"proc"`` so
+    the caller can terminate the download. ``cancel_check`` is polled per
+    output line — once it returns True the process is terminated and the loop
+    exits early.
+    """
     env = os.environ.copy()
     ffmpeg = _ffmpeg_exe()
     if ffmpeg:
         env["PATH"] = os.path.dirname(ffmpeg) + os.pathsep + env.get("PATH", "")
         cmd += ["--ffmpeg-location", os.path.dirname(ffmpeg)]
+    cmd += ["--newline"]
+    # Video-only and audio-only parts are fetched sequentially; a combined
+    # "[Merger]" stage follows. Tag each line with the stage it belongs to so
+    # the UI can report which part is downloading instead of showing a
+    # progress bar that jumps back to 0% mid-run.
+    stage = {"name": "video"}
+
+    def _tagged(line: str) -> str:
+        if line.startswith("[info]") or line.startswith("[download]"):
+            low = line.lower()
+            if "destination" in low:
+                if stage["name"] != "video":
+                    stage["name"] = "audio"
+                return f"[{stage['name']}] {line}"
+        return line
 
     proc = subprocess.Popen(
         cmd,
@@ -386,10 +526,28 @@ def _run_yt_dlp(cmd: list[str], progress_cb=None) -> int:
         creationflags=_SUBPROCESS_CREATION_FLAGS,
         env=env,
     )
+    if proc_ref is not None:
+        proc_ref["proc"] = proc
     if proc.stdout is not None:
         for line in proc.stdout:
+            if cancel_check is not None and cancel_check():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            text = _tagged(line.rstrip("\n"))
+            m = _PROGRESS_RE.search(text)
+            if m:
+                if percent_cb is not None:
+                    try:
+                        percent_cb(max(0, min(100, int(float(m.group(1))))))
+                    except ValueError:
+                        pass
+                    continue  # transient tick — not worth a log line
             if progress_cb:
-                progress_cb(line.rstrip("\n"))
+                progress_cb(text)
     return proc.wait()
 
 
@@ -427,16 +585,22 @@ def download_video(
     format_selector: str,
     out_template: str,
     progress_cb=None,
+    percent_cb=None,
+    proc_ref: dict | None = None,
+    cancel_check=None,
 ) -> str:
     """Download a video using ``yt-dlp`` with the given format selector.
 
     ``out_template`` is a yt-dlp ``-o`` template (without extension for merges,
-    or with a fixed ext for combined formats). Returns the final file path.
+    or with a fixed ext for combined formats). ``percent_cb`` receives the
+    download percentage (0-100 int) as it progresses; ``cancel_check`` aborts
+    the download when it returns True. Returns the final file path.
     """
     cmd = [
         "yt-dlp",
         "--no-warnings",
         "--no-playlist",
+        "--concurrent-fragments", "4",
         "-f",
         format_selector,
         "-o",
@@ -445,11 +609,21 @@ def download_video(
     ]
     lines: list[str] = []
     rc = _run_yt_dlp(
-        cmd, progress_cb=lambda line: (lines.append(line), progress_cb and progress_cb(line))
+        cmd,
+        progress_cb=lambda line: (lines.append(line), progress_cb and progress_cb(line)),
+        percent_cb=percent_cb,
+        proc_ref=proc_ref,
+        cancel_check=cancel_check,
     )
     if rc != 0:
+        if cancel_check is not None and cancel_check():
+            raise RuntimeError("Video download canceled.")
         tail = "\n".join(lines[-8:]).strip()
-        raise RuntimeError("Video download failed:\n" + (tail or f"exit code {rc}"))
+        hint = _translate_ytdlp_error(tail)
+        msg = "Video download failed:\n" + (tail or f"exit code {rc}")
+        if hint:
+            msg += f"\n\n{hint}"
+        raise RuntimeError(msg)
 
     base = os.path.splitext(out_template)[0]
     return _resolve_output_path(lines, base)
@@ -460,6 +634,8 @@ def download_subtitle(
     lang: str = "en",
     out_template_base: str = "",
     progress_cb=None,
+    proc_ref: dict | None = None,
+    cancel_check=None,
 ) -> str:
     """Download an English subtitle track if one exists.
 
@@ -492,11 +668,16 @@ def download_subtitle(
     if found:
         return found
 
+    if shutil.which("yt-dlp") is None and not os.path.exists(
+        os.environ.get("YT_DLP_BIN", "").strip()
+    ):
+        raise RuntimeError(_YTDLP_HINT)
+
     attempts = [
-        ["yt-dlp", "--no-warnings", "--no-playlist", "--skip-download",
+        _yt_dlp_cmd() + ["--no-warnings", "--no-playlist", "--skip-download",
          "--sub-langs", lang, "--sub-format", "srt/best", "--write-subs",
          "-o", out_template_base, url],
-        ["yt-dlp", "--no-warnings", "--no-playlist", "--skip-download",
+        _yt_dlp_cmd() + ["--no-warnings", "--no-playlist", "--skip-download",
          "--sub-langs", lang, "--sub-format", "srt/best", "--write-auto-subs",
          "-o", out_template_base, url],
     ]
@@ -508,12 +689,16 @@ def download_subtitle(
         rc = _run_yt_dlp(
             cmd,
             progress_cb=lambda line: (lines.append(line), progress_cb and progress_cb(line)),
+            proc_ref=proc_ref,
+            cancel_check=cancel_check,
         )
         found = _already_present()
         if found:
             return found
         last_error = "\n".join(lines[-6:]).strip()
 
+    if cancel_check is not None and cancel_check():
+        raise RuntimeError("Subtitle download canceled.")
     raise RuntimeError(
         f"No English subtitle ({lang}) is available for this video."
         + (("\n" + last_error) if last_error else "")

@@ -1,9 +1,13 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 
 // Quality report view: summary badges + issue list.
+// UX review S-05: a quality issue row is now clickable and jumps to the
+// matching cue in the Review tab; the Type column shows a friendly phrase
+// (raw tag kept as a tooltip for power users), and the average CPS badge is
+// null-safe (shows "—" instead of a misleading 0.0 when no run exists).
 ColumnLayout {
     id: root
 
@@ -13,10 +17,12 @@ ColumnLayout {
         appBridge.copySummaryText()
     }
 
-    // Badges
+    // Badges — fluid grid: wraps 7→4→2 cards by window width instead of
+    // forcing a 150px×7 single row that overflowed at min window size and
+    // stranded half the pane's width on wide screens.
     GridLayout {
         Layout.fillWidth: true
-        columns: 7
+        columns: root.width > 1050 ? 7 : (root.width > 640 ? 4 : 2)
         columnSpacing: Theme.sm
         rowSpacing: Theme.sm
 
@@ -29,7 +35,7 @@ ColumnLayout {
                   tone: appBridge.qualityErrors > 0 ? Theme.error : Theme.success },
                 { label: "Warnings", value: appBridge.qualityWarnings,
                   tone: appBridge.qualityWarnings > 0 ? Theme.warning : Theme.success },
-                { label: "Avg CPS", value: appBridge.qualityAverageCps.toFixed(1), tone: Theme.text },
+                { label: "Avg CPS", value: appBridge.qualityAverageCpsText, tone: Theme.text },
                 { label: "Max line chars", value: appBridge.qualityMaxLineChars, tone: Theme.text },
                 { label: "Strict quality",
                   value: appBridge.resultStrictState === "pass" ? "PASS"
@@ -40,8 +46,8 @@ ColumnLayout {
 
             delegate: Rectangle {
                 required property var modelData
-                Layout.preferredWidth: 150
-                implicitHeight: 58
+                Layout.fillWidth: true
+                Layout.preferredHeight: 58
                 radius: Theme.radiusMd
                 color: Theme.surface
                 border.color: Theme.border
@@ -82,10 +88,17 @@ ColumnLayout {
             spacing: Theme.sm
 
             Label { text: "Cue"; Layout.preferredWidth: 60; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; font.bold: true }
-            Label { text: "Type"; Layout.preferredWidth: 240; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; font.bold: true }
-            Label { text: "Severity"; Layout.preferredWidth: 80; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; font.bold: true }
-            Label { text: "Message"; Layout.fillWidth: true; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; font.bold: true }
+            Label { text: "Issue"; Layout.fillWidth: true; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; font.bold: true }
+            Label { text: "Severity"; Layout.preferredWidth: 90; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; font.bold: true }
         }
+    }
+
+    Label {
+        Layout.fillWidth: true
+        text: "Click an issue to jump to that cue in the Review tab."
+        color: Theme.textMuted
+        font.pixelSize: Theme.fontSmall
+        visible: issueList.count > 0
     }
 
     ListView {
@@ -96,13 +109,16 @@ ColumnLayout {
         model: appBridge.qualityIssuesModel
         spacing: 1
         boundsBehavior: Flickable.StopAtBounds
+        keyNavigationEnabled: true
         ScrollBar.vertical: ScrollBar {}
 
         delegate: Rectangle {
+            id: issueRow
             width: issueList.width
-            height: 28
+            height: 30
             radius: Theme.radiusSm
-            color: severity === "error" ? Theme.errorTint : (issueMouse.hovered ? Theme.surfaceAlt : "transparent")
+            color: severity === "error" ? Theme.errorTint
+                 : (issueMouse.hovered || ListView.isCurrentItem ? Theme.surfaceAlt : "transparent")
 
             RowLayout {
                 anchors.fill: parent
@@ -110,19 +126,46 @@ ColumnLayout {
                 anchors.rightMargin: Theme.sm
                 spacing: Theme.sm
 
-                Label { text: cueNumber; Layout.preferredWidth: 60; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-                Label { text: issueType; Layout.preferredWidth: 240; color: Theme.text; font.pixelSize: Theme.fontSmall; elide: Text.ElideRight }
+                Label {
+                    text: cueNumber
+                    Layout.preferredWidth: 60
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fontSmall
+                }
+                Label {
+                    text: friendlyType
+                    Layout.fillWidth: true
+                    color: Theme.text
+                    font.pixelSize: Theme.fontSmall
+                    elide: Text.ElideRight
+                }
                 Label {
                     text: severity.toUpperCase()
-                    Layout.preferredWidth: 80
+                    Layout.preferredWidth: 90
                     color: severity === "error" ? Theme.error : Theme.warning
                     font.pixelSize: Theme.fontSmall
                     font.bold: true
                 }
-                Label { text: message; Layout.fillWidth: true; color: Theme.textMuted; font.pixelSize: Theme.fontSmall; elide: Text.ElideRight }
             }
 
+            // Raw tag (e.g. cjk_residue_error) kept as a tooltip for power users.
+            ToolTip.text: "Cue " + cueNumber + " · " + rawType + "\n" + message
+            ToolTip.visible: issueMouse.hovered
+            ToolTip.delay: 300
+
             HoverHandler { id: issueMouse }
+
+            TapHandler {
+                onTapped: appBridge.revealCue(cueNumber)
+            }
+
+            Keys.onReturnPressed: appBridge.revealCue(cueNumber)
+            Keys.onEnterPressed: appBridge.revealCue(cueNumber)
+
+            Accessible.role: Accessible.ListItem
+            Accessible.name: "Quality issue on cue " + cueNumber + ": " + friendlyType
+                            + " (" + severity + "). Activate to open the cue in the Review tab."
+            Accessible.description: message
         }
 
         Text {
@@ -139,6 +182,7 @@ ColumnLayout {
 
         Button {
             text: "Copy report summary"
+            Accessible.name: "Copy quality report summary to clipboard"
             onClicked: root._copySummary()
 
             background: Rectangle {

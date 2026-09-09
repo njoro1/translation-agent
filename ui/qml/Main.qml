@@ -22,6 +22,47 @@ ApplicationWindow {
     title: "Translation Agent"
     color: Theme.background
 
+    // Theme is a QML singleton and must not depend on the `appBridge` context
+    // property, so the persisted appearance is pushed into it from here.
+    Binding { target: Theme; property: "themeName"; value: appBridge.themeName }
+    Binding { target: Theme; property: "comfortable"; value: appBridge.comfortable }
+    Binding { target: Theme; property: "reducedMotion"; value: appBridge.reducedMotion }
+
+    // Bridge-initiated navigation (error card -> Run tab, reveal Advanced).
+    Connections {
+        target: appBridge
+        function onRequestTab(index) { window.switchToTab(index) }
+        function onRequestAdvanced() {
+            advancedDrawer.expanded = true
+            window.switchToTab(0)
+        }
+    }
+
+    // Global keyboard shortcuts (U-18).
+    Shortcut { sequence: "Ctrl+1"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(0) }
+    Shortcut { sequence: "Ctrl+2"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(1) }
+    Shortcut { sequence: "Ctrl+3"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(2) }
+    Shortcut {
+        sequence: "Ctrl+R"
+        context: Qt.ApplicationShortcut
+        onActivated: if (!appBridge.isRunning) appBridge.runTranslation()
+    }
+    Shortcut {
+        sequence: "Ctrl+."
+        context: Qt.ApplicationShortcut
+        onActivated: if (appBridge.isRunning) appBridge.cancelRun()
+    }
+    Shortcut {
+        sequence: "Ctrl+F"
+        context: Qt.ApplicationShortcut
+        onActivated: window.switchToTab(1)
+    }
+    Shortcut {
+        sequence: "Ctrl+L"
+        context: Qt.ApplicationShortcut
+        onActivated: appBridge.logVisible = true
+    }
+
     function switchToTab(index) {
         tabBar.currentIndex = index
     }
@@ -147,14 +188,18 @@ ApplicationWindow {
                     spacing: Theme.lg
 
                     // --- Left column: configuration ---
+                    // Split view: config column + flexible result column.
+                    // The config column grows on wide windows (up to 480px)
+                    // instead of pinning dead space beside a fixed 400px.
                     ScrollView {
-                        Layout.preferredWidth: 400
                         Layout.fillHeight: true
+                        Layout.preferredWidth: 440
+                        Layout.maximumWidth: 480
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         ScrollBar.vertical.policy: ScrollBar.AlwaysOn
 
                         ColumnLayout {
-                            width: 400 - Theme.md
+                            width: 440 - Theme.md
                             spacing: Theme.md
 
                             SectionPanel {
@@ -174,6 +219,7 @@ ApplicationWindow {
                                         CompactTextField {
                                             id: urlField
                                             Layout.fillWidth: true
+                                            label: "YouTube URL"
                                             text: appBridge.url
                                             placeholderText: "https://www.youtube.com/watch?v=…"
                                             onEditingFinished: appBridge.url = text
@@ -211,6 +257,7 @@ ApplicationWindow {
                                             id: filePathField
                                             Layout.fillWidth: true
                                             readOnly: true
+                                            label: "Input file path"
                                             text: appBridge.filePath
                                             placeholderText: "Drop a media file here or Browse"
                                         }
@@ -236,22 +283,6 @@ ApplicationWindow {
                                                 nameFilters: ["Media files (*.mp4 *.mkv *.webm *.mov *.avi *.mp3 *.m4a *.wav *.flac *.ogg)", "All files (*)"]
                                                 onAccepted: appBridge.filePath = appBridge.localPath(selectedFile)
                                             }
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        visible: window.isLocalMode
-                                        Layout.fillWidth: true
-                                        spacing: Theme.sm
-
-                                        FieldLabel { text: "ASR lang"; Layout.preferredWidth: 60 }
-                                        CompactComboBox {
-                                            Layout.fillWidth: true
-                                            editable: true
-                                            editText: appBridge.asrLanguage
-                                            model: ["auto", "zh", "en", "ja", "ko", "yue"]
-                                            onAccepted: appBridge.asrLanguage = editText.trim() || "auto"
-                                            onActivated: appBridge.asrLanguage = editText.trim() || "auto"
                                         }
                                     }
                                 }
@@ -338,7 +369,21 @@ ApplicationWindow {
                                 }
                             }
 
+                            // 3-step flow strip (U-12): orients first-time YouTube users.
+                            Label {
+                                visible: window.isYouTubeMode
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: Theme.fontSmall
+                                color: Theme.textMuted
+                                text: "1 · Paste a YouTube URL above and Inspect formats   →   " +
+                                      "2 · (Optional) pick a video format   →   " +
+                                      "3 · Download the English subtitle, then translate it"
+                            }
+
                             YouTubeVideoPanel {}
+
+                            YouTubeSubtitlePanel {}
 
                             SectionPanel {
                                 title: "Translation"
@@ -359,6 +404,26 @@ ApplicationWindow {
                                             if (appBridge.model !== "")
                                                 return "Cloud LLM: " + appBridge.model
                                             return "Cloud LLM (model from .env or Advanced settings)."
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        visible: window.isLocalMode
+                                        Layout.fillWidth: true
+                                        spacing: Theme.sm
+
+                                        FieldLabel { text: "Source override"; Layout.preferredWidth: 120 }
+                                        CompactComboBox {
+                                            Layout.fillWidth: true
+                                            editable: true
+                                            editText: appBridge.sourceLang
+                                            model: ["", "ja", "zh", "zh-TW", "ko", "yue", "en"]
+                                            onAccepted: appBridge.sourceLang = editText.trim()
+                                            onActivated: appBridge.sourceLang = editText.trim()
+                                            ToolTip.visible: hovered
+                                            ToolTip.delay: 500
+                                            ToolTip.text: "Override the translation source language. Blank = use the spoken (ASR) language set above."
+                                            Accessible.name: "Translation source language override"
                                         }
                                     }
 
@@ -441,27 +506,35 @@ ApplicationWindow {
                     }
 
                     // --- Right column: state / progress / result ---
-                    ScrollView {
+                    // DropArea covers the whole pane (it used to hug the
+                    // content column, so drops landing in empty space were
+                    // ignored and the pane was dead white space until a run
+                    // finished — now there is first-run guidance too).
+                    Item {
+                        id: rightPane
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                         DropArea {
                             id: dropArea
-                            width: parent.width
-                            height: runRightColumn.implicitHeight + Theme.xl
+                            anchors.fill: parent
                             enabled: !window.isYouTubeMode
                             onDropped: (drop) => {
                                 if (drop.hasUrls && drop.urls.length > 0) {
                                     appBridge.filePath = appBridge.localPath(drop.urls[0])
                                 }
                             }
+                        }
+
+                        ScrollView {
+                            anchors.fill: parent
+                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                             ColumnLayout {
                                 id: runRightColumn
                                 x: Theme.md
                                 y: Theme.md
-                                width: dropArea.width - Theme.xl
+                                width: rightPane.width - Theme.xl
                                 spacing: Theme.lg
 
                                 // Readiness (before/during any run)
@@ -472,11 +545,28 @@ ApplicationWindow {
                                     ReadinessChecklist {}
                                 }
 
+                                // First-run guidance for the previously empty
+                                // right column.
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: !appBridge.isRunning && !appBridge.resultReady
+                                    horizontalAlignment: Text.AlignHCenter
+                                    wrapMode: Text.WordWrap
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fontBody
+                                    text: window.isYouTubeMode
+                                          ? "Paste a YouTube URL on the left, download its subtitles, then press Run."
+                                          : "Drop a video/audio file anywhere here, or pick one on the left, then press Run."
+                                }
+
+                                // Structured failure (replaces "see the log")
+                                ErrorCard {}
+
                                 // Progress (during run)
                                 SectionPanel {
                                     title: "Progress"
                                     Layout.fillWidth: true
-                                    visible: appBridge.isRunning || appBridge.statusState === "done" || appBridge.statusState === "failed"
+                                    visible: appBridge.isRunning || appBridge.statusState === "done" || appBridge.statusState === "failed" || appBridge.statusState === "cancelled"
 
                                     ProgressPanel {}
                                 }
@@ -499,39 +589,39 @@ ApplicationWindow {
                                             font.pixelSize: Theme.fontBody
                                         }
 
-                        GridLayout {
-                            Layout.fillWidth: true
-                            columns: 4
-                            columnSpacing: Theme.md
-                            rowSpacing: Theme.xs
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: 4
+                                            columnSpacing: Theme.md
+                                            rowSpacing: Theme.xs
 
-                            ColumnLayout {
-                                spacing: 0
-                                Label { text: String(appBridge.qualityTotalCues); color: Theme.text; font.pixelSize: Theme.fontTitle; font.bold: true }
-                                Label { text: "cues"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-                            }
-                            ColumnLayout {
-                                spacing: 0
-                                Label { text: String(appBridge.qualityUntranslated); color: appBridge.qualityUntranslated > 0 ? Theme.error : Theme.success; font.pixelSize: Theme.fontTitle; font.bold: true }
-                                Label { text: "untranslated"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-                            }
-                            ColumnLayout {
-                                spacing: 0
-                                Label { text: String(appBridge.qualityWarnings); color: appBridge.qualityWarnings > 0 ? Theme.warning : Theme.success; font.pixelSize: Theme.fontTitle; font.bold: true }
-                                Label { text: "warnings"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-                            }
-                            ColumnLayout {
-                                spacing: 0
-                                Label {
-                                    text: appBridge.resultStrictState === "pass" ? "PASS"
-                                        : appBridge.resultStrictState === "fail" ? "FAIL" : "OFF"
-                                    color: appBridge.resultStrictState === "fail" ? Theme.error
-                                        : appBridge.resultStrictState === "pass" ? Theme.success : Theme.textMuted
-                                    font.pixelSize: Theme.fontTitle; font.bold: true
-                                }
-                                Label { text: "strict"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-                            }
-                        }
+                                            ColumnLayout {
+                                                spacing: 0
+                                                Label { text: String(appBridge.qualityTotalCues); color: Theme.text; font.pixelSize: Theme.fontTitle; font.bold: true }
+                                                Label { text: "cues"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
+                                            }
+                                            ColumnLayout {
+                                                spacing: 0
+                                                Label { text: String(appBridge.qualityUntranslated); color: appBridge.qualityUntranslated > 0 ? Theme.error : Theme.success; font.pixelSize: Theme.fontTitle; font.bold: true }
+                                                Label { text: "untranslated"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
+                                            }
+                                            ColumnLayout {
+                                                spacing: 0
+                                                Label { text: String(appBridge.qualityWarnings); color: appBridge.qualityWarnings > 0 ? Theme.warning : Theme.success; font.pixelSize: Theme.fontTitle; font.bold: true }
+                                                Label { text: "warnings"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
+                                            }
+                                            ColumnLayout {
+                                                spacing: 0
+                                                Label {
+                                                    text: appBridge.resultStrictState === "pass" ? "PASS"
+                                                        : appBridge.resultStrictState === "fail" ? "FAIL" : "OFF"
+                                                    color: appBridge.resultStrictState === "fail" ? Theme.error
+                                                        : appBridge.resultStrictState === "pass" ? Theme.success : Theme.textMuted
+                                                    font.pixelSize: Theme.fontTitle; font.bold: true
+                                                }
+                                                Label { text: "strict"; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
+                                            }
+                                        }
 
                                         RowLayout {
                                             spacing: Theme.sm

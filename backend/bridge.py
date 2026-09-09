@@ -6,6 +6,7 @@ import logging.handlers
 import os
 import re
 import sys
+import time
 import urllib.request
 
 from PySide6.QtCore import QObject, Property, QRunnable, QSettings, QThreadPool, QUrl, Signal, Slot
@@ -13,7 +14,7 @@ from PySide6.QtGui import QDesktopServices
 
 import translate
 
-from src import youtube_media
+from src import ass_io, srt_io, subtitle_quality, youtube_media
 from .controllers.translation import TranslationWorker
 from .models.results import CueFilterProxyModel, CueResultModel, QualityIssuesModel
 from .models.run_config import RunConfig
@@ -70,6 +71,21 @@ def resolve_local_model_path(gguf_dir: str) -> str:
 
 _DONE_PATTERN = re.compile(r"^Wrote \d+ cues to (?P<path>.+)$")
 
+# Error/warning detection for the log badge. Deliberately broader than a bare
+# "[error]" prefix: Python tracebacks, `ERROR:`-prefixed yt-dlp output and
+# `SomeError:` exception lines all count, so the badge can no longer read
+# "0 errors" next to a Failed pill.
+_LOG_ERROR_RE = re.compile(
+    r"^\[error\]|^\s*ERROR\s*:|traceback \(most recent call last\)"
+    r"|^\s*[A-Za-z_][\w.]*(?:Error|Exception)\s*:",
+    re.IGNORECASE,
+)
+_LOG_WARN_RE = re.compile(r"^\[warn(ing)?\]|^\s*(?:WARNING|warn)\s*:", re.IGNORECASE)
+
+# Rolling log window: a multi-hour run must not grow the log without bound.
+_MAX_LOG_LINES = 5000
+_LOG_TRUNCATION_NOTICE = "[warn] earlier log lines trimmed; only the most recent are shown\n"
+
 PIPELINE_MODE_YOUTUBE_CLOUD = "youtube_cloud"
 PIPELINE_MODE_LOCAL_CLOUD = "local_cloud"
 PIPELINE_MODE_OFFLINE = "offline"
@@ -83,10 +99,154 @@ STATUS_VALIDATING = "validating"
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
+
+
+# --- Structured failure classification -------------------------------------
+# Before this, every failure surfaced as "Finished with errors (exit N). See
+# the log." and the log drawer was collapsed, so the user had to discover a
+# hidden control and read raw CLI output to find out what went wrong.
+# These patterns turn the captured log into a typed cause plus one concrete
+# remediation the UI can offer as a button.
+REMEDY_CLOUD = "cloud"
+REMEDY_RETRY = "retry"
+REMEDY_DOWNLOAD_MODEL = "download_model"
+REMEDY_INSTALL_DEPENDENCY = "install_dependency"
+REMEDY_CHECK_SOURCE = "check_source"
+REMEDY_LOG = "log"
+REMEDY_FORM = "form"
+
+_FAILURE_PATTERNS: tuple[tuple[str, re.Pattern, str, str], ...] = tuple(
+    (code, re.compile(pattern, re.IGNORECASE), title, remedy)
+    for code, pattern, title, remedy in (
+        (
+            "AUTH",
+            r"(401|403|unauthoriz|forbidden|invalid api key|incorrect api key|"
+            r"authentication|invalid_token|api[_-]?key is (?:invalid|missing))",
+            "The translation service rejected the API key.",
+            REMEDY_CLOUD,
+        ),
+        (
+            "QUOTA",
+            r"(429|rate limit|quota|insufficient_quota|billing|"
+            r"exceeded your current quota)",
+            "The translation service rate-limited the request or ran out of credit.",
+            REMEDY_CLOUD,
+        ),
+        (
+            "NETWORK",
+            r"(connectionerror|connection refused|connection reset|timed ?out|"
+            r"timeout|temporary failure in name resolution|"
+            r"name or service not known|max retries exceeded|"
+            r"network is unreachable|proxyerror|sslerror|ssl:)",
+            "The computer could not reach the translation service.",
+            REMEDY_RETRY,
+        ),
+        (
+            "SOURCE_UNAVAILABLE",
+            r"(video unavailable|private video|video has been removed|"
+            r"unable to (?:download|extract|fetch)[^\n]{0,40}"
+            r"(?:subtitle|transcript|caption)|"
+            r"no (?:subtitles|transcript|caption)|"
+            r"subtitles? (?:are )?disabled|sign in to confirm|"
+            r"not a valid url|http error 40[34])",
+            "No subtitles could be fetched for this source.",
+            REMEDY_CHECK_SOURCE,
+        ),
+        (
+            "MISSING_DEPENDENCY",
+            r"(ffmpeg|ffprobe|yt-dlp|yt_dlp)[^\n]{0,40}"
+            r"(not found|is not recognized|no such file|missing|"
+            r"command not found)"
+            # ...and the other word order: "No such file or directory: 'ffmpeg'".
+            r"|(not found|no such file[^\n]{0,40}|is not recognized[^\n]{0,40}"
+            r"|command not found[^\n]{0,40}|could not find[^\n]{0,40}"
+            r"|failed to (?:execute|run)[^\n]{0,40})"
+            r"(ffmpeg|ffprobe|yt-dlp|yt_dlp)"
+            r"|modulenotfounderror: no module named '?(?:yt_dlp|"
+            r"youtube_transcript_api|funasr_onnx)'?",
+            "A required external tool is not installed.",
+            REMEDY_INSTALL_DEPENDENCY,
+        ),
+        (
+            "MODEL_DOWNLOAD",
+            r"(failed to download|download failed|error downloading|"
+            r"could not download)[^\n]{0,60}(gguf|model)",
+            "A model download failed.",
+            REMEDY_DOWNLOAD_MODEL,
+        ),
+        (
+            "MODEL_LOAD",
+            r"(failed to load model|unable to load model|could not load model|"
+            r"error loading model|gguf[^\n]{0,30}(?:invalid|corrupt)|"
+            r"llama[_-]?server[^\n]{0,40}(?:failed|exited))",
+            "The local model could not be loaded.",
+            REMEDY_DOWNLOAD_MODEL,
+        ),
+        (
+            "ASR_FAILED",
+            r"((?:asr|transcri\w+|sensevoice)[^\n]{0,40}(?:failed|error)"
+            r"|(?:failed|error)[^\n]{0,40}(?:asr|transcri\w+|sensevoice))",
+            "Local transcription (ASR) failed.",
+            REMEDY_RETRY,
+        ),
+        (
+            "WRITE_FAILED",
+            r"(permissionerror|permission denied|read-only file system|"
+            r"no space left on device|errno 28|errno 13|"
+            r"failed to write|could not write)",
+            "The subtitle file could not be written.",
+            REMEDY_RETRY,
+        ),
+    )
+)
+
+_FAILURE_TAIL_LINES = 200
+
+
+def _classify_failure(log_text: str) -> tuple[str, str, str, str]:
+    """Map captured run output to (code, title, detail, remedy).
+
+    Scans newest-first: the specific cause (traceback tail, yt-dlp message)
+    almost always appears after the generic preamble.
+    """
+    lines = [ln.strip() for ln in (log_text or "").splitlines() if ln.strip()]
+    tail = lines[-_FAILURE_TAIL_LINES:]
+
+    for line in reversed(tail):
+        for code, rx, title, remedy in _FAILURE_PATTERNS:
+            if rx.search(line):
+                return code, title, line[:400], remedy
+
+    # No typed match: fall back to the most recent explicit error line so the
+    # user still sees a real message rather than an exit code.
+    for line in reversed(tail):
+        lowered = line.lower()
+        if lowered.startswith("[error]"):
+            return "UNKNOWN", "The run failed.", line[7:].strip()[:400] or line[:400], REMEDY_LOG
+        if "traceback (most recent call last)" in lowered:
+            return "UNKNOWN", "The run stopped on an unexpected error.", line[:400], REMEDY_LOG
+        if "error:" in lowered:
+            return "UNKNOWN", "The run failed.", line[:400], REMEDY_LOG
+
+    if tail:
+        return "UNKNOWN", "The run failed.", tail[-1][:400], REMEDY_LOG
+    return (
+        "UNKNOWN",
+        "The run failed.",
+        "No output was captured. See the log below.",
+        REMEDY_LOG,
+    )
 
 
 class _WorkerSignal(QObject):
     progress = Signal(str)
+    done = Signal(str)
+
+
+class _YouTubeDownloadSignal(QObject):
+    progress = Signal(str)
+    percent = Signal(int)
     done = Signal(str)
 
 
@@ -148,47 +308,77 @@ class _ModelDownloadWorker(QRunnable):
 class _YouTubeInfoWorker(QRunnable):
     """Inspects a YouTube URL for available formats/codecs off the UI thread."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, token: int = 0) -> None:
         super().__init__()
         self.url = url
+        self.token = token
         self.signals = _WorkerSignal()
 
     @Slot()
     def run(self) -> None:
         try:
             info = youtube_media.inspect_video(self.url)
-            self.signals.done.emit("INFO:" + json.dumps(info))
+            self.signals.done.emit(f"INFO:{self.token}|" + json.dumps(info))
         except Exception as exc:  # noqa: BLE001
-            self.signals.done.emit("INFOERROR:" + str(exc))
+            self.signals.done.emit(f"INFOERROR:{self.token}|{exc}")
 
 
 class _YouTubeDownloadWorker(QRunnable):
-    """Downloads a YouTube video or English subtitle off the UI thread."""
+    """Downloads a YouTube video or subtitle track off the UI thread.
 
-    def __init__(self, mode: str, url: str, format_selector: str, out_template: str) -> None:
+    ``kind`` is ``"video"`` or ``"subtitle"``. The worker keeps a reference to
+    the running yt-dlp process so the UI can cancel it, and video downloads
+    additionally report progress percentages.
+    """
+
+    def __init__(
+        self, kind: str, url: str, format_selector: str, out_template: str,
+        token: int = 0,
+    ) -> None:
         super().__init__()
-        self.mode = mode  # "video" or "subtitle"
+        self.kind = kind
         self.url = url
         self.format_selector = format_selector
         self.out_template = out_template
-        self.signals = _WorkerSignal()
+        self.token = token
+        self.proc_ref: dict = {}
+        self.canceled = False
+        self.signals = _YouTubeDownloadSignal()
+
+    def cancel(self) -> None:
+        """Terminate the yt-dlp process (safe to call from any thread)."""
+        self.canceled = True
+        proc = self.proc_ref.get("proc")
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
 
     @Slot()
     def run(self) -> None:
         try:
-            if self.mode == "video":
+            if self.kind == "video":
                 path = youtube_media.download_video(
                     self.url, self.format_selector, self.out_template,
                     progress_cb=lambda line: self.signals.progress.emit(line + "\n"),
+                    percent_cb=self.signals.percent.emit,
+                    proc_ref=self.proc_ref,
+                    cancel_check=lambda: self.canceled,
                 )
             else:
                 path = youtube_media.download_subtitle(
                     self.url, "en", self.out_template,
                     progress_cb=lambda line: self.signals.progress.emit(line + "\n"),
+                    proc_ref=self.proc_ref,
+                    cancel_check=lambda: self.canceled,
                 )
-            self.signals.done.emit(f"YTDONE:{self.mode}:{path}")
+            self.signals.done.emit(f"YTDONE:{self.token}|{self.kind}:{path}")
         except Exception as exc:  # noqa: BLE001
-            self.signals.done.emit(f"YTERROR:{self.mode}:{exc}")
+            if self.canceled:
+                self.signals.done.emit(f"YTCANCEL:{self.token}|{self.kind}")
+            else:
+                self.signals.done.emit(f"YTERROR:{self.token}|{self.kind}:{exc}")
 
 
 def _base_dir() -> str:
@@ -232,6 +422,19 @@ class AppBridge(QObject):
     youtubeInfoChanged = Signal()
     youtubeDownloadChanged = Signal()
 
+    # --- Added by the UX remediation pass ---------------------------------
+    themeChanged = Signal()
+    readinessChanged = Signal()
+    # code, title, detail, remediation
+    failureOccurred = Signal(str, str, str, str)
+    reviewDirtyChanged = Signal()
+    logCountsChanged = Signal()
+    requestTab = Signal(int)
+    stageChanged = Signal()
+    focusCueIndexChanged = Signal()
+    failureChanged = Signal()
+    requestAdvanced = Signal()
+
     # Fields persisted across runs, as (attr, QSettings key, default). Bumped
     # whenever a new stored preference is introduced; secrets like the API key
     # are intentionally not persisted.
@@ -267,6 +470,14 @@ class AppBridge(QObject):
         ("_translation_memory_db", "translation/translationMemoryDbPath", ""),
         ("_strict_quality", "quality/strict", False),
         ("_output_format", "output/format", "srt"),
+        ("_youtube_download_dir", "youtube/downloadDir", ""),
+        # Appearance / ergonomics (UX review S-10: light theme, density, motion).
+        ("_theme_name", "ui/theme", "dark"),
+        ("_comfortable", "ui/comfortable", False),
+        ("_reduced_motion", "ui/reducedMotion", False),
+        # Rolling average wall time per cue, used to project an ETA on later
+        # runs (UX review S-07: wait-time uncertainty).
+        ("_history_ms_per_cue", "run/historyMsPerCue", "0"),
         ("_win_x", "window/x", 60),
         ("_win_y", "window/y", 60),
         ("_win_w", "window/w", 1280),
@@ -321,6 +532,10 @@ class AppBridge(QObject):
         self._translation_memory_db = ""
         self._strict_quality = False
         self._output_format = "srt"
+        self._theme_name = "dark"
+        self._comfortable = False
+        self._reduced_motion = False
+        self._history_ms_per_cue = 0.0
         self._status_message = "Ready."
         self._status_state = STATUS_READY
         self._log_text = ""
@@ -343,6 +558,29 @@ class AppBridge(QObject):
         self._debug_json_progress = False
         self._log_visible = False
 
+        # --- Structured failure surface (UX review S-02) -------------------
+        self._failure_code = ""
+        self._failure_title = ""
+        self._failure_detail = ""
+        self._failure_remediation = ""
+        self._failure_active = False
+
+        # --- Incremental log counters + truncation (S-12, U-19, U-20) ------
+        self._log_error_count = 0
+        self._log_warn_count = 0
+        self._log_lines = 0
+
+        # --- Per-stage timing and ETA history (S-07) ------------------------
+        self._stage_sequence: list[str] = []
+        self._stage_started_at = 0.0
+        self._stage_elapsed_sec = 0
+        self._run_started_at = 0.0
+        self._estimated_remaining_sec = 0
+
+        # --- Review editing (S-01) ------------------------------------------
+        self._focus_cue_index = -1
+        self._last_result_cues: list[dict] = []
+
         # YouTube media (video download + codec inspection) state.
         self._youtube_formats: list[dict] = []
         self._youtube_matrix: dict = {}
@@ -358,10 +596,35 @@ class AppBridge(QObject):
         self._youtube_has_vp9 = False
         self._youtube_has_h264 = False
         self._youtube_has_en_subtitle = False
-        self._youtube_downloading = False
-        self._youtube_download_status = ""
+        # Video vs subtitle downloads are fully independent: each has its own
+        # busy flag, status text, progress and worker so both can run at once
+        # (and one can be canceled without touching the other).
+        self._youtube_video_downloading = False
+        self._youtube_video_progress = 0
+        self._youtube_video_status = ""
+        self._youtube_sub_downloading = False
+        self._youtube_sub_status = ""
+        self._youtube_downloading = False  # combined convenience flag
+        self._youtube_download_status = ""  # combined convenience text
         self._youtube_downloaded_video = ""
         self._youtube_downloaded_subtitle = ""
+        self._youtube_video_worker: _YouTubeDownloadWorker | None = None
+        self._youtube_sub_worker: _YouTubeDownloadWorker | None = None
+        self._youtube_info_worker: _YouTubeInfoWorker | None = None
+        # Generation tags: every inspect/download start bumps its counter and
+        # the worker echoes the tag in its completion payload. Completions
+        # whose tag no longer matches (URL changed, retry after a recovery)
+        # are ignored as stale. sender() cannot identify a worker — it is the
+        # signals object, never the QRunnable — so the tag must travel in the
+        # payload itself.
+        self._youtube_info_gen = 0
+        self._youtube_video_gen = 0
+        self._youtube_sub_gen = 0
+        # Worker references for model downloads (same sender() limitation).
+        self._asr_model_worker: _ModelDownloadWorker | None = None
+        self._local_model_worker: _ModelDownloadWorker | None = None
+        # Optional user-chosen folder for downloads ("" = derive automatically).
+        self._youtube_download_dir = ""
 
         self._win_x = 60
         self._win_y = 60
@@ -372,6 +635,8 @@ class AppBridge(QObject):
         self.cue_proxy = CueFilterProxyModel(self)
         self.cue_proxy.setSourceModel(self.cue_model)
         self.quality_issues_model = QualityIssuesModel(self)
+        # Let the UI react to edits made directly in the Review table (S-01).
+        self.cue_model.editedCountChanged.connect(self.reviewDirtyChanged.emit)
 
         self._load_persisted()
 
@@ -381,6 +646,8 @@ class AppBridge(QObject):
         "_local_mlock",
         "_strict_quality",
         "_context_summary",
+        "_comfortable",
+        "_reduced_motion",
     }
 
     _INT_FIELDS = {
@@ -418,26 +685,42 @@ class AppBridge(QObject):
         # `backend`) against the just-loaded persisted state. Without this a model
         # the user previously selected would not be reflected until some unrelated
         # field changed, wrongly showing "Download model & Run" at launch.
-        self.formChanged.emit()
+        self._notify_form_changed()
 
     def _persist_fields(self) -> None:
         for attr, key, default in self._PERSISTED:
             self._settings.setValue(key, getattr(self, attr, default))
         self._settings.sync()
 
+    def _notify_form_changed(self) -> None:
+        """Emit formChanged plus every derived signal that depends on it.
+
+        Readiness rows are derived from form state, so they must be recomputed
+        whenever any form field changes.
+        """
+        self.formChanged.emit()
+        self.readinessChanged.emit()
+
     def _set_field(self, attr: str, value) -> None:
         if getattr(self, attr) != value:
             setattr(self, attr, value)
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     def _append_log(self, text: str) -> None:
         self._log_text += text
-        self.logTextChanged.emit()
+        # Count newlines on the incoming chunk only. The QML badge used to
+        # re-scan the whole log on every append (O(n^2) over a run).
+        self._log_lines += text.count("\n")
 
+        errors = warnings = 0
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
+            if _LOG_ERROR_RE.search(line):
+                errors += 1
+            elif _LOG_WARN_RE.search(line):
+                warnings += 1
             level = logging.ERROR if line.startswith("[error]") else logging.INFO
             self.logger.log(level, line)
             match = _DONE_PATTERN.match(line)
@@ -446,6 +729,24 @@ class AppBridge(QObject):
                 if path:
                     self._resolved_out_path = os.path.abspath(path)
                     self.canOpenOutputFolderChanged.emit()
+
+        if errors or warnings:
+            self._log_error_count += errors
+            self._log_warn_count += warnings
+            self.logCountsChanged.emit()
+
+        self._trim_log()
+        self.logTextChanged.emit()
+
+    def _trim_log(self) -> None:
+        """Keep the log bounded so a long run cannot grow it without limit."""
+        if self._log_lines <= _MAX_LOG_LINES:
+            return
+        lines = self._log_text.splitlines(keepends=True)
+        if len(lines) <= _MAX_LOG_LINES:
+            return
+        self._log_text = _LOG_TRUNCATION_NOTICE + "".join(lines[-_MAX_LOG_LINES:])
+        self._log_lines = _MAX_LOG_LINES + 1
 
     def _handle_log_line(self, line: str) -> None:
         """Route one stdout/stderr chunk: parse JSON progress, log the rest."""
@@ -469,9 +770,41 @@ class AppBridge(QObject):
         except (TypeError, ValueError):
             done, total = 0, 0
 
-        self._progress_stage = stage
+        # Friendly labels: a static set for the stage strip, a dynamic one for
+        # the status line.
+        stage_labels = {
+            "fetch": "Fetching subtitles",
+            "asr": "Transcribing audio",
+            "translate": "Translating",
+            "write": "Writing output",
+        }
+
+        # Stage-transition bookkeeping for the legible progress panel (S-07):
+        # keep an ordered list of visited stages and finalize each one's elapsed
+        # time when the next stage begins.
+        if stage and stage != self._progress_stage:
+            now = time.time()
+            if (self._progress_stage and self._stage_sequence
+                    and self._stage_sequence[-1]["name"] == self._progress_stage):
+                self._stage_sequence[-1]["elapsed"] = now - self._stage_started_at
+            if not any(s["name"] == stage for s in self._stage_sequence):
+                self._stage_sequence.append(
+                    {"name": stage, "label": stage_labels.get(stage, stage), "elapsed": 0.0}
+                )
+            self._progress_stage = stage
+            self._stage_started_at = now
+            self.stageChanged.emit()
+
         self._progress_done = done
         self._progress_total = total
+
+        # Heuristic ETA: cue throughput once translation is underway.
+        if stage == "translate" and total > 0 and done > 0:
+            elapsed_total = time.time() - self._run_started_at
+            if elapsed_total > 0.5:
+                rate = done / elapsed_total
+                if rate > 0:
+                    self._estimated_remaining_sec = int((total - done) / rate)
 
         labels = {
             "fetch": "Fetching subtitles…",
@@ -679,7 +1012,7 @@ class AppBridge(QObject):
             self._pipeline_mode = value
             self._apply_pipeline_mode(value)
             self.pipelineModeChanged.emit()
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     @Slot(str)
     def setPipelineMode(self, mode: str) -> None:
@@ -713,7 +1046,31 @@ class AppBridge(QObject):
         value = (value or "").strip()
         if self._url != value:
             self._url = value
-            # Drop any stale inspection results for the previous URL.
+            # Stop any in-flight downloads for the previous URL and drop its
+            # stale inspection results.
+            for worker in (self._youtube_video_worker, self._youtube_sub_worker):
+                if worker is not None:
+                    worker.cancel()
+            self._youtube_video_worker = None
+            self._youtube_sub_worker = None
+            # An inspection still running for the old URL must never repopulate
+            # the panel once the URL changed: dropping the reference AND
+            # bumping the generations makes any completion a no-op (the
+            # stale-guards compare payload tags, not senders). The loading
+            # flag MUST be cleared with the ref, or the dropped completion
+            # leaves "Inspecting…" stuck on forever and every retry click
+            # early-returns.
+            self._youtube_info_worker = None
+            self._youtube_info_loading = False
+            self._youtube_info_gen += 1
+            self._youtube_video_gen += 1
+            self._youtube_sub_gen += 1
+            self._youtube_video_downloading = False
+            self._youtube_video_progress = 0
+            self._youtube_video_status = ""
+            self._youtube_sub_downloading = False
+            self._youtube_sub_status = ""
+            self._youtube_downloading = False
             self._youtube_formats = []
             self._youtube_matrix = {}
             self._youtube_best = {}
@@ -727,7 +1084,7 @@ class AppBridge(QObject):
             self._youtube_has_en_subtitle = False
             self._youtube_downloaded_video = ""
             self._youtube_downloaded_subtitle = ""
-            self.formChanged.emit()
+            self._notify_form_changed()
             self.youtubeInfoChanged.emit()
             self.youtubeDownloadChanged.emit()
 
@@ -872,7 +1229,7 @@ class AppBridge(QObject):
         value = bool(value)
         if self._context_summary != value:
             self._context_summary = value
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     @Property(str, notify=formChanged)
     def asrLanguage(self) -> str:
@@ -1011,7 +1368,7 @@ class AppBridge(QObject):
         value = bool(value)
         if self._asr_no_tags != value:
             self._asr_no_tags = value
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     @Property(str, notify=formChanged)
     def asrMaxCueCharsCjk(self) -> str:
@@ -1030,7 +1387,7 @@ class AppBridge(QObject):
         value = bool(value)
         if self._asr_keep_tags != value:
             self._asr_keep_tags = value
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     @Property(str, notify=formChanged)
     def glossaryPath(self) -> str:
@@ -1073,7 +1430,7 @@ class AppBridge(QObject):
         value = bool(value)
         if self._local_mlock != value:
             self._local_mlock = value
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     @Property(bool, notify=formChanged)
     def strictQuality(self) -> bool:
@@ -1084,7 +1441,7 @@ class AppBridge(QObject):
         value = bool(value)
         if self._strict_quality != value:
             self._strict_quality = value
-            self.formChanged.emit()
+            self._notify_form_changed()
 
     @Property(str, notify=formChanged)
     def outputFormat(self) -> str:
@@ -1108,6 +1465,15 @@ class AppBridge(QObject):
     @Property(str, notify=logTextChanged)
     def logText(self) -> str:
         return self._log_text
+
+    @Property(int, notify=logCountsChanged)
+    def logErrorCount(self) -> int:
+        """Errors counted incrementally as lines arrive (never re-scanned)."""
+        return self._log_error_count
+
+    @Property(int, notify=logCountsChanged)
+    def logWarnCount(self) -> int:
+        return self._log_warn_count
 
     @Property(bool, notify=logVisibleChanged)
     def logVisible(self) -> bool:
@@ -1157,6 +1523,32 @@ class AppBridge(QObject):
     @Property(int, notify=progressChanged)
     def progressTotal(self) -> int:
         return self._progress_total
+
+    @Property("QVariantList", notify=stageChanged)
+    def stageList(self) -> list:
+        """Ordered list of visited stages: [{"name","label","elapsed"}]."""
+        seq = [dict(s) for s in self._stage_sequence]
+        if (self._is_running and self._progress_stage and seq
+                and seq[-1]["name"] == self._progress_stage):
+            seq[-1]["elapsed"] = time.time() - self._stage_started_at
+        return seq
+
+    @Property(int, notify=stageChanged)
+    def currentStageElapsed(self) -> int:
+        if not self._is_running:
+            return int(self._stage_elapsed_sec)
+        return int(time.time() - self._stage_started_at)
+
+    @Property(int, notify=progressChanged)
+    def estimatedRemainingSec(self) -> int:
+        return int(self._estimated_remaining_sec)
+
+    @Property(int, notify=stageChanged)
+    def runElapsedSec(self) -> int:
+        if not self._run_started_at:
+            return 0
+        end = time.time() if self._is_running else self._run_started_at + self._stage_elapsed_sec
+        return int(end - self._run_started_at)
 
     @Property(bool, notify=resultReadyChanged)
     def resultReady(self) -> bool:
@@ -1208,6 +1600,249 @@ class AppBridge(QObject):
             self._debug_json_progress = value
             self.debugJsonProgressChanged.emit()
 
+    @Property(str, notify=resultReadyChanged)
+    def qualityAverageCpsText(self) -> str:
+        """Avg CPS pre-formatted for display.
+
+        The Quality tab used to call `toFixed(1)` directly on this value in QML;
+        when the summary was unavailable that raised inside a binding, which Qt
+        swallows silently and the badge simply rendered empty. Formatting in
+        Python keeps it testable and unconditionally safe.
+        """
+        if not self._result_ready or not self._quality_summary:
+            return "\u2014"
+        try:
+            return f"{float(self._quality_summary.get('average_cps', 0.0)):.1f}"
+        except (TypeError, ValueError):
+            return "\u2014"
+
+    # --- Appearance / ergonomics (UX review S-10) --------------------------
+    @Property(str, notify=themeChanged)
+    def themeName(self) -> str:
+        return self._theme_name
+
+    @themeName.setter
+    def themeName(self, value: str) -> None:
+        value = (value or "dark").lower()
+        if value not in ("dark", "light"):
+            value = "dark"
+        if self._theme_name != value:
+            self._theme_name = value
+            self.themeChanged.emit()
+            self._persist_fields()
+
+    @Slot()
+    def toggleTheme(self) -> None:
+        self.themeName = "light" if self._theme_name == "dark" else "dark"
+
+    @Property(bool, notify=themeChanged)
+    def comfortable(self) -> bool:
+        return self._comfortable
+
+    @comfortable.setter
+    def comfortable(self, value: bool) -> None:
+        if self._comfortable != bool(value):
+            self._comfortable = bool(value)
+            self.themeChanged.emit()
+            self._persist_fields()
+
+    @Slot(bool)
+    def setComfortable(self, value: bool) -> None:
+        self.comfortable = value
+
+    @Property(bool, notify=themeChanged)
+    def reducedMotion(self) -> bool:
+        return self._reduced_motion
+
+    @reducedMotion.setter
+    def reducedMotion(self, value: bool) -> None:
+        if self._reduced_motion != bool(value):
+            self._reduced_motion = bool(value)
+            self.themeChanged.emit()
+            self._persist_fields()
+
+    @Slot(bool)
+    def setReducedMotion(self, value: bool) -> None:
+        self.reducedMotion = value
+
+    # --- Structured failure surface (UX review S-02) -----------------------
+    @Property(str, notify=failureChanged)
+    def failureCode(self) -> str:
+        return self._failure_code
+
+    @Property(str, notify=failureChanged)
+    def failureTitle(self) -> str:
+        return self._failure_title
+
+    @Property(str, notify=failureChanged)
+    def failureDetail(self) -> str:
+        return self._failure_detail
+
+    @Property(str, notify=failureChanged)
+    def failureRemediation(self) -> str:
+        return self._failure_remediation
+
+    @Property(bool, notify=failureChanged)
+    def failureActive(self) -> bool:
+        return self._failure_active
+
+    def _set_failure(self, code: str, title: str, detail: str, remedy: str) -> None:
+        self._failure_code = code or "UNKNOWN"
+        self._failure_title = title or "The run failed."
+        self._failure_detail = detail or ""
+        self._failure_remediation = remedy or REMEDY_LOG
+        self._failure_active = True
+        self.failureChanged.emit()
+        self.failureOccurred.emit(
+            self._failure_code, self._failure_title,
+            self._failure_detail, self._failure_remediation,
+        )
+
+    def _clear_failure(self) -> None:
+        if not self._failure_active:
+            return
+        self._failure_code = ""
+        self._failure_title = ""
+        self._failure_detail = ""
+        self._failure_remediation = ""
+        self._failure_active = False
+        self.failureChanged.emit()
+
+    @Slot()
+    def dismissFailure(self) -> None:
+        self._clear_failure()
+
+    @Slot()
+    def openAdvancedSettings(self) -> None:
+        """Ask the UI to reveal the Advanced drawer (used by the error card)."""
+        self.requestAdvanced.emit()
+
+    @Slot()
+    def openDocumentation(self) -> None:
+        """Open the bundled README so a missing-dependency error has a next step."""
+        readme = os.path.join(_base_dir(), "README.md")
+        if os.path.isfile(readme):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(readme))
+        else:
+            self._set_status("README.md not found next to the application.")
+
+    @Slot(result=int)
+    def logFirstErrorPosition(self) -> int:
+        """Character offset of the first error line, or -1.
+
+        Lets the log drawer jump straight to the cause instead of making the
+        user scroll through a long run.
+        """
+        offset = 0
+        for line in (self._log_text or "").splitlines(keepends=True):
+            stripped = line.strip()
+            if stripped.lower().startswith("[error]") or "traceback (most recent call last)" in stripped.lower():
+                return offset
+            offset += len(line)
+        return -1
+
+    # --- Pre-run readiness checklist (UX review S-03) ----------------------
+    def _output_readiness_row(self) -> dict:
+        """Real check instead of the old hardcoded `return true`.
+
+        Blank output path is genuinely "nothing to check" (the name is derived
+        from the title), so it reports `n/a` rather than a green tick — a row
+        that can never fail teaches users to ignore the whole checklist.
+        """
+        path = (self._out_path or "").strip()
+        if not path:
+            return {
+                "id": "output",
+                "label": "Output folder writable",
+                "state": "n/a",
+                "hint": "Auto-named from the title",
+            }
+        directory = os.path.dirname(os.path.abspath(path)) or "."
+        if os.path.isdir(directory) and os.access(directory, os.W_OK):
+            return {
+                "id": "output",
+                "label": "Output folder writable",
+                "state": "ok",
+                "hint": "",
+            }
+        return {
+            "id": "output",
+            "label": "Output folder writable",
+            "state": "todo",
+            "hint": "Cannot write to " + directory,
+        }
+
+    @Property(bool, notify=readinessChanged)
+    def outputDirWritable(self) -> bool:
+        return self._output_readiness_row()["state"] != "todo"
+
+    @Property(list, notify=readinessChanged)
+    def readinessRows(self) -> list:
+        """Pre-run checklist rows as {id,label,state,hint} with state in
+        ``ok`` / ``todo`` / ``n/a``.
+
+        Computed in Python (not QML) so every row is testable and none can be
+        silently hardcoded to green.
+        """
+        mode = self._pipeline_mode
+        rows: list[dict] = []
+
+        if mode == PIPELINE_MODE_YOUTUBE_CLOUD:
+            source_ok = bool((self._url or "").strip())
+            source_hint = "Enter a YouTube URL"
+        else:
+            source_ok = bool((self._file_path or "").strip())
+            source_hint = "Choose a local media file"
+        rows.append({
+            "id": "source",
+            "label": "Source selected",
+            "state": "ok" if source_ok else "todo",
+            "hint": "" if source_ok else source_hint,
+        })
+
+        if mode == PIPELINE_MODE_YOUTUBE_CLOUD:
+            # Previously this row showed a green tick AND told the user to
+            # download an ASR model they do not need.
+            rows.append({
+                "id": "asr",
+                "label": "ASR model available",
+                "state": "n/a",
+                "hint": "Not needed for YouTube mode",
+            })
+        else:
+            asr_ok = bool(self.asrModelReady)
+            rows.append({
+                "id": "asr",
+                "label": "ASR model available",
+                "state": "ok" if asr_ok else "todo",
+                "hint": "" if asr_ok
+                        else "Download the SenseVoice model for local transcription",
+            })
+
+        if mode == PIPELINE_MODE_OFFLINE:
+            backend_ok = bool(self.localModelReady)
+            rows.append({
+                "id": "backend",
+                "label": "Translation backend ready",
+                "state": "ok" if backend_ok else "todo",
+                "hint": "" if backend_ok
+                        else "Download or select a local translation model",
+            })
+        else:
+            has_key = bool((self._api_key or "").strip()) or bool(
+                os.environ.get("OPENAI_API_KEY")
+            )
+            rows.append({
+                "id": "backend",
+                "label": "Translation backend ready",
+                "state": "ok" if has_key else "todo",
+                "hint": "" if has_key
+                        else "Set an API key in Advanced, or define OPENAI_API_KEY",
+            })
+
+        rows.append(self._output_readiness_row())
+        return rows
+
     @Property(QObject, constant=True)
     def cueModel(self) -> CueResultModel:
         return self.cue_model
@@ -1217,9 +1852,13 @@ class AppBridge(QObject):
     def _youtube_out_dir(self) -> str:
         """Where downloaded video/subtitle files land.
 
-        Defaults to the directory of the user's output path (if set),
-        otherwise the app's base directory.
+        Preference order: the folder the user picked for downloads, the
+        directory of the user's output path (if set), otherwise the app's
+        base directory.
         """
+        custom = (self._youtube_download_dir or "").strip()
+        if custom:
+            return custom
         out = (self._out_path or "").strip()
         if out:
             d = os.path.dirname(os.path.abspath(out))
@@ -1241,8 +1880,20 @@ class AppBridge(QObject):
 
     @Property(list, notify=youtubeInfoChanged)
     def youtubeResolutions(self) -> list:
-        """Resolution choices: available heights plus "best"."""
-        items = [{"value": h, "label": f"{h}p"} for h in self._youtube_resolutions]
+        """Resolution choices for the *currently selected codec*, plus "best".
+
+        Heights are those the selected codec actually serves, so the
+        (codec, resolution) pair can always be honoured exactly. With codec
+        "best" every available height is offered (the download is then capped
+        at that height, any codec).
+        """
+        sel = (self._youtube_selected_codec or "best").strip() or "best"
+        fam = (self._youtube_matrix or {}).get(sel) if sel != "best" else None
+        if fam:
+            heights = sorted((int(h) for h in fam.keys()), reverse=True)
+        else:
+            heights = sorted((int(h) for h in self._youtube_resolutions), reverse=True)
+        items = [{"value": h, "label": f"{h}p"} for h in heights]
         items.append({"value": "best", "label": "Best"})
         return items
 
@@ -1358,9 +2009,20 @@ class AppBridge(QObject):
     @youtubeSelectedCodec.setter
     def youtubeSelectedCodec(self, value: str) -> None:
         value = (value or "best").strip()
-        if self._youtube_selected_codec != value:
-            self._youtube_selected_codec = value
-            self.youtubeInfoChanged.emit()
+        if self._youtube_selected_codec == value:
+            return
+        self._youtube_selected_codec = value
+        # Keep the pair honourable: if the newly selected codec does not serve
+        # the currently selected height, reset the resolution to "best" (the
+        # resolution choices themselves are codec-aware).
+        fam = (self._youtube_matrix or {}).get(value) if value != "best" else None
+        if fam and self._youtube_selected_resolution != "best":
+            try:
+                if int(self._youtube_selected_resolution) not in fam:
+                    self._youtube_selected_resolution = "best"
+            except (TypeError, ValueError):
+                self._youtube_selected_resolution = "best"
+        self.youtubeInfoChanged.emit()
 
     @Property(object, notify=youtubeInfoChanged)
     def youtubeSelectedResolution(self):
@@ -1395,12 +2057,34 @@ class AppBridge(QObject):
         return self._youtube_out_dir()
 
     @Property(bool, notify=youtubeDownloadChanged)
+    def youtubeVideoDownloading(self) -> bool:
+        return self._youtube_video_downloading
+
+    @Property(int, notify=youtubeDownloadChanged)
+    def youtubeVideoProgress(self) -> int:
+        return self._youtube_video_progress
+
+    @Property(str, notify=youtubeDownloadChanged)
+    def youtubeVideoStatus(self) -> str:
+        return self._youtube_video_status
+
+    @Property(bool, notify=youtubeDownloadChanged)
+    def youtubeSubDownloading(self) -> bool:
+        return self._youtube_sub_downloading
+
+    @Property(str, notify=youtubeDownloadChanged)
+    def youtubeSubStatus(self) -> str:
+        return self._youtube_sub_status
+
+    @Property(bool, notify=youtubeDownloadChanged)
     def youtubeDownloading(self) -> bool:
-        return self._youtube_downloading
+        """Combined busy flag (video *or* subtitle download in flight)."""
+        return self._youtube_video_downloading or self._youtube_sub_downloading
 
     @Property(str, notify=youtubeDownloadChanged)
     def youtubeDownloadStatus(self) -> str:
-        return self._youtube_download_status
+        """Combined status text (kept for compatibility)."""
+        return self._youtube_video_status + self._youtube_sub_status
 
     @Property(str, notify=youtubeDownloadChanged)
     def youtubeDownloadedVideo(self) -> str:
@@ -1409,6 +2093,19 @@ class AppBridge(QObject):
     @Property(str, notify=youtubeDownloadChanged)
     def youtubeDownloadedSubtitle(self) -> str:
         return self._youtube_downloaded_subtitle
+
+    @Slot(QUrl)
+    def setYouTubeDownloadDir(self, url: QUrl) -> None:
+        """Pick the folder video/subtitle downloads are saved to (persisted)."""
+        path = url.toLocalFile() if url.isValid() else ""
+        if not path:
+            return
+        if self._youtube_download_dir == path:
+            return
+        self._youtube_download_dir = path
+        self.youtubeDownloadChanged.emit()
+        self.youtubeInfoChanged.emit()
+        self._set_status(f"YouTube downloads will be saved to: {path}")
 
     @Slot()
     def fetchYouTubeInfo(self) -> None:
@@ -1428,12 +2125,34 @@ class AppBridge(QObject):
         self._youtube_selected_codec = "best"
         self._youtube_selected_resolution = "best"
         self.youtubeInfoChanged.emit()
+        self._set_status("Inspecting video formats… (large videos can take a minute)")
 
-        worker = _YouTubeInfoWorker(url)
+        self._youtube_info_gen += 1
+        worker = _YouTubeInfoWorker(url, self._youtube_info_gen)
         worker.signals.done.connect(self._on_youtube_info)
+        self._youtube_info_worker = worker
         self.threadpool.start(worker)
 
     def _on_youtube_info(self, payload: str) -> None:
+        # Stale-guard via generation tags (see the state init): a superseded
+        # inspection — URL change, or a retry after the old worker already
+        # finished/failed — carries an outdated tag and is dropped. The tag
+        # travels in the payload because sender() is the signals object, never
+        # the QRunnable; the previous identity check could never match, which
+        # made every result look stale and left the UI stuck on "Inspecting…".
+        token = -1
+        for prefix in ("INFO:", "INFOERROR:"):
+            if payload.startswith(prefix):
+                head, _, rest = payload[len(prefix):].partition("|")
+                try:
+                    token = int(head)
+                except ValueError:
+                    token = -1
+                payload = prefix + rest
+                break
+        if token != self._youtube_info_gen:
+            return
+        self._youtube_info_worker = None
         self._youtube_info_loading = False
         if payload.startswith("INFOERROR:"):
             self._youtube_info_error = payload[len("INFOERROR:"):].strip()
@@ -1483,26 +2202,102 @@ class AppBridge(QObject):
             return opt["format_selector"]
         return "bv*+ba/b"
 
+    # --- Video download (independent of the subtitle download) ---------------
+
     @Slot()
     def downloadYouTubeVideo(self) -> None:
         url = (self._url or "").strip()
         if not url:
             self._set_status("Enter a YouTube URL first.")
             return
-        if self._youtube_downloading:
+        if self._youtube_video_downloading:
             return
         selector = self._selected_format_selector()
         template = self._youtube_out_template() + ".%(ext)s"
-        self._youtube_downloading = True
-        self._youtube_download_status = "Starting video download…\n"
+        self._youtube_video_downloading = True
+        self._youtube_video_progress = 0
+        self._youtube_video_status = "Starting video download…\n"
         self._youtube_downloaded_video = ""
+        self._youtube_downloading = True
+        self.youtubeDownloadChanged.emit()
+        self._set_status("Downloading YouTube video…")
+
+        self._youtube_video_gen += 1
+        worker = _YouTubeDownloadWorker(
+            "video", url, selector, template, self._youtube_video_gen
+        )
+        worker.signals.progress.connect(self._append_log)
+        worker.signals.progress.connect(self._on_youtube_video_progress_line)
+        worker.signals.percent.connect(self._on_youtube_video_percent)
+        worker.signals.done.connect(self._on_youtube_video_done)
+        self._youtube_video_worker = worker
+        self.threadpool.start(worker)
+        self._append_log(
+            f"[youtube] downloading video with selector: {selector}\n"
+        )
+
+    @Slot()
+    def cancelYouTubeVideoDownload(self) -> None:
+        worker = self._youtube_video_worker
+        if worker is None:
+            return
+        self._youtube_video_status += "[info] canceling video download…\n"
+        self.youtubeDownloadChanged.emit()
+        # Keep the reference until the worker reports done: its completion is
+        # tagged with the current generation, so dropping the ref here would
+        # make that completion look stale and leave the spinner stuck.
+        worker.cancel()
+
+    def _on_youtube_video_progress_line(self, text: str) -> None:
+        self._youtube_video_status += text
         self.youtubeDownloadChanged.emit()
 
-        worker = _YouTubeDownloadWorker("video", url, selector, template)
-        worker.signals.progress.connect(self._append_log)
-        worker.signals.progress.connect(self._on_youtube_download_progress)
-        worker.signals.done.connect(self._on_youtube_downloaded)
-        self.threadpool.start(worker)
+    def _on_youtube_video_percent(self, pct: int) -> None:
+        self._youtube_video_progress = max(0, min(100, int(pct)))
+        self.youtubeDownloadChanged.emit()
+
+    @staticmethod
+    def _payload_token(payload: str) -> int:
+        """Extract the generation tag from a ``KIND:<n>|...`` worker payload."""
+        try:
+            return int(payload.split("|", 1)[0].rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            return -1
+
+    def _on_youtube_video_done(self, payload: str) -> None:
+        # Ignore stale completions from a superseded worker (e.g. after the
+        # user changed the URL or restarted the download): they must never
+        # clobber the status, progress or saved-path of the current run.
+        # Generation-tag comparison — sender() cannot identify the worker.
+        if self._payload_token(payload) != self._youtube_video_gen:
+            return
+        self._youtube_video_worker = None
+        self._youtube_video_downloading = False
+        self._youtube_downloading = self._youtube_sub_downloading
+        if payload.startswith("YTCANCEL:"):
+            self._youtube_video_progress = 0
+            self._youtube_video_status += "[canceled] video download stopped.\n"
+            self._set_status("YouTube video download canceled.")
+        elif payload.startswith("YTERROR:"):
+            # payload: YTERROR:video:<message>
+            _, _, msg = payload.split(":", 2)
+            self._youtube_video_progress = 0
+            self._youtube_video_status += f"[error] {msg}\n"
+            self._set_status("YouTube video download failed. See the log.")
+        elif payload.startswith("YTDONE:"):
+            _, _, path = payload.split(":", 2)
+            self._youtube_video_progress = 100
+            self._youtube_downloaded_video = path
+            self._youtube_video_status += f"[ok] saved: {path}\n"
+            self._set_status(f"YouTube video saved: {os.path.basename(path)}")
+        else:
+            self._youtube_video_status += "[error] Unexpected download result.\n"
+        # Keep the QML Label bounded: status accumulates across stages (two
+        # downloads per video) and used to grow without limit.
+        self._youtube_video_status = self._youtube_video_status[-8000:]
+        self.youtubeDownloadChanged.emit()
+
+    # --- Subtitle download (independent of the video download) ---------------
 
     @Slot()
     def downloadYouTubeSubtitle(self) -> None:
@@ -1510,46 +2305,65 @@ class AppBridge(QObject):
         if not url:
             self._set_status("Enter a YouTube URL first.")
             return
-        if self._youtube_downloading:
+        if self._youtube_sub_downloading:
             return
         template = self._youtube_out_template()
-        self._youtube_downloading = True
-        self._youtube_download_status = "Starting subtitle download…\n"
+        self._youtube_sub_downloading = True
+        self._youtube_sub_status = "Starting subtitle download…\n"
         self._youtube_downloaded_subtitle = ""
+        self._youtube_downloading = True
         self.youtubeDownloadChanged.emit()
+        self._set_status("Downloading YouTube subtitle…")
 
-        worker = _YouTubeDownloadWorker("subtitle", url, "", template)
+        # Tag the completion payload with a fresh generation so a superseded
+        # or repeated run can never be mistaken for this one (and a previous
+        # run's already-consumed tag can't make this completion look stale).
+        self._youtube_sub_gen += 1
+        worker = _YouTubeDownloadWorker("subtitle", url, "", template, self._youtube_sub_gen)
         worker.signals.progress.connect(self._append_log)
-        worker.signals.progress.connect(self._on_youtube_download_progress)
-        worker.signals.done.connect(self._on_youtube_downloaded)
+        worker.signals.progress.connect(self._on_youtube_sub_progress_line)
+        worker.signals.done.connect(self._on_youtube_sub_done)
+        self._youtube_sub_worker = worker
         self.threadpool.start(worker)
 
-    def _on_youtube_download_progress(self, text: str) -> None:
-        self._youtube_download_status += text
+    @Slot()
+    def cancelYouTubeSubtitleDownload(self) -> None:
+        worker = self._youtube_sub_worker
+        if worker is None:
+            return
+        self._youtube_sub_status += "[info] canceling subtitle download…\n"
+        self.youtubeDownloadChanged.emit()
+        worker.cancel()
+
+    def _on_youtube_sub_progress_line(self, text: str) -> None:
+        self._youtube_sub_status += text
         self.youtubeDownloadChanged.emit()
 
-    def _on_youtube_downloaded(self, payload: str) -> None:
-        self._youtube_downloading = False
-        if payload.startswith("YTERROR:"):
-            # payload: YTERROR:<mode>:<message>
-            _, mode, msg = payload.split(":", 2)
-            self._youtube_download_status += f"[error] {msg}\n"
-            self._set_status(f"YouTube {mode} download failed. See the log.")
-            self.youtubeDownloadChanged.emit()
+    def _on_youtube_sub_done(self, payload: str) -> None:
+        # Stale-worker guard via generation tag (see _on_youtube_video_done).
+        # sender() is the signals object, never the QRunnable, so an identity
+        # check against _youtube_sub_worker could never match and silently
+        # dropped every completion — leaving the panel stuck on "Downloading…".
+        if self._payload_token(payload) != self._youtube_sub_gen:
             return
-        if not payload.startswith("YTDONE:"):
-            self._youtube_download_status += "[error] Unexpected download result.\n"
-            self.youtubeDownloadChanged.emit()
-            return
-        _, mode, path = payload.split(":", 2)
-        if mode == "video":
-            self._youtube_downloaded_video = path
-        else:
+        self._youtube_sub_worker = None
+        self._youtube_sub_downloading = False
+        self._youtube_downloading = self._youtube_video_downloading
+        if payload.startswith("YTCANCEL:"):
+            self._youtube_sub_status += "[canceled] subtitle download stopped.\n"
+            self._set_status("YouTube subtitle download canceled.")
+        elif payload.startswith("YTERROR:"):
+            _, _, msg = payload.split(":", 2)
+            self._youtube_sub_status += f"[error] {msg}\n"
+            self._set_status("YouTube subtitle download failed. See the log.")
+        elif payload.startswith("YTDONE:"):
+            _, _, path = payload.split(":", 2)
             self._youtube_downloaded_subtitle = path
-        self._youtube_download_status += f"[ok] saved: {path}\n"
-        self._set_status(
-            f"YouTube {mode} saved: {os.path.basename(path)}"
-        )
+            self._youtube_sub_status += f"[ok] saved: {path}\n"
+            self._set_status(f"YouTube subtitle saved: {os.path.basename(path)}")
+        else:
+            self._youtube_sub_status += "[error] Unexpected download result.\n"
+        self._youtube_sub_status = self._youtube_sub_status[-8000:]
         self.youtubeDownloadChanged.emit()
 
     @Slot(str)
@@ -1650,6 +2464,11 @@ class AppBridge(QObject):
     @Slot()
     def clearLog(self) -> None:
         self._log_text = ""
+        self._log_lines = 0
+        if self._log_error_count or self._log_warn_count:
+            self._log_error_count = 0
+            self._log_warn_count = 0
+            self.logCountsChanged.emit()
         self.logTextChanged.emit()
         self._set_status("Ready.")
 
@@ -1720,15 +2539,24 @@ class AppBridge(QObject):
                 return
             self._set_status(msg)
             self._set_status_state(STATUS_FAILED)
+            self._set_failure("VALIDATION", msg, msg, REMEDY_FORM)
             return
 
         self._persist_fields()
         self._resolved_out_path = ""
         self.canOpenOutputFolderChanged.emit()
         self._reset_result_state()
+        self._clear_failure()
         self._progress_stage = ""
         self._progress_done = 0
         self._progress_total = 0
+        # Fresh per-stage timing for the legible progress panel (S-07).
+        self._run_started_at = time.time()
+        self._stage_sequence = []
+        self._stage_started_at = self._run_started_at
+        self._stage_elapsed_sec = 0
+        self._estimated_remaining_sec = 0
+        self.stageChanged.emit()
         self.progressChanged.emit()
         self._set_running(True)
         self._set_status("Running…")
@@ -1745,6 +2573,20 @@ class AppBridge(QObject):
         self.threadpool.start(worker)
 
     @Slot()
+    def cancelRun(self) -> None:
+        """Ask the in-process pipeline to stop at the next batch boundary.
+
+        Cancellation is cooperative: the current LLM batch finishes (its
+        translation is discarded), then translate_cues raises
+        TranslationCancelled and the worker exits with code 2.
+        """
+        if not self._is_running:
+            return
+        translate.request_cancel()
+        self._set_status("Cancelling\u2026 stops after the current batch.")
+        self.logger.info("cancel requested by user")
+
+    @Slot()
     def openOutputFolder(self) -> None:
         if not self._resolved_out_path:
             return
@@ -1756,7 +2598,15 @@ class AppBridge(QObject):
     @Slot(int)
     def _on_finished(self, rc: int) -> None:
         self._current_worker = None
+        # Finalize the elapsed time of the last visited stage and the run total.
+        now = time.time()
+        if (self._progress_stage and self._stage_sequence
+                and self._stage_sequence[-1]["name"] == self._progress_stage):
+            self._stage_sequence[-1]["elapsed"] = now - self._stage_started_at
+        self._stage_elapsed_sec = now - self._run_started_at if self._run_started_at else 0
+        self._estimated_remaining_sec = 0
         self._set_running(False)
+        self.stageChanged.emit()
         self.logger.info("run finished, rc=%s", rc)
 
         if rc == 0:
@@ -1774,9 +2624,20 @@ class AppBridge(QObject):
                 # Result JSON missing: final-line parsing already recovered the
                 # output path for Open Output Folder; review stays unavailable.
                 self.logger.warning("result JSON missing after successful run")
+        elif rc == 2 and getattr(translate, "_cancel_requested", False):
+            # Exit code 2 doubles as argparse/validation failure in the CLI,
+            # so only treat it as a cancel when the flag is actually set.
+            self._set_status_state(STATUS_CANCELLED)
+            self._set_status("Cancelled. No output file was written.")
         else:
             self._set_status_state(STATUS_FAILED)
-            self._set_status(f"Finished with errors (exit {rc}). See the log.")
+            code, title, detail, remedy = _classify_failure(self._log_text)
+            self._set_failure(code, title, detail, remedy)
+            # Lead with the cause. The old message pointed at a log drawer
+            # that is collapsed by default, so the user had to go hunting.
+            self._set_status(title)
+            if not self._log_visible:
+                self.logVisible = True
 
     def _reset_result_state(self) -> None:
         self._result_ready = False
@@ -1810,7 +2671,15 @@ class AppBridge(QObject):
         summary = dict(quality)
         summary["max_line_chars"] = max_line_chars
         self._quality_summary = summary
-        self.cue_model.load(cues)
+
+        # Build per-cue issue tags so the Review "Errors" filter can match the
+        # same cues the Quality tab flags, without a second copy of the data.
+        tags_by_index: dict[int, list[str]] = {}
+        for entry in quality.get("issues", []):
+            ci = int(entry.get("cue_index", 0))
+            for tag in entry.get("issues", []):
+                tags_by_index.setdefault(ci, []).append(tag)
+        self.cue_model.load(cues, tags_by_index)
         self.quality_issues_model.load_from_report(quality)
         if self._strict_quality:
             self._result_strict_state = "pass"
@@ -1818,7 +2687,132 @@ class AppBridge(QObject):
         self.resultReadyChanged.emit()
         return True
 
-    @Slot(str)
+    # --- Review editing: save / re-check / find-replace (UX review S-01) ------
+    @Property(int, notify=reviewDirtyChanged)
+    def cueEditedCount(self) -> int:
+        return self.cue_model.edited_count()
+
+    def _cues_for_save(self) -> list:
+        """Rebuild srt_io.Cue objects from the (possibly edited) model."""
+        from src.srt_io import Cue
+
+        cues: list = []
+        for i in range(self.cue_model.count):
+            c = self.cue_model.get_cue(i)
+            if not c:
+                continue
+            cues.append(
+                Cue(
+                    start=float(c.get("start_ms", 0)) / 1000.0,
+                    end=float(c.get("end_ms", 0)) / 1000.0,
+                    text=c.get("text", "") or "",
+                )
+            )
+        return cues
+
+    @Slot(result=bool)
+    def saveEditedSubtitles(self, path: str) -> bool:
+        """Write the (possibly edited) cues to `path`; format from extension."""
+        if not self._result_ready:
+            return False
+        cues = self._cues_for_save()
+        if not cues:
+            return False
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == ".ass":
+                ass_io.write_ass(path, cues)
+            else:
+                srt_io.write_srt(cues, path)
+        except OSError as exc:
+            self.logger.error("save failed: %s", exc)
+            self._set_status(f"Could not save: {exc}")
+            return False
+        self._resolved_out_path = os.path.abspath(path)
+        self.canOpenOutputFolderChanged.emit()
+        self._set_status(f"Saved edited subtitles to {path}")
+        return True
+
+    @Slot(result=bool)
+    def saveEditedSubtitlesToDefault(self) -> bool:
+        path = self._resolved_out_path or self._out_path
+        if not path:
+            return False
+        return self.saveEditedSubtitles(path)
+
+    @Slot()
+    def recheckQuality(self) -> None:
+        """Re-run quality checks on the edited cues without re-translating (S-01)."""
+        if not self._result_ready:
+            return
+        cues = self._cues_for_save()
+        untranslated = sum(1 for c in cues if not (c.text or "").strip())
+        report = subtitle_quality.build_report(cues, untranslated_count=untranslated)
+        summary = dict(report.to_dict())
+        max_line = 0
+        for c in cues:
+            for line in (c.text or "").replace("\\N", "\n").splitlines():
+                max_line = max(max_line, len(line.strip()))
+        summary["max_line_chars"] = max_line
+        self._quality_summary = summary
+        self.quality_issues_model.load_from_report(summary)
+        self.resultReadyChanged.emit()
+        self._set_status("Re-checked the edited subtitles.")
+
+    @Slot(str, str, bool, result=int)
+    def replaceInCues(self, find: str, replace: str, use_regex: bool) -> int:
+        """Bulk find/replace across cue translations. Returns replacements made."""
+        if not find:
+            return 0
+        import re as _re
+
+        try:
+            rx = _re.compile(find) if use_regex else None
+        except _re.error:
+            return 0
+        count = 0
+        for i in range(self.cue_model.count):
+            c = self.cue_model.get_cue(i)
+            text = c.get("text", "") or ""
+            if rx:
+                new, n = rx.subn(replace, text)
+            elif find in text:
+                new = text.replace(find, replace)
+                n = text.count(find)
+            else:
+                continue
+            if n:
+                self.cue_model.setData(self.cue_model.index(i, 0), new, Qt.EditRole)
+                count += n
+        return count
+
+    @Slot()
+    def revertAllEdits(self) -> None:
+        self.cue_model.revert_all()
+
+    @Slot()
+    def openInExternalEditor(self) -> None:
+        path = self._resolved_out_path or self._out_path
+        if not path:
+            self._set_status("No output file to open yet.")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            self._set_status("Could not open the file in an editor.")
+
+    # --- Quality -> Review navigation (UX review S-05) ------------------------
+    @Property(int, notify=focusCueIndexChanged)
+    def focusCueIndex(self) -> int:
+        return self._focus_cue_index
+
+    @Slot(int)
+    def revealCue(self, cue_number: int) -> None:
+        """Jump from a Quality issue to the matching cue in the Review tab."""
+        self.cue_proxy.filterMode = "all"
+        self.cue_proxy.searchText = ""
+        self._focus_cue_index = max(0, int(cue_number) - 1)
+        self.focusCueIndexChanged.emit()
+        self.requestTab.emit(1)
+
     def saveWindowState(self, geometry: str) -> None:
         """Persist window geometry: 'x,y,width,height'."""
         parts = (geometry or "").split(",")

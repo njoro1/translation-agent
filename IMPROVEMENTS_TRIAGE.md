@@ -1,4 +1,4 @@
-﻿# Improvements Triage
+# Improvements Triage
 
 > **STATUS UPDATE (mode-simplification pass):** Cloud rescue has been REMOVED as a
 > product feature. Any rescue item below marked Approved/Deferred is obsolete.
@@ -14,7 +14,7 @@
 
 ## Summary
 
-> The triage below covers **all sections of `improvements.txt`** (1â€“13, incl. Â§8â€“13
+> The triage below covers **all sections of `improvements.txt`** (1–13, incl. §8–13
 > which were not in the original triage). Approved items are implemented and
 > verified (251-test suite green at commit `0b72f59`).
 
@@ -28,7 +28,7 @@
 
 ## Per-item triage
 
-### Section 1 â€” Critical quality issues
+### Section 1 — Critical quality issues
 
 **1.1 Avoid extremely low-bit translation models for CJK** â†’ **Approved (already
 satisfied).** The code already defaults to `Hy-MT2-1.8B-Q8_0` everywhere
@@ -45,7 +45,7 @@ sample (up to 80 cues) instead of 5, keeping `_detect_cjk_lang` as a fallback.
 (implemented).** Added an explicit guard in `_run_pipeline._sanitize_output` and
 a test ensuring `[untranslated]` survives the tag-stripping / fansub-markup pass.
 
-### Section 2 â€” CJK ASR improvements
+### Section 2 — CJK ASR improvements
 
 **2.1 Recommended SenseVoice defaults for CJK** â†’ **Deferred.** These are
 tuning presets. The knobs already exist as CLI flags/env vars
@@ -61,7 +61,7 @@ behavior already exists (`--asr-no-tags` / `--asr-keep-tags`). The
 `keep-as-note` / `keep-ass-comments` modes are a larger feature with no immediate
 consumer.
 
-### Section 3 â€” Translation improvements
+### Section 3 — Translation improvements
 
 **3.1 Use cue IDs and strict output mapping** â†’ **Rejected (already
 implemented).** The numbered-item protocol (`1. text` â†’ `1. translation`) already
@@ -92,7 +92,7 @@ clean CJK residue; the quality report surfaces untranslated counts.
 fallback ladder (retry â†’ split â†’ smaller split â†’ per-item) plus optional cloud
 rescue is present in `translate_cues` and `rescue.py`.
 
-### Section 4 â€” Subtitle timing & line quality
+### Section 4 — Subtitle timing & line quality
 
 **4.1 Target-language line wrapping** â†’ **Rejected (already implemented).**
 `postprocess.break_lines` performs English-aware wrapping (max 37 chars, 2 lines).
@@ -109,7 +109,7 @@ display is a timing change that needs media validation.
 
 **4.4 Reading-speed checks** â†’ **Rejected (already implemented).** CPS checks with
 warning/error thresholds exist in `src/subtitle_quality.py` (`analyze_cues`).
-### Section 5 â€” ASS output improvements
+### Section 5 — ASS output improvements
 
 **5.1 Use CJK fonts by language** â†’ **Approved (implemented).** Added
 `FONT_BY_LANG` + `font_for_language` in `src/ass_io.py`; `write_ass` now picks a
@@ -121,14 +121,14 @@ CJK-capable font from the source language by default.
 **5.3 Optional bilingual ASS output** â†’ **Deferred.** Target is fixed to English;
 bilingual output is a distinct feature for a future learning/QA mode.
 
-### Section 6 â€” Quality report improvements
+### Section 6 — Quality report improvements
 
 **6 (overlaps/glossary/duplicate checks)** â†’ **Deferred.** The existing report
 already covers empty, CPS, chars, duration, lines, and untranslated counts.
 Additional checks (overlap, glossary violations) are additive but untested on
 real media; tracked as future work.
 
-### Section 7 â€” Frontend improvements
+### Section 7 — Frontend improvements
 
 **7.1 Four-pane UI / cue preview table** â†’ **Deferred.** Large UI rework with
 binding surface; high regression risk. The current Dashboard/Settings split
@@ -147,7 +147,7 @@ final `Wrote N cues to ...` contract intact for the GUI worker regex.
 **7.5 Improve `main.py` (Fusion/Material style)** â†’ **Deferred.** Style-picking is
 a visual preference; the current `Basic` style is stable.
 
-### Section 8 â€” Suggested new CLI flags
+### Section 8 — Suggested new CLI flags
 
 Proposed: `--source-lang`, `--translation-profile`, `--max-line-chars`,
 `--max-lines`, `--max-cps`, `--min-cue-ms`, `--min-gap-ms`, `--ass-font`,
@@ -162,18 +162,18 @@ Proposed: `--source-lang`, `--translation-profile`, `--max-line-chars`,
   language has no track, and respects the "explicit user value wins" rule over
   CJK auto-detection. Covered by `tests/test_fetch_subs.py` +
   `tests/test_cli_flags.py`.
-- **`--translation-profile`** â†’ **Deferred.** Same rationale as Â§3.3 (a prompt-layer
+- **`--translation-profile`** â†’ **Deferred.** Same rationale as §3.3 (a prompt-layer
   change for all cloud calls; needs prompt-hygiene testing).
 - **`--max-line-chars` / `--max-lines` / `--max-cps` / `--min-cue-ms` /
   `--min-gap-ms`** â†’ **Deferred.** The quality report (`src/subtitle_quality.py`)
   already *measures* these; *enforcing* them as timing/line adjustments changes cue
-  durations and needs media validation before landing (see Â§4.3).
+  durations and needs media validation before landing (see §4.3).
 - **`--bilingual`** â†’ **Rejected.** Target language is fixed to English by design
-  (same as Â§5.3).
+  (same as §5.3).
 - **`--auto-split-long-cues`** â†’ **Rejected.** Splitting changes cue count, which
-  violates the core invariant "cue count out == cue count in" (see Â§9).
+  violates the core invariant "cue count out == cue count in" (see §9).
 
-### Section 9 â€” Auto-splitting long translations
+### Section 9 — Auto-splitting long translations
 
 **Rejected.** The proposed `split_long_cue()` re-times and increases the number of
 cues, directly contradicting two core invariants: **original timestamps are never
@@ -182,19 +182,19 @@ handled by `postprocess` line breaking (which stays within a single cue and keep
 timing intact). Revisit only if a separate, opt-in "split mode" ever becomes a
 requirement.
 
-### Section 11 â€” Example commands
+### Section 11 — Example commands
 
 **Not applicable.** These are usage examples (anime / drama / Korean / YouTube-JA
 pipelines). They map to existing, already-implemented flags and are covered by
 `README.md`; nothing to implement.
 
-### Section 12 â€” Fix `_gguf_check.py`
+### Section 12 — Fix `_gguf_check.py`
 
 **Rejected / non-applicable.** `_gguf_check.py` no longer exists in the repository.
 The shipped default is `Hy-MT2-1.8B-Q8_0` and the lossy `1.25Bit` file is never used,
 so there is nothing to fix.
 
-### Section 13 â€” High-impact roadmap
+### Section 13 — High-impact roadmap
 
 - **Phase 1 (quality stabilization)** â†’ **Approved (implemented).** Q8_0 default,
   explicit `--asr-lang`, reduced CJK cue chars, source-residue detection,
@@ -209,27 +209,27 @@ so there is nothing to fix.
   table and quality warning panel deferred (7.1).
 - **Phase 5 (advanced quality)** â†’ **Deferred.** Two-pass translation, fuzzy TM,
   glossary-violation detection, auto long-cue splitting, vocal separation, Whisper
-  fallback â€” all large/risky or would violate invariants (splitting â‡’ cue-count
+  fallback — all large/risky or would violate invariants (splitting â‡’ cue-count
   change); not in a non-breaking scope.
 
 ---
 
 ## Approved implementation checklist (atomic tasks)
 
-- [x] **A1 â€” Robust CJK language detection.** Create `src/cjk.py`
+- [x] **A1 — Robust CJK language detection.** Create `src/cjk.py`
       (`detect_cjk_language`, `detect_cjk_from_cues`, `contains_cjk`,
       `char_width`/`text_width`, `break_cjk`, kinsoku sets). Wire
       `translate.py` to use the larger-sample detector with `_detect_cjk_lang`
       retained as a fallback.
-- [x] **A2 â€” Preserve `[untranslated]` marker.** Explicit guard in
+- [x] **A2 — Preserve `[untranslated]` marker.** Explicit guard in
       `_run_pipeline._sanitize_output`; regression tests.
-- [x] **A3 â€” ASS CJK fonts + header.** `FONT_BY_LANG`, `font_for_language`,
+- [x] **A3 — ASS CJK fonts + header.** `FONT_BY_LANG`, `font_for_language`,
       `Title:` in `[Script Info]`, `--ass-font`/`--ass-fontsize` CLI flags,
       `write_ass` signature extension; tests.
-- [x] **A4 â€” Structured JSON progress.** Add `--json-progress` and
+- [x] **A4 — Structured JSON progress.** Add `--json-progress` and
       `_json_progress()`; emit fetch/translate/write milestones; keep the final
       `Wrote N ...` line exact; tests.
-- [x] **A5 â€” Force YouTube source language (`--source-lang`, this pass).** Add
+- [x] **A5 — Force YouTube source language (`--source-lang`, this pass).** Add
       `--source-lang` to the CLI; thread it through
       `fetch_original_subtitles(preferred_lang=...)` with a new
       `_resolve_language_transcript` helper (manual â†’ generated, region-code
@@ -257,34 +257,34 @@ so there is nothing to fix.
 
 Correctness (P0) fixes implemented and verified in this pass:
 
-- [x] **P0-1 â€” Cloud rescue endpoint selection.** `_resolve_rescue_config()`
+- [x] **P0-1 — Cloud rescue endpoint selection.** `_resolve_rescue_config()`
       prefers dedicated `CLOUD_RESCUE_API_KEY` / `CLOUD_RESCUE_BASE_URL`, falls
       back to the original (pre-local) cloud config, and **never** re-uses the
       local llama.cpp `OPENAI_BASE_URL` for cloud rescue. Rescue disables with a
       clear warning when no usable cloud endpoint exists.
-- [x] **P0-2 â€” Transactional environment mutation.** The local-mode branch
+- [x] **P0-2 — Transactional environment mutation.** The local-mode branch
       snapshots `OPENAI_BASE_URL` (+ `OPENAI_API_KEY`) and restores them in a
       `finally`, so no stale local URL leaks into later cloud/GUI runs.
-- [x] **P0-3 â€” TM closure on all exit paths.** `tm.close()` is now called on the
+- [x] **P0-3 — TM closure on all exit paths.** `tm.close()` is now called on the
       strict-quality failure return and the translation-endpoint-error return, in
       addition to the success path.
-- [x] **P0-4 â€” Final failed-cue accounting.** `failed_indices` is recomputed from
+- [x] **P0-4 — Final failed-cue accounting.** `failed_indices` is recomputed from
       the final post-processed `out_cues` via `_is_failed_text` (empty or
       `[untranslated]`), so the summary / rescue note / quality report / strict
       check reflect the real output.
-- [x] **P0-5 â€” Newline escaping.** Verified `\n` â†” `\N` conversion is correct in
+- [x] **P0-5 — Newline escaping.** Verified `\n` â†” `\N` conversion is correct in
       `translate.py` (ASS/SRT branches); no syntax defect.
-- [x] **P0-6 â€” Documentation/code defaults.** Fixed stale CLI-table and QSettings
+- [x] **P0-6 — Documentation/code defaults.** Fixed stale CLI-table and QSettings
       defaults in `AGENT_DOCUMENTATION.md` (`--batch` 40â†’8,
       `--asr-max-segment-ms` 7000â†’6000, `--asr-min-silence-s` 0.20â†’0.25,
       `--asr-max-cue-duration-ms` 3000â†’3200; added `--asr-max-cue-chars-cjk` /
       `asr/maxCueCharsCjk` 48; documented `CLOUD_RESCUE_API_KEY` /
       `CLOUD_RESCUE_BASE_URL`).
-- [x] **P0-7 â€” Timestamps â†” overlap snapping reconciled.** Documentation now
+- [x] **P0-7 — Timestamps â†” overlap snapping reconciled.** Documentation now
       states the single exception: overlap snap trims a cue's `end` only when
       consecutive cues overlap, never below 300 ms (README + AGENT_DOC).
-- [x] **P1-1 â€” Source-language precedence.** Added `_is_known_source_code()` so a
-      specific fetched/ASR code (`zh-TW`, `ja`, `ko`, `yue`, â€¦) is preserved and
+- [x] **P1-1 — Source-language precedence.** Added `_is_known_source_code()` so a
+      specific fetched/ASR code (`zh-TW`, `ja`, `ko`, `yue`, …) is preserved and
       script-ratio detection runs only for missing/auto/unknown languages.
 
 Not implemented this pass (tracked backlog): ASR presets (P1-3), translation

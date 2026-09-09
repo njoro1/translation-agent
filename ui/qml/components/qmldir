@@ -13,3 +13,5 @@ ReadinessChecklist 1.0 ReadinessChecklist.qml
 RunButton 1.0 RunButton.qml
 SectionPanel 1.0 SectionPanel.qml
 StatusPill 1.0 StatusPill.qml
+YouTubeSubtitlePanel 1.0 YouTubeSubtitlePanel.qml
+YouTubeVideoPanel 1.0 YouTubeVideoPanel.qml

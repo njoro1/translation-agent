@@ -1,4 +1,4 @@
-﻿# FOLLOWUP_REVIEW.md
+# FOLLOWUP_REVIEW.md
 
 > **STATUS UPDATE (mode-simplification pass):** Cloud rescue has been REMOVED as a
 > product feature. Any rescue item below marked Approved/Deferred is obsolete.
@@ -8,7 +8,7 @@
 > AGENT_DOCUMENTATION.md and TASK_LIST.md for the authoritative current state.
 
 
-## Review: Translation Agent â€” CJK Subtitle Quality Follow-up
+## Review: Translation Agent — CJK Subtitle Quality Follow-up
 
 This document reviews the current project state against the earlier CJK subtitle-quality recommendations.
 
@@ -975,7 +975,7 @@ After implementing follow-ups, update `AGENT_DOCUMENTATION.md` for:
 
 # 8. Recommended Task Order
 
-## P0 â€” Correctness
+## P0 — Correctness
 
 1. Fix cloud rescue endpoint selection.
 2. Make environment mutation transactional.
@@ -985,7 +985,7 @@ After implementing follow-ups, update `AGENT_DOCUMENTATION.md` for:
 6. Sync documentation with code.
 7. Reconcile timestamp invariant with postprocessing behavior.
 
-## P1 â€” CJK Quality
+## P1 — CJK Quality
 
 8. Improve source-language precedence.
 9. Clarify local-file `--source-lang` behavior.
@@ -996,13 +996,13 @@ After implementing follow-ups, update `AGENT_DOCUMENTATION.md` for:
 14. Add granular translation progress callback.
 15. Load bundled CJK fonts in GUI.
 
-## P2 â€” UX
+## P2 — UX
 
 16. Add cue preview table.
 17. Add quality panel.
 18. Consider Fusion/Material styling.
 
-## P3 â€” Optional Future
+## P3 — Optional Future
 
 19. Audio preprocessing.
 20. Sound-tag modes.
