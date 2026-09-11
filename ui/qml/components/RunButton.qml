@@ -1,41 +1,57 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import ".."
 
+// One dual-purpose control: the single primary action of the Run screen.
+//   * idle              -> "Run"
+//   * offline, no model -> "Download model & Run" (auto-downloads first)
+//   * running           -> "Cancel" (danger) — never disabled while running, so
+//                          a bad run can always be stopped.
 Button {
     id: root
 
     readonly property bool running: appBridge.isRunning
     readonly property bool needsModelDownload: appBridge.pipelineMode === "offline" && !appBridge.localModelReady
+    // `Button` owns `icon` (a QQuickIcon), so the glyph name is our own property.
+    readonly property string iconName: running ? "stop"
+                                              : (needsModelDownload ? "download" : "play")
 
-    // One dual-purpose control: Run (or Download Model & Run) when idle,
-    // a red Stop while a run is active. Never disabled while running —
-    // the old build had `enabled: !running`, which made its own cancel
-    // branch dead code and left the user unable to stop a bad run.
-    text: running ? "Stop" : (needsModelDownload ? "Download Model & Run" : "Run")
-    implicitWidth: Math.max(112, contentItem.implicitWidth + 28)
-    implicitHeight: 32
+    text: running ? "Cancel" : (needsModelDownload ? "Download model & Run" : "Run")
+    implicitHeight: Theme.controlHeight
+    implicitWidth: contentItem.implicitWidth + 30
+    padding: 0
 
     background: Rectangle {
         radius: Theme.radiusSm
         color: {
             if (root.running)
-                return root.hovered ? "#DC2626" : "#EF4444"
+                return root.hovered ? Theme.errorHover : Theme.error
             if (root.needsModelDownload)
-                return root.hovered ? Qt.lighter(Theme.warning, 1.1) : Theme.warning
+                return root.hovered ? Theme.warningHover : Theme.warning
             return root.hovered ? Theme.accentHover : Theme.accent
         }
-        border.color: root.activeFocus ? Theme.text : "transparent"
-        border.width: 1
+        Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
     }
 
-    contentItem: Label {
-        text: root.text
-        color: "#FFFFFF"
-        font.pixelSize: Theme.fontLabel
-        font.bold: true
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
+    contentItem: RowLayout {
+        spacing: 7
+
+        Icon {
+            name: root.iconName
+            color: root.running || root.needsModelDownload ? "#FFFFFF" : Theme.accentInk
+            strokeWidth: 2.0
+            Layout.preferredWidth: 15
+            Layout.preferredHeight: 15
+        }
+
+        Label {
+            text: root.text
+            color: root.running || root.needsModelDownload ? "#FFFFFF" : Theme.accentInk
+            font.pixelSize: Theme.fontBody
+            font.bold: true
+            verticalAlignment: Text.AlignVCenter
+        }
     }
 
     onClicked: {
@@ -49,7 +65,7 @@ Button {
     Accessible.name: root.text
     Accessible.description: {
         if (root.running)
-            return "Stop the running translation"
+            return "Cancel the running translation"
         if (root.needsModelDownload)
             return "Download the local model and run the translation"
         return "Run the translation pipeline"

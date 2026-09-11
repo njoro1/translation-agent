@@ -4,6 +4,7 @@ import json
 import logging
 import logging.handlers
 import os
+import platform
 import re
 import sys
 import time
@@ -19,6 +20,7 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
     Slot,
+    qVersion,
 )
 from PySide6.QtGui import QDesktopServices
 
@@ -276,6 +278,38 @@ def _result_json_path() -> str:
     return os.path.join(cache, "last_result.json")
 
 
+def _format_bytes(size: int | float) -> str:
+    """Human-readable byte size ("1.9 GB"); used by the models table."""
+    value = float(max(0.0, float(size)))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024.0:
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TB"
+
+
+def _format_seconds(seconds: float) -> str:
+    """Compact wall-clock ("1 m 42 s") for the run history."""
+    total = int(max(0.0, float(seconds)))
+    minutes, secs = divmod(total, 60)
+    if minutes >= 60:
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours} h {minutes:02d} m"
+    if minutes:
+        return f"{minutes} m {secs:02d} s"
+    return f"{secs} s"
+
+
+def _format_clock_ms(ms: float) -> str:
+    """``mm:ss`` (or ``h:mm:ss``) from milliseconds, for timeline rulers."""
+    total = int(max(0.0, float(ms)) / 1000.0)
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 class _ModelDownloadWorker(QRunnable):
     """Streams GGUF model files into ./gguf, reporting progress per chunk."""
 
@@ -491,6 +525,11 @@ class AppBridge(QObject):
     focusCueIndexChanged = Signal()
     failureChanged = Signal()
     requestAdvanced = Signal()
+    # Redesign surfaces: accent choice, per-cue edits (timing / auto-fix) and
+    # the persisted run history.
+    accentChanged = Signal()
+    cueDataChanged = Signal()
+    runHistoryChanged = Signal()
 
     # Fields persisted across runs, as (attr, QSettings key, default). Bumped
     # whenever a new stored preference is introduced; secrets like the API key
@@ -532,6 +571,9 @@ class AppBridge(QObject):
         ("_theme_name", "ui/theme", "dark"),
         ("_comfortable", "ui/comfortable", False),
         ("_reduced_motion", "ui/reducedMotion", False),
+        ("_accent_name", "ui/accent", "iris"),
+        # Persisted run history for the Log screen (JSON-encoded list).
+        ("_run_history_json", "run/history", "[]"),
         # Rolling average wall time per cue, used to project an ETA on later
         # runs (UX review S-07: wait-time uncertainty).
         ("_history_ms_per_cue", "run/historyMsPerCue", "0"),
@@ -692,12 +734,30 @@ class AppBridge(QObject):
         self._win_w = 1280
         self._win_h = 840
 
+        # --- Redesign surfaces ------------------------------------------------
+        # Accent preset (mirrors Theme.accentChoices), the persisted run history
+        # and the row currently selected on the Log screen.
+        self._accent_name = "iris"
+        self._run_history_json = "[]"
+        self._selected_run_index = -1
+        self._history_ms_per_cue = 0.0
+        self._run_started_clock = ""
+        self._run_retry_count = 0
+        self._run_window_count = 0
+        self._run_metrics: dict = {}
+        self._last_run_snapshot: dict = {}
+
         self.cue_model = CueResultModel(self)
         self.cue_proxy = CueFilterProxyModel(self)
         self.cue_proxy.setSourceModel(self.cue_model)
         self.quality_issues_model = QualityIssuesModel(self)
         # Let the UI react to edits made directly in the Review table (S-01).
         self.cue_model.editedCountChanged.connect(self.reviewDirtyChanged.emit)
+        # Timing nudges and auto-fixes change the timeline and the inspector,
+        # so republish them whenever any cue row changes.
+        self._dist_cache: dict | None = None
+        self.cue_model.dataChanged.connect(self._on_cue_data_changed)
+        self.cue_model.modelReset.connect(self._on_cue_data_changed)
 
         self._load_persisted()
 
@@ -2693,6 +2753,16 @@ class AppBridge(QObject):
             return
 
         self._persist_fields()
+        # Snapshot the settings this run is about to use, so the Log screen's
+        # "re-run with the same settings" really restores them.
+        self._last_run_snapshot = {
+            attr: getattr(self, attr, default)
+            for attr, _key, default in self._PERSISTED
+        }
+        self._last_run_snapshot["_url"] = self._url
+        self._last_run_snapshot["_file_path"] = self._file_path
+        self._run_started_clock = time.strftime("%H:%M:%S")
+        self._run_metrics = {}
         self._resolved_out_path = ""
         self.canOpenOutputFolderChanged.emit()
         self._reset_result_state()
@@ -2788,6 +2858,98 @@ class AppBridge(QObject):
             self._set_status(title)
             if not self._log_visible:
                 self.logVisible = True
+
+        self._record_run(rc)
+
+    # --- Run history ------------------------------------------------------
+    _WINDOWS_RE = re.compile(r"\[windows\]\s+(\d+)\s+window", re.IGNORECASE)
+    _TM_HITS_RE = re.compile(r"\[tm\]\s+(\d+)\s+exact hit", re.IGNORECASE)
+    _RETRY_RE = re.compile(r"\[retry\]", re.IGNORECASE)
+
+    def _scan_run_metrics(self) -> dict:
+        """Best-effort counters recovered from the captured log."""
+        text = self._log_text or ""
+        windows = 0
+        tm_hits = 0
+        retries = 0
+        match = self._WINDOWS_RE.search(text)
+        if match:
+            windows = int(match.group(1))
+        match = self._TM_HITS_RE.search(text)
+        if match:
+            tm_hits = int(match.group(1))
+        retries = len(self._RETRY_RE.findall(text))
+        return {"windows": windows, "tm_hits": tm_hits, "retries": retries}
+
+    def _record_run(self, rc: int) -> None:
+        """Append this run to the persisted history (Log screen, left column)."""
+        metrics = self._scan_run_metrics()
+        self._run_metrics = metrics
+        if rc == 0:
+            status, tone = "ok", "ok"
+            result_text = (
+                f"{self._quality_summary.get('cue_count', 0)} cues"
+                if self._quality_summary
+                else "done"
+            )
+        elif rc == 2 and getattr(translate, "_cancel_requested", False):
+            status, tone, result_text = "cancelled", "warn", "cancelled"
+        else:
+            status, tone = "failed", "err"
+            warnings = int(self._quality_summary.get("warning_count", 0))
+            result_text = f"{warnings} warnings" if warnings else "failed"
+
+        source = self._url or self._file_path or ""
+        title = os.path.basename(source) if source else "Untitled run"
+        if source.startswith(("http://", "https://")):
+            title = self._youtube_title or source
+
+        entry = {
+            "title": title,
+            "modeCode": (
+                "YT" if self._pipeline_mode == PIPELINE_MODE_YOUTUBE_CLOUD
+                else "OFF" if self._pipeline_mode == PIPELINE_MODE_OFFLINE
+                else "LC"
+            ),
+            "mode": self._pipeline_mode,
+            "started": self._run_started_clock or time.strftime("%H:%M:%S"),
+            "duration": _format_seconds(self._stage_elapsed_sec),
+            "status": status,
+            "resultText": result_text,
+            "resultTone": tone,
+            "output": self._resolved_out_path or self._out_path,
+            "exitCode": rc,
+            "preset": self._content_preset,
+            "model": (
+                os.path.basename(self._local_model) if self._backend == "local" and self._local_model
+                else (self._model or "from .env")
+            ),
+            "context": self._context_mode or "preset default",
+            "batch": self._batch,
+            "windows": metrics["windows"],
+            "retries": metrics["retries"],
+            "tmHits": metrics["tm_hits"],
+            "cues": int(self._quality_summary.get("cue_count", 0)),
+            "errors": int(self._quality_summary.get("error_count", 0)),
+            "warnings": int(self._quality_summary.get("warning_count", 0)),
+            "strict": self._result_strict_state,
+            "elapsedSec": int(self._stage_elapsed_sec),
+        }
+
+        history = self._history_entries()
+        history.insert(0, entry)
+        del history[20:]
+        self._run_history_json = json.dumps(history, ensure_ascii=False)
+        self._selected_run_index = 0
+        self._persist_fields()
+        self.runHistoryChanged.emit()
+
+    def _history_entries(self) -> list:
+        try:
+            data = json.loads(self._run_history_json or "[]")
+        except (TypeError, ValueError):
+            return []
+        return data if isinstance(data, list) else []
 
     def _reset_result_state(self) -> None:
         self._result_ready = False
@@ -2992,3 +3154,650 @@ class AppBridge(QObject):
     @Property(int, constant=True)
     def windowHeight(self) -> int:
         return self._win_h
+
+    # =====================================================================
+    # Subtitle Studio shell: accent, cue editing, quality report, run history
+    # =====================================================================
+
+    _ACCENTS = ("iris", "azure", "mint", "amber", "rose")
+
+    @Property(str, notify=accentChanged)
+    def accentName(self) -> str:
+        return self._accent_name
+
+    @accentName.setter
+    def accentName(self, value: str) -> None:
+        value = (value or "iris").strip().lower()
+        if value not in self._ACCENTS:
+            value = "iris"
+        if self._accent_name != value:
+            self._accent_name = value
+            self.accentChanged.emit()
+            self._persist_fields()
+
+    @Slot()
+    def saveSettings(self) -> None:
+        """Re-persist every stored preference (the Settings page's Save)."""
+        self._persist_fields()
+        self._set_status("Settings saved.")
+
+    # --- Cue editing ------------------------------------------------------
+    def _on_cue_data_changed(self, *_args) -> None:
+        self._dist_cache = None
+        self.cueDataChanged.emit()
+
+    def _source_row(self, proxy_row: int) -> int:
+        """Map a row of the (filtered) Review table onto the source model.
+
+        The Review table shows a filtered proxy, so a visible row index is not
+        a source row index. Every editing slot the inspector calls therefore
+        maps through here rather than assuming they are the same.
+        """
+        index = self.cue_proxy.index(proxy_row, 0)
+        if not index.isValid():
+            return -1
+        source = self.cue_proxy.mapToSource(index)
+        return source.row() if source.isValid() else -1
+
+    @Slot(int, str)
+    def setCueText(self, row: int, text: str) -> None:
+        """Write one cue's translation (the Review inspector's text area)."""
+        source_row = self._source_row(row)
+        if source_row < 0:
+            return
+        self.cue_model.setData(self.cue_model.index(source_row, 0), text, Qt.EditRole)
+
+    @Slot(int)
+    def revertCue(self, row: int) -> None:
+        source_row = self._source_row(row)
+        if source_row >= 0:
+            self.cue_model.revert_cue(source_row)
+
+    @Slot(int, int)
+    def nudgeCueStart(self, row: int, delta_ms: int) -> None:
+        self._nudge_cue(row, "start_ms", delta_ms)
+
+    @Slot(int, int)
+    def nudgeCueEnd(self, row: int, delta_ms: int) -> None:
+        self._nudge_cue(row, "end_ms", delta_ms)
+
+    def _nudge_cue(self, row: int, key: str, delta_ms: int) -> None:
+        """Shift one cue edge by ``delta_ms`` without breaking the ordering.
+
+        The start may not cross the end (and vice versa), so a cue can never be
+        nudged into an inverted or zero-length interval.
+        """
+        source_row = self._source_row(row)
+        cue = self.cue_model.peek_cue(source_row)
+        if not cue:
+            return
+        start = float(cue.get("start_ms", 0))
+        end = float(cue.get("end_ms", 0))
+        if key == "start_ms":
+            start = max(0.0, min(start + delta_ms, end - 40.0))
+        else:
+            end = max(start + 40.0, end + delta_ms)
+        self.cue_model.set_times(source_row, start, end)
+
+    @Slot(int)
+    def autoFixCue(self, row: int) -> None:
+        """Strip ASR tags, fansub markup and stray CJK from one cue."""
+        source_row = self._source_row(row)
+        cue = self.cue_model.peek_cue(source_row)
+        if not cue:
+            return
+        text = str(cue.get("text", "") or "")
+        fixed = subtitle_quality.clean_translation_text(text)
+        if fixed != text:
+            self.cue_model.setData(self.cue_model.index(source_row, 0), fixed, Qt.EditRole)
+            self._set_status(f"Auto-fixed cue {cue.get('index', source_row + 1)}.")
+
+    @Slot(str)
+    def copyToClipboard(self, text: str) -> None:
+        from PySide6.QtGui import QGuiApplication
+
+        QGuiApplication.clipboard().setText(text or "")
+        self._set_status("Copied to the clipboard.")
+
+    # --- Cue aggregates ---------------------------------------------------
+    @Property("QVariantMap", notify=resultReadyChanged)
+    def cueCounts(self) -> dict:
+        """Per-status cue counts, for the Review filter chips."""
+        ok = warnings = failed = 0
+        for i in range(self.cue_model.count):
+            status = str(self.cue_model.peek_cue(i).get("status", "ok"))
+            if status in ("untranslated", "empty"):
+                failed += 1
+            elif status == "warning":
+                warnings += 1
+            else:
+                ok += 1
+        return {
+            "total": self.cue_model.count,
+            "ok": ok,
+            "warnings": warnings,
+            "failed": failed,
+        }
+
+    @Property("QVariantList", notify=resultReadyChanged)
+    def cueTimeline(self) -> list:
+        """One bar per cue: {left, width, tone} as fractions of the total run."""
+        total = self._result_duration_ms()
+        if total <= 0:
+            return []
+        bars = []
+        for i in range(self.cue_model.count):
+            cue = self.cue_model.peek_cue(i)
+            start = max(0.0, float(cue.get("start_ms", 0)))
+            end = max(start, float(cue.get("end_ms", 0)))
+            status = str(cue.get("status", "ok"))
+            if status in ("untranslated", "empty"):
+                tone = "err"
+            elif status == "warning":
+                tone = "warn"
+            else:
+                tone = "ok"
+            bars.append(
+                {
+                    "left": start / total,
+                    "width": max(0.0015, (end - start) / total),
+                    "tone": tone,
+                    # 1-based cue number so the timeline can highlight the cue
+                    # the inspector has open even when the table is filtered.
+                    "cue": int(cue.get("index", i + 1)),
+                }
+            )
+        return bars
+
+    @Property("QVariantList", notify=resultReadyChanged)
+    def cueTimelineRuler(self) -> list:
+        total = self._result_duration_ms()
+        if total <= 0:
+            return []
+        return [
+            _format_clock_ms(total * i / 4.0) for i in range(5)
+        ]
+
+    def _result_duration_ms(self) -> float:
+        if self.cue_model.count == 0:
+            return 0.0
+        return max(
+            (float(self.cue_model.peek_cue(i).get("end_ms", 0)) for i in range(self.cue_model.count)),
+            default=0.0,
+        )
+
+    # --- Quality report ---------------------------------------------------
+    @Property(int, notify=resultReadyChanged)
+    def qualityScore(self) -> int:
+        return self._compute_score()[0]
+
+    @Property(str, notify=resultReadyChanged)
+    def qualityGrade(self) -> str:
+        return self._compute_score()[1]
+
+    @Property(str, notify=resultReadyChanged)
+    def qualityScoreTone(self) -> str:
+        return self._compute_score()[2]
+
+    def _compute_score(self) -> tuple[int, str, str]:
+        if not self._result_ready or not self._quality_summary:
+            return 0, "No report", "mute"
+        summary = self._quality_summary
+        total = max(1, int(summary.get("cue_count", 0)))
+        errors = (
+            int(summary.get("error_count", 0))
+            + int(summary.get("untranslated_count", 0))
+            + int(summary.get("untranslated_marker_count", 0))
+        )
+        warnings = int(summary.get("warning_count", 0))
+        penalty = (errors * 12.0 + warnings * 3.0) / total * 10.0
+        score = int(max(0, min(100, round(100.0 - penalty))))
+        if score >= 95:
+            grade, tone = "Excellent", "ok"
+        elif score >= 85:
+            grade, tone = "Good", "ok"
+        elif score >= 70:
+            grade, tone = "Fair", "warn"
+        elif score >= 50:
+            grade, tone = "Poor", "warn"
+        else:
+            grade, tone = "Failing", "err"
+        return score, grade, tone
+
+    @Property("QVariantList", notify=resultReadyChanged)
+    def qualityTiles(self) -> list:
+        if not self._result_ready:
+            labels = (
+                "Total cues", "Untranslated", "Errors", "Warnings",
+                "Avg CPS", "Max line chars", "Strict gate",
+            )
+            return [{"value": "\u2014", "label": t, "tone": "mute", "hint": ""} for t in labels]
+
+        summary = self._quality_summary
+        untranslated = self.qualityUntranslated
+        errors = self.qualityErrors
+        warnings = self.qualityWarnings
+        gate = self._result_strict_state
+        return [
+            {"value": str(summary.get("cue_count", 0)), "label": "Total cues", "tone": "", "hint": ""},
+            {"value": str(untranslated), "label": "Untranslated",
+             "tone": "err" if untranslated else "ok",
+             "hint": "Cues the translator failed to fill in."},
+            {"value": str(errors), "label": "Errors",
+             "tone": "err" if errors else "ok",
+             "hint": "Cues with an error-level quality issue."},
+            {"value": str(warnings), "label": "Warnings",
+             "tone": "warn" if warnings else "ok",
+             "hint": "Cues with a warning-level quality issue."},
+            {"value": self.qualityAverageCpsText, "label": "Avg CPS", "tone": "",
+             "hint": "Average characters per second across all cues."},
+            {"value": str(self.qualityMaxLineChars), "label": "Max line chars", "tone": "",
+             "hint": "Longest rendered subtitle line."},
+            {"value": "PASS" if gate == "pass" else "FAIL" if gate == "fail" else "OFF",
+             "label": "Strict gate",
+             "tone": "err" if gate == "fail" else "ok" if gate == "pass" else "mute",
+             "hint": "Whether the strict quality gate would let this run through."},
+        ]
+
+    @Property("QVariantMap", notify=resultReadyChanged)
+    def qualityLimits(self) -> dict:
+        return {
+            "cpsWarn": subtitle_quality.CPS_WARNING,
+            "cpsError": subtitle_quality.CPS_ERROR,
+            "charsWarn": subtitle_quality.CHARS_WARNING,
+            "charsError": subtitle_quality.CHARS_ERROR,
+            "durationMin": subtitle_quality.MIN_DURATION_WARNING,
+            "durationMax": subtitle_quality.MAX_DURATION_WARNING,
+            "linesWarn": subtitle_quality.LINES_WARNING,
+            "linesError": subtitle_quality.LINES_ERROR,
+        }
+
+    @Property("QVariantList", notify=resultReadyChanged)
+    def qualityThresholds(self) -> list:
+        limits = self.qualityLimits
+        return [
+            {"k": "Characters / second",
+             "v": f"warn {limits['cpsWarn']:g} \u00b7 error {limits['cpsError']:g}"},
+            {"k": "Characters / line",
+             "v": f"warn {limits['charsWarn']:g} \u00b7 error {limits['charsError']:g}"},
+            {"k": "Duration",
+             "v": f"{limits['durationMin']:g} \u2013 {limits['durationMax']:g} s"},
+            {"k": "Lines per cue",
+             "v": f"warn {limits['linesWarn']:g} \u00b7 error {limits['linesError']:g}"},
+            {"k": "Leakage \u00b7 empty \u00b7 marker", "v": "error", "tone": "err"},
+            {"k": "Residue \u00b7 duplicate \u00b7 overlap", "v": "warning", "tone": "warn"},
+        ]
+
+    @Property("QVariantMap", notify=resultReadyChanged)
+    def qualityCpsHistogram(self) -> dict:
+        return self._distributions()["cps"]
+
+    @Property("QVariantMap", notify=resultReadyChanged)
+    def qualityDurationHistogram(self) -> dict:
+        return self._distributions()["duration"]
+
+    def _distributions(self) -> dict:
+        """Cached CPS / duration histograms (invalidated by any cue change)."""
+        if self._dist_cache is not None:
+            return self._dist_cache
+
+        empty = {
+            "cps": {"bars": [], "labels": [], "summary": ""},
+            "duration": {"bars": [], "labels": [], "summary": ""},
+        }
+        if not self._result_ready or self.cue_model.count == 0:
+            self._dist_cache = empty
+            return empty
+
+        cps_buckets = [0] * 10
+        cps_width = 4.0
+        dur_buckets = [0] * 9
+        dur_width = 0.8
+        cps_values: list[float] = []
+        durations: list[float] = []
+        for i in range(self.cue_model.count):
+            cue = self.cue_model.peek_cue(i)
+            duration = max(
+                0.0, (float(cue.get("end_ms", 0)) - float(cue.get("start_ms", 0))) / 1000.0
+            )
+            chars = len(re.sub(r"\s+", "", str(cue.get("text", "") or "")))
+            cps = chars / duration if duration > 0 else 0.0
+            cps_values.append(cps)
+            durations.append(duration)
+            cps_buckets[min(9, int(cps / cps_width))] += 1
+            dur_buckets[min(8, int(duration / dur_width))] += 1
+
+        def _bars(counts, width, over):
+            peak = max(counts) or 1
+            out = []
+            for index, count in enumerate(counts):
+                centre = (index + 0.5) * width
+                out.append({
+                    "v": count / peak,
+                    "tone": "warn" if centre > over else "",
+                })
+            return out
+
+        cps_sorted = sorted(cps_values)
+        p95 = cps_sorted[min(len(cps_sorted) - 1, int(0.95 * len(cps_sorted)))]
+        result = {
+            "cps": {
+                "bars": _bars(cps_buckets, cps_width, subtitle_quality.CPS_WARNING),
+                "labels": [f"{int((i + 0.5) * cps_width)}" for i in range(10)],
+                "summary": (
+                    f"avg {sum(cps_values) / len(cps_values):.1f} \u00b7 p95 {p95:.1f}"
+                ),
+            },
+            "duration": {
+                "bars": _bars(dur_buckets, dur_width, subtitle_quality.MAX_DURATION_WARNING),
+                "labels": [f"{(i + 0.5) * dur_width:.1f}" for i in range(9)],
+                "summary": (
+                    f"avg {sum(durations) / len(durations):.1f} s "
+                    f"\u00b7 max {max(durations):.1f} s"
+                ),
+            },
+        }
+        self._dist_cache = result
+        return result
+
+    @Property("QVariantList", notify=resultReadyChanged)
+    def runContext(self) -> list:
+        if not self._result_ready:
+            return [{"k": "Status", "v": "No run loaded", "mono": False}]
+        metrics = self._run_metrics or {}
+        mode_label = {
+            PIPELINE_MODE_YOUTUBE_CLOUD: "YouTube Cloud",
+            PIPELINE_MODE_LOCAL_CLOUD: "Local ASR + Cloud",
+            PIPELINE_MODE_OFFLINE: "Offline",
+        }.get(self._pipeline_mode, self._pipeline_mode)
+        model = (
+            os.path.basename(self._local_model)
+            if self._backend == "local" and self._local_model
+            else (self._model or "from .env")
+        )
+        return [
+            {"k": "Mode", "v": mode_label},
+            {"k": "Model", "v": model, "mono": True},
+            {"k": "Preset", "v": self._content_preset, "mono": True},
+            {"k": "Context", "v": self._context_mode or "preset default", "mono": True},
+            {"k": "Batch", "v": str(self._batch), "mono": True},
+            {"k": "Translation memory", "v": f"{metrics.get('tm_hits', 0)} hits", "mono": True},
+            {"k": "Windows", "v": str(metrics.get("windows", 0)), "mono": True},
+            {"k": "Retries", "v": str(metrics.get("retries", 0)), "mono": True},
+            {"k": "Wall clock", "v": _format_seconds(self._stage_elapsed_sec), "mono": True},
+        ]
+
+    @Slot()
+    def exportQualityReport(self) -> None:
+        """Write the current quality report next to the output file."""
+        if not self._result_ready or not self._quality_summary:
+            self._set_status("No quality report to export yet.")
+            return
+        target = self._export_target("quality_report.json")
+        try:
+            with open(target, "w", encoding="utf-8") as handle:
+                json.dump(self._quality_summary, handle, indent=2, ensure_ascii=False)
+        except OSError as exc:
+            self._set_status(f"Could not export the report: {exc}")
+            return
+        self._set_status(f"Quality report written to {target}")
+
+    @Slot()
+    def exportIssueCsv(self) -> None:
+        """Write the issue list as CSV next to the output file."""
+        if not self._result_ready or not self._quality_summary:
+            self._set_status("No issues to export yet.")
+            return
+        import csv
+
+        target = self._export_target("quality_issues.csv")
+        try:
+            with open(target, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["cue", "type", "severity", "message"])
+                for i in range(self.quality_issues_model.rowCount()):
+                    index = self.quality_issues_model.index(i, 0)
+                    writer.writerow([
+                        self.quality_issues_model.data(index, QualityIssuesModel.CueRole),
+                        self.quality_issues_model.data(index, QualityIssuesModel.RawTypeRole),
+                        self.quality_issues_model.data(index, QualityIssuesModel.SeverityRole),
+                        self.quality_issues_model.data(index, QualityIssuesModel.MessageRole),
+                    ])
+        except OSError as exc:
+            self._set_status(f"Could not export the issue list: {exc}")
+            return
+        self._set_status(f"Issue list written to {target}")
+
+    def _export_target(self, filename: str) -> str:
+        folder = os.path.dirname(self._resolved_out_path or self._out_path or "")
+        if not folder or not os.path.isdir(folder):
+            folder = _base_dir()
+        return os.path.join(folder, filename)
+
+    @Slot()
+    def exportLog(self) -> None:
+        target = os.path.join(_base_dir(), "translation_agent_log.txt")
+        try:
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(self._log_text or "")
+        except OSError as exc:
+            self._set_status(f"Could not export the log: {exc}")
+            return
+        self._set_status(f"Log written to {target}")
+
+    # --- Run history ------------------------------------------------------
+    @Property("QVariantList", notify=runHistoryChanged)
+    def runHistory(self) -> list:
+        return self._history_entries()
+
+    @Property(int, notify=runHistoryChanged)
+    def selectedRunIndex(self) -> int:
+        return self._selected_run_index
+
+    @selectedRunIndex.setter
+    def selectedRunIndex(self, value: int) -> None:
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            return
+        history = self._history_entries()
+        if index < -1 or index >= len(history):
+            index = -1
+        if self._selected_run_index != index:
+            self._selected_run_index = index
+            self.runHistoryChanged.emit()
+
+    @Property("QVariantList", notify=runHistoryChanged)
+    def selectedRunRows(self) -> list:
+        history = self._history_entries()
+        index = self._selected_run_index
+        if index < 0 or index >= len(history):
+            return []
+        entry = history[index]
+        mode_label = {
+            PIPELINE_MODE_YOUTUBE_CLOUD: "YouTube Cloud",
+            PIPELINE_MODE_LOCAL_CLOUD: "Local ASR + Cloud",
+            PIPELINE_MODE_OFFLINE: "Offline",
+        }.get(entry.get("mode", ""), entry.get("mode", "\u2014"))
+        return [
+            {"k": "Mode", "v": mode_label},
+            {"k": "Exit code", "v": str(entry.get("exitCode", "\u2014")),
+             "tone": "ok" if entry.get("exitCode") == 0 else "err", "mono": True},
+            {"k": "Preset", "v": str(entry.get("preset", "\u2014")), "mono": True},
+            {"k": "Model", "v": str(entry.get("model", "\u2014")), "mono": True},
+            {"k": "Context", "v": str(entry.get("context", "\u2014")), "mono": True},
+            {"k": "Batch", "v": str(entry.get("batch", "\u2014")), "mono": True},
+            {"k": "Windows", "v": str(entry.get("windows", 0)), "mono": True},
+            {"k": "Retries", "v": str(entry.get("retries", 0)), "mono": True},
+            {"k": "Cues", "v": str(entry.get("cues", 0)), "mono": True},
+            {"k": "Output", "v": str(entry.get("output", "\u2014")), "mono": True},
+        ]
+
+    @Slot()
+    def clearRunHistory(self) -> None:
+        self._run_history_json = "[]"
+        self._selected_run_index = -1
+        self._persist_fields()
+        self.runHistoryChanged.emit()
+        self._set_status("Run history cleared.")
+
+    @Slot()
+    def rerunLastRun(self) -> None:
+        """Restore the settings the last run used and start it again."""
+        if self._is_running:
+            return
+        if not self._last_run_snapshot:
+            self._set_status("Nothing to re-run yet.")
+            return
+        for attr, value in self._last_run_snapshot.items():
+            if attr == "_url":
+                self._url = value
+            elif attr == "_file_path":
+                self._file_path = value
+            else:
+                setattr(self, attr, value)
+        self._apply_pipeline_mode(self._pipeline_mode)
+        self._notify_form_changed()
+        self._set_status("Re-running the last settings.")
+        self.runTranslation()
+
+    # --- Files / models ---------------------------------------------------
+    @Property(str, notify=formChanged)
+    def fileSizeText(self) -> str:
+        path = self._file_path
+        if not path or not os.path.isfile(path):
+            return "\u2014"
+        try:
+            return _format_bytes(os.path.getsize(path))
+        except OSError:
+            return "\u2014"
+
+    @Property(str, constant=True)
+    def modelsFolder(self) -> str:
+        return _gguf_dir()
+
+    @Property(str, notify=formChanged)
+    def modelsUsedText(self) -> str:
+        folder = _gguf_dir()
+        total = 0
+        try:
+            for name in os.listdir(folder):
+                path = os.path.join(folder, name)
+                if os.path.isfile(path):
+                    total += os.path.getsize(path)
+        except OSError:
+            return "\u2014"
+        return _format_bytes(total)
+
+    @Property("QVariantList", notify=formChanged)
+    def modelsInventory(self) -> list:
+        """The Models & storage table: every file the app can download."""
+        folder = _gguf_dir()
+        rows: list[dict] = []
+
+        def _entry(filename: str, purpose: str, action: str) -> dict:
+            path = os.path.join(folder, filename)
+            present = os.path.isfile(path) and os.path.getsize(path) > 0
+            size = "missing"
+            if present:
+                try:
+                    size = _format_bytes(os.path.getsize(path))
+                except OSError:
+                    size = "\u2014"
+            return {
+                "file": filename,
+                "size": size,
+                "purpose": purpose,
+                "state": "Verified" if present else "Missing",
+                "tone": "ok" if present else "warn",
+                "action": action,
+            }
+
+        rows.append(_entry(_LOCAL_MODEL, "Translation", "local"))
+        for name, _url in _MODEL_URLS:
+            rows.append(_entry(name, "VAD" if "vad" in name else "ASR", "asr"))
+
+        tm_path = self._translation_memory_db or os.path.join(
+            _base_dir(), "cache", "translation_memory.sqlite3"
+        )
+        tm_present = os.path.isfile(tm_path) and os.path.getsize(tm_path) > 0
+        tm_size = "\u2014"
+        if tm_present:
+            try:
+                tm_size = _format_bytes(os.path.getsize(tm_path))
+            except OSError:
+                tm_size = "\u2014"
+        rows.append({
+            "file": os.path.basename(tm_path),
+            "size": tm_size if tm_present else "not created",
+            "purpose": "Cache",
+            "state": "Healthy" if tm_present else "Not created",
+            "tone": "ok" if tm_present else "mute",
+            "action": "tm",
+        })
+        return rows
+
+    @Slot()
+    def openModelsFolder(self) -> None:
+        folder = _gguf_dir()
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
+            self._set_status("Could not open the models folder.")
+
+    @Slot()
+    def purgeTranslationMemory(self) -> None:
+        """Delete the translation-memory database (Settings > Models & storage)."""
+        candidates = [
+            path for path in (
+                self._translation_memory_db,
+                os.path.join(_base_dir(), "cache", "translation_memory.sqlite3"),
+            ) if path
+        ]
+        removed = 0
+        for path in candidates:
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed += 1
+            except OSError as exc:
+                self.logger.warning("could not purge %s: %s", path, exc)
+        self._set_status(
+            "Translation memory purged." if removed
+            else "No translation-memory database to purge."
+        )
+        self.formChanged.emit()
+
+    # --- Environment / about ---------------------------------------------
+    _APP_VERSION = "1.0.0"
+
+    @Property(str, constant=True)
+    def appVersion(self) -> str:
+        return self._APP_VERSION
+
+    @Property("QVariantList", constant=True)
+    def environmentRows(self) -> list:
+        return [
+            {"k": "App version", "v": self._APP_VERSION, "mono": True},
+            {"k": "Frozen build", "v": "yes" if getattr(sys, "frozen", False) else "no", "mono": True},
+            {"k": "Python", "v": platform.python_version(), "mono": True},
+            {"k": "Qt", "v": qVersion() or "\u2014", "mono": True},
+            {"k": "Working folder", "v": _base_dir(), "mono": True},
+            {"k": "Models folder", "v": _gguf_dir(), "mono": True},
+            {"k": "Result JSON", "v": _result_json_path(), "mono": True},
+            {"k": "Settings store", "v": self._settings.fileName() or "QSettings", "mono": True},
+        ]
+
+    @Slot()
+    def openDebugLog(self) -> None:
+        path = os.path.join(_base_dir(), "debug.log")
+        if not os.path.isfile(path):
+            self._set_status("No debug.log has been written yet.")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            self._set_status("Could not open debug.log.")
+
+    @Slot()
+    def clearStoredSettings(self) -> None:
+        """Reset every persisted preference to its default."""
+        self._settings.clear()
+        self._settings.sync()
+        self._set_status("Stored settings cleared. Restart the app to see the defaults.")

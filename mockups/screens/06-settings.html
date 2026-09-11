@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .srow { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 12px; align-items: center; }
+  .srow + .srow { margin-top: 12px; }
+  .srow .sk { font-size: 12.5px; color: var(--text-2); }
+  .navitem {
+    display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+    border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-2);
+  }
+  .navitem:hover { background: var(--surface-2); }
+  .navitem.on { background: var(--accent-soft); color: var(--accent-2); font-weight: 600; }
+  .navitem .ico { width: 15px; height: 15px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="field" style="max-width:290px;height:30px">
+      <svg class="ico" style="width:13px;height:13px"><use href="#i-search"/></svg>
+      <span class="ph">Search settings…</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill ok"><span class="dot"></span>Saved</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn primary"><svg class="ico"><use href="#i-save"/></svg>Save</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn on"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div style="display:grid;grid-template-columns:212px minmax(0,1fr);gap:16px;align-items:start">
+
+        <!-- ============================================ SECTION NAV ==== -->
+        <div class="stack" style="gap:6px">
+          <div class="section-label" style="padding-left:10px">Settings</div>
+          <a class="navitem on"><svg class="ico"><use href="#i-sun"/></svg>Appearance</a>
+          <a class="navitem"><svg class="ico"><use href="#i-globe"/></svg>Translation</a>
+          <a class="navitem"><svg class="ico"><use href="#i-wave"/></svg>Transcription</a>
+          <a class="navitem"><svg class="ico"><use href="#i-layers"/></svg>Models &amp; storage</a>
+          <a class="navitem"><svg class="ico"><use href="#i-keyboard"/></svg>Shortcuts</a>
+          <a class="navitem"><svg class="ico"><use href="#i-terminal"/></svg>Environment</a>
+          <a class="navitem"><svg class="ico"><use href="#i-info"/></svg>About</a>
+        </div>
+
+        <!-- ============================================== MAIN COLUMN ==== -->
+        <div class="stack">
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Appearance</span>
+            </div>
+            <div class="card-body">
+              <div class="srow">
+                <div class="sk">Theme</div>
+                <div class="seg" style="justify-self:start">
+                  <button class="on" data-action="seg"><svg class="ico"><use href="#i-moon"/></svg>Dark</button>
+                  <button data-action="seg"><svg class="ico"><use href="#i-sun"/></svg>Light</button>
+                  <button data-action="seg">System</button>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">Density</div>
+                <div class="seg" style="justify-self:start">
+                  <button class="on" data-action="seg">Compact</button>
+                  <button data-action="seg">Comfortable</button>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">Reduce motion</div>
+                <span class="switch on" style="justify-self:start"><span class="track"></span>Enabled</span>
+              </div>
+              <div class="srow">
+                <div class="sk">Accent</div>
+                <div class="row tight" style="justify-self:start">
+                  <span style="width:22px;height:22px;border-radius:6px;background:#7C5CFF;border:2px solid var(--text)"></span>
+                  <span style="width:22px;height:22px;border-radius:6px;background:#4EA8FF"></span>
+                  <span style="width:22px;height:22px;border-radius:6px;background:#3DD68C"></span>
+                  <span style="width:22px;height:22px;border-radius:6px;background:#F5A623"></span>
+                  <span style="width:22px;height:22px;border-radius:6px;background:#FF5F6D"></span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Translation</span>
+              <div class="head-spacer"></div>
+              <span class="chip acc">Offline active</span>
+            </div>
+            <div class="card-body">
+              <div class="srow">
+                <div class="sk">Backend</div>
+                <div class="seg" style="justify-self:start">
+                  <button data-action="seg">Cloud LLM</button>
+                  <button class="on" data-action="seg">Local llama.cpp</button>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">Target language</div>
+                <div class="select" style="justify-self:start;min-width:170px;opacity:.6">English (locked)</div>
+              </div>
+              <div class="srow">
+                <div class="sk">Context mode</div>
+                <div class="select" style="justify-self:start;min-width:230px">Standard<svg class="ico"><use href="#i-chevron"/></svg></div>
+              </div>
+              <div class="srow">
+                <div class="sk">Batch size</div>
+                <div class="field" style="width:78px;justify-self:start"><span class="val">12</span></div>
+              </div>
+              <div class="srow">
+                <div class="sk">Translation memory</div>
+                <div class="select" style="justify-self:start;min-width:140px">Auto<svg class="ico"><use href="#i-chevron"/></svg></div>
+              </div>
+              <div class="srow">
+                <div class="sk">Glossary</div>
+                <div class="row tight" style="justify-self:stretch">
+                  <div class="field mono"><span class="ph">No glossary selected</span></div>
+                  <button class="btn icon"><svg class="ico"><use href="#i-folder"/></svg></button>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">Foreignization</div>
+                <span class="switch on" style="justify-self:start"><span class="track"></span>Always on</span>
+              </div>
+              <div class="srow">
+                <div class="sk">Strict quality gate</div>
+                <span class="switch on" style="justify-self:start"><span class="track"></span>Enabled</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Transcription · ASR</span>
+              <div class="head-spacer"></div>
+              <span class="pill ok"><span class="dot"></span>SenseVoiceSmall installed</span>
+            </div>
+            <div class="card-body">
+              <div class="srow">
+                <div class="sk">Spoken language</div>
+                <div class="select" style="justify-self:start;min-width:200px">auto<svg class="ico"><use href="#i-chevron"/></svg></div>
+              </div>
+              <div class="srow">
+                <div class="sk">FFmpeg preprocess</div>
+                <div class="select" style="justify-self:start;min-width:230px">Auto (preset)<svg class="ico"><use href="#i-chevron"/></svg></div>
+              </div>
+              <div class="srow">
+                <div class="sk">Max segment</div>
+                <div class="row tight" style="justify-self:start">
+                  <div class="field" style="width:88px"><span class="val">6000</span></div><span class="tiny muted">ms</span>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">End silence</div>
+                <div class="row tight" style="justify-self:start">
+                  <div class="field" style="width:88px"><span class="val">250</span></div><span class="tiny muted">ms</span>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">Cue budget</div>
+                <div class="row tight" style="justify-self:start">
+                  <div class="field" style="width:88px"><span class="val">3200</span></div><span class="tiny muted">ms</span>
+                  <div class="field" style="width:88px;margin-left:10px"><span class="val">70</span></div><span class="tiny muted">chars</span>
+                  <div class="field" style="width:88px;margin-left:10px"><span class="val">48</span></div><span class="tiny muted">CJK</span>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="sk">Keep ASR tags</div>
+                <span class="switch" style="justify-self:start"><span class="track"></span>Off</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Models &amp; storage</span>
+              <div class="head-spacer"></div>
+              <span class="chip mono">4.1 GB used</span>
+            </div>
+            <table class="tbl">
+              <thead>
+                <tr><th>File</th><th style="width:96px">Size</th><th style="width:130px">Purpose</th><th style="width:150px">State</th><th style="width:110px"></th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono small">Hy-MT2-1.8B-Q8_0.gguf</td>
+                  <td class="tc">1.9 GB</td><td class="src">Translation</td>
+                  <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Missing</span></td>
+                  <td><button class="btn sm primary">Download</button></td>
+                </tr>
+                <tr>
+                  <td class="mono small">sensevoice-small-q8.gguf</td>
+                  <td class="tc">235 MB</td><td class="src">ASR</td>
+                  <td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>Verified</span></td>
+                  <td><button class="btn sm">Re-download</button></td>
+                </tr>
+                <tr>
+                  <td class="mono small">fsmn-vad.gguf</td>
+                  <td class="tc">1.7 MB</td><td class="src">VAD</td>
+                  <td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>Verified</span></td>
+                  <td><button class="btn sm">Re-download</button></td>
+                </tr>
+                <tr>
+                  <td class="mono small">translation_memory.sqlite3</td>
+                  <td class="tc">2.1 MB</td><td class="src">Cache</td>
+                  <td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>Healthy</span></td>
+                  <td><button class="btn sm">Purge</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="card-foot">
+              <svg class="ico" style="color:var(--text-3)"><use href="#i-folder"/></svg>
+              <span class="tiny muted mono">…\translation-agent\gguf</span>
+              <div class="spacer"></div>
+              <button class="btn sm">Change folder</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Data &amp; privacy</span>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:9px">
+              <div class="kv"><span class="k">Network calls in Offline</span><span class="v">none</span></div>
+              <div class="kv"><span class="k">API key persisted</span><span class="v">never</span></div>
+              <div class="kv"><span class="k">Settings stored in</span><span class="v mono tiny">QSettings (registry)</span></div>
+              <div class="kv"><span class="k">Debug log</span><span class="v mono tiny">debug.log · 1 MB × 3</span></div>
+              <div class="divider"></div>
+              <div class="row tight">
+                <button class="btn sm"><svg class="ico"><use href="#i-file"/></svg>Open debug.log</button>
+                <div class="spacer"></div>
+                <button class="btn sm"><svg class="ico"><use href="#i-x"/></svg>Clear stored settings</button>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot"></span>
+    <span class="nowrap">All changes saved</span>
+    <span class="tail">API key is never persisted</span>
+    <span class="kbd">Ctrl K</span><span>Commands</span>
+  </footer>
+
+</div>
+</body>
+</html>

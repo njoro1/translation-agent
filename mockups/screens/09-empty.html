@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>First run / empty state — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .mode-card { padding: 18px; border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; gap: 10px; }
+  .mode-card.pick { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .mode-ico { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); }
+  .mode-card.pick .mode-ico { background: var(--accent-soft); color: var(--accent-2); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill mute"><span class="dot"></span>Nothing loaded</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn"><svg class="ico"><use href="#i-keyboard"/></svg>Shortcuts</button>
+    <button class="btn primary off"><svg class="ico"><use href="#i-play"/></svg>Run</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn on"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-list"/></svg>Review</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div style="max-width:1020px;margin:0 auto">
+
+        <!-- hero -->
+        <div class="center mt20 mb16">
+          <div class="logo" style="width:46px;height:46px;border-radius:14px;font-size:22px;margin:0 auto 14px">T</div>
+          <div class="h1">Turn any video into English subtitles</div>
+        </div>
+
+        <!-- three modes -->
+        <div class="grid-3c mb16">
+
+          <div class="mode-card pick">
+            <div class="row">
+              <span class="mode-ico"><svg class="ico" style="width:19px;height:19px"><use href="#i-link"/></svg></span>
+              <div class="spacer"></div>
+              <span class="chip ok">Ready</span>
+            </div>
+            <div class="h2">YouTube link</div>
+            <div class="row wrap tight">
+              <span class="chip">no download</span><span class="chip">fastest</span>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn primary w100"><svg class="ico"><use href="#i-link"/></svg>Paste a link</button>
+          </div>
+
+          <div class="mode-card">
+            <div class="row">
+              <span class="mode-ico"><svg class="ico" style="width:19px;height:19px"><use href="#i-file"/></svg></span>
+              <div class="spacer"></div>
+              <span class="chip ok">Ready</span>
+            </div>
+            <div class="h2">Local file · cloud LLM</div>
+            <div class="row wrap tight">
+              <span class="chip">mp4 · mkv · mp3</span><span class="chip">API key</span>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn w100"><svg class="ico"><use href="#i-folder"/></svg>Choose a file</button>
+          </div>
+
+          <div class="mode-card">
+            <div class="row">
+              <span class="mode-ico"><svg class="ico" style="width:19px;height:19px"><use href="#i-cpu"/></svg></span>
+              <div class="spacer"></div>
+              <span class="chip warn">1.9 GB to fetch</span>
+            </div>
+            <div class="h2">Fully offline</div>
+            <div class="row wrap tight">
+              <span class="chip">no network</span><span class="chip">CPU only</span>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn w100"><svg class="ico"><use href="#i-download"/></svg>Download model first</button>
+          </div>
+
+        </div>
+
+        <!-- drop zone -->
+        <div class="dropzone mb16">
+          <svg class="ico"><use href="#i-upload"/></svg>
+          <div class="h3 mt8">…or drop a video or audio file anywhere in this window</div>
+          <div class="small muted mt4">mp4 · mkv · webm · mov · avi · mp3 · m4a · wav · flac · ogg</div>
+        </div>
+
+        <!-- requirements -->
+        <section class="card mb16">
+          <div class="card-head">
+            <span class="card-title">What this machine has</span>
+            <div class="head-spacer"></div>
+            <button class="btn sm ghost"><svg class="ico"><use href="#i-refresh"/></svg>Re-check</button>
+          </div>
+          <div class="card-body tight">
+            <div class="tiles c4">
+              <div class="tile">
+                <div class="row tight"><svg class="ico" style="color:var(--ok)"><use href="#i-check"/></svg><span class="small" style="font-weight:600">yt-dlp</span></div>
+                <div class="tk mt4">bundled · ready</div>
+              </div>
+              <div class="tile">
+                <div class="row tight"><svg class="ico" style="color:var(--ok)"><use href="#i-check"/></svg><span class="small" style="font-weight:600">ffmpeg</span></div>
+                <div class="tk mt4">bundled · ready</div>
+              </div>
+              <div class="tile">
+                <div class="row tight"><svg class="ico" style="color:var(--ok)"><use href="#i-check"/></svg><span class="small" style="font-weight:600">ASR models</span></div>
+                <div class="tk mt4">SenseVoice + VAD</div>
+              </div>
+              <div class="tile">
+                <div class="row tight"><svg class="ico" style="color:var(--warn)"><use href="#i-alert"/></svg><span class="small" style="font-weight:600">Hy-MT2</span></div>
+                <div class="tk mt4">1.9 GB · missing</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- recent -->
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">Pick up where you left off</span>
+            <div class="head-spacer"></div>
+            <button class="btn sm ghost">Open folder</button>
+          </div>
+          <table class="tbl">
+            <thead>
+              <tr><th>File</th><th style="width:150px">When</th><th style="width:110px">Cues</th><th style="width:140px">Status</th><th style="width:130px"></th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="small">Blue Birds EP03 — 青い鳥.srt</td>
+                <td class="tc">18 min ago</td><td class="tc">65</td>
+                <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>5 issues</span></td>
+                <td><button class="btn sm">Open Review</button></td>
+              </tr>
+              <tr>
+                <td class="small">Room Tour 2.0.srt</td>
+                <td class="tc">1 h ago</td><td class="tc">142</td>
+                <td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>Clean</span></td>
+                <td><button class="btn sm">Open Review</button></td>
+              </tr>
+              <tr>
+                <td class="small">ep07_cut.srt</td>
+                <td class="tc">Yesterday</td><td class="tc">88</td>
+                <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>3 warnings</span></td>
+                <td><button class="btn sm">Open Review</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot" style="background:var(--text-3)"></span>
+    <span class="nowrap">Nothing loaded</span>
+    <span class="tail">3 modes available · 1 model still to download</span>
+    <span class="kbd">Ctrl K</span><span>Commands</span>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Log &amp; run history — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .runitem { display: block; padding: 10px 11px; border-radius: var(--r-sm); border: 1px solid transparent; }
+  .runitem:hover { background: var(--surface-2); }
+  .runitem.on { background: var(--accent-soft); border-color: var(--accent-line); }
+  .runitem .rt { font-size: 12.5px; font-weight: 600; }
+  .runitem .rs { font-size: 11px; color: var(--text-3); margin-top: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="field" style="max-width:300px;height:30px">
+      <svg class="ico" style="width:13px;height:13px"><use href="#i-search"/></svg>
+      <span class="ph">Filter log lines…</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill mute"><span class="dot"></span>1 284 lines</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn"><svg class="ico"><use href="#i-download"/></svg>Export</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn on"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div class="fill" style="display:grid;grid-template-columns:274px minmax(0,1fr);gap:16px">
+
+        <!-- ============================================ RUN HISTORY ==== -->
+        <div class="stack">
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Run history</span>
+              <div class="head-spacer"></div>
+              <button class="btn sm ghost icon" title="Clear history"><svg class="ico"><use href="#i-x"/></svg></button>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:4px">
+
+              <a class="runitem on">
+                <div class="row tight">
+                  <span class="chip acc">YT</span>
+                  <div class="ellipsis"><div class="rt ellipsis">Blue Birds EP03 — 青い鳥.srt</div></div>
+                </div>
+                <div class="row tight mt4">
+                  <span class="rs">16:09 · 1 m 42 s</span>
+                  <div class="spacer"></div>
+                  <span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>65 cues</span>
+                </div>
+              </a>
+
+              <a class="runitem">
+                <div class="row tight">
+                  <span class="chip">LC</span>
+                  <div class="ellipsis"><div class="rt ellipsis">Room Tour 2.0.srt</div></div>
+                </div>
+                <div class="row tight mt4">
+                  <span class="rs">14:52 · 3 m 08 s</span>
+                  <div class="spacer"></div>
+                  <span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>142 cues</span>
+                </div>
+              </a>
+
+              <a class="runitem">
+                <div class="row tight">
+                  <span class="chip">OFF</span>
+                  <div class="ellipsis"><div class="rt ellipsis">ep07_cut.srt</div></div>
+                </div>
+                <div class="row tight mt4">
+                  <span class="rs">13:31 · 6 m 41 s</span>
+                  <div class="spacer"></div>
+                  <span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>3 warnings</span>
+                </div>
+              </a>
+
+              <a class="runitem">
+                <div class="row tight">
+                  <span class="chip acc">YT</span>
+                  <div class="ellipsis"><div class="rt ellipsis">music_video_live.srt</div></div>
+                </div>
+                <div class="row tight mt4">
+                  <span class="rs">11:04 · 0 m 58 s</span>
+                  <div class="spacer"></div>
+                  <span class="badge err"><svg class="ico"><use href="#i-x"/></svg>failed</span>
+                </div>
+              </a>
+
+              <a class="runitem">
+                <div class="row tight">
+                  <span class="chip">LC</span>
+                  <div class="ellipsis"><div class="rt ellipsis">interview_short.srt</div></div>
+                </div>
+                <div class="row tight mt4">
+                  <span class="rs">yesterday · 1 m 12 s</span>
+                  <div class="spacer"></div>
+                  <span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>38 cues</span>
+                </div>
+              </a>
+
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Selected run</span>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:7px">
+              <div class="kv"><span class="k">Mode</span><span class="v">YouTube Cloud</span></div>
+              <div class="kv"><span class="k">Exit code</span><span class="v" style="color:var(--ok)">0</span></div>
+              <div class="kv"><span class="k">Preset</span><span class="v">anime</span></div>
+              <div class="kv"><span class="k">Model</span><span class="v">gpt-4o-mini</span></div>
+              <div class="kv"><span class="k">Windows</span><span class="v">9</span></div>
+              <div class="kv"><span class="k">Retries</span><span class="v">1</span></div>
+              <div class="divider"></div>
+              <button class="btn w100"><svg class="ico"><use href="#i-refresh"/></svg>Re-run with same settings</button>
+            </div>
+          </section>
+        </div>
+
+        <!-- ================================================= CONSOLE ==== -->
+        <div class="stack">
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Console</span>
+              <span class="chip mono">run #4f2a · 16:09:44</span>
+              <div class="head-spacer"></div>
+
+              <div class="row tight">
+                <button class="filter-chip on" data-action="chip">All <span class="n">1284</span></button>
+                <button class="filter-chip" data-action="chip">Info <span class="n">1198</span></button>
+                <button class="filter-chip" data-action="chip">Warn <span class="n">6</span></button>
+                <button class="filter-chip" data-action="chip">Error <span class="n">0</span></button>
+              </div>
+
+              <div class="tb-divider" style="margin:0 2px"></div>
+
+              <span class="switch on" style="font-size:11.5px"><span class="track"></span>Follow</span>
+            </div>
+
+            <div class="card-body tight">
+              <div class="console">
+<span class="l t">16:09:44</span><span class="l hi"> $ python translate.py "https://youtu.be/kQ8xT2mLp9o" --content-preset anime --context-mode standard --batch 8 --strict-quality --result-json cache/run.json</span>
+<span class="l t">16:09:44</span><span class="l"> [info] frozen=False argv=8 cwd=C:\xampp\htdocs\translation-agent</span>
+<span class="l t">16:09:44</span><span class="l"> [info] model=YouTube backend=cloud preset=anime context=standard</span>
+<span class="l t">16:09:44</span><span class="l"> [env] OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_MODEL=gpt-4o-mini</span>
+<span class="l t">16:09:45</span><span class="l"> [yt-dlp] resolved video id kQ8xT2mLp9o · language ja</span>
+<span class="l t">16:09:45</span><span class="l"> [fetch] english title: "Blue Birds EP03 — 青い鳥"</span>
+<span class="l t">16:09:46</span><span class="l"> <span class="ok">Fetched 65 cues. Translating into English.</span></span>
+<span class="l t">16:09:46</span><span class="l"> [info] no English track — falling back to original-language captions (ja)</span>
+<span class="l t">16:09:46</span><span class="l"> [type:"progress","stage":"translate","done":0,"total":65]</span>
+<span class="l t">16:09:46</span><span class="l"> [windows] 9 windows · avg 7.2 cues · 1 scene gap ≥ 0.8 s</span>
+<span class="l t">16:09:52</span><span class="l"> [translate] window 1/9 · 8 cues · 512 chars</span>
+<span class="l t">16:10:01</span><span class="l"> [translate] window 2/9 · 8 cues · 498 chars</span>
+<span class="l t">16:10:09</span><span class="l"> [translate] window 3/9 · 8 cues · 505 chars</span>
+<span class="l t">16:10:18</span><span class="l"> [translate] window 4/9 · 8 cues · 690 chars</span>
+<span class="l t">16:10:19</span><span class="l"> <span class="warn">[retry] window 4 misaligned (7/8 lines) — retrying with STRICT prefix</span></span>
+<span class="l t">16:10:27</span><span class="l"> <span class="ok">[ok] window 4 aligned on retry (8/8)</span></span>
+<span class="l t">16:10:34</span><span class="l"> [translate] window 5/9 · 8 cues · 548 chars</span>
+<span class="l t">16:10:41</span><span class="l"> [tm] 0 exact hits · 0 stored</span>
+<span class="l t">16:10:48</span><span class="l"> [translate] window 6/9 · 8 cues · 612 chars</span>
+<span class="l t">16:10:48</span><span class="l"> [type:"progress","stage":"translate","done":40,"total":65]</span>
+<span class="l t">16:10:57</span><span class="l"> [translate] window 7/9 · 8 cues · 587 chars</span>
+<span class="l t">16:11:05</span><span class="l"> [translate] window 8/9 · 8 cues · 431 chars</span>
+<span class="l t">16:11:12</span><span class="l"> [translate] window 9/9 · 1 cues · 62 chars</span>
+<span class="l t">16:11:13</span><span class="l"> [postprocess] line breaks 4 · overlap snap 1 · residual CJK strip 2</span>
+<span class="l t">16:11:14</span><span class="l"> <span class="warn">[quality] 1 warning, 1 error</span></span>
+<span class="l t">16:11:14</span><span class="l"> <span class="err">[quality] cue 5 asr_tag_leakage_error · cue 18 untranslated_marker_error</span></span>
+<span class="l t">16:11:14</span><span class="l"> [strict] gate FAILED — exit 1 requested</span>
+<span class="l t">16:11:26</span><span class="l"> <span class="ok">Wrote 65 cues to C:\Videos\subs\Blue Birds EP03 — 青い鳥.srt</span></span>
+<span class="l t">16:11:26</span><span class="l"> [done] wall clock 1 m 42 s · 9 requests · 1 retry</span>
+<span class="l t">16:11:26</span><span class="l"> [result] cache/run.json written (65 cues, 5 issues)</span>
+<span class="l t">16:11:26</span><span class="l hi"> _</span>
+              </div>
+            </div>
+
+            <div class="card-foot">
+              <span class="tiny muted mono">1284 / 1284 lines</span>
+              <div class="spacer"></div>
+              <button class="btn sm ghost"><svg class="ico"><use href="#i-search"/></svg>Find</button>
+            </div>
+          </section>
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot"></span>
+    <span class="nowrap">Idle</span>
+    <span class="tail">Last run exit 0 · strict gate FAIL · 1 retry recovered</span>
+    <span class="kbd">Ctrl K</span><span>Commands</span>
+  </footer>
+
+</div>
+</body>
+</html>

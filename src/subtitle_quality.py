@@ -44,6 +44,23 @@ _UNTRANSLATED_MARKER = "[untranslated]"
 CJK_RESIDUE_ERROR_RATIO = 0.5
 
 
+def clean_translation_text(text: str) -> str:
+    """Strip the artefacts the quality checks flag, for the "Auto-fix" action.
+
+    Removes leaked ASR tags (``<|zh|>``), emotion tags, fansub markup and the
+    ``[untranslated]`` marker, then collapses the whitespace left behind. This
+    is deliberately the same set of patterns ``analyze_cues`` reports, so
+    auto-fix can only clear issues the report actually raised.
+    """
+    cleaned = _ASR_TAG_RE.sub("", text or "")
+    cleaned = _EMOTION_TAG_RE.sub("", cleaned)
+    cleaned = _FANSUB_MARKUP_RE.sub("", cleaned)
+    cleaned = cleaned.replace(_UNTRANSLATED_MARKER, "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" *\n *", "\n", cleaned)
+    return cleaned.strip()
+
+
 def _cjk_char_count(text: str) -> int:
     return sum(
         1 for ch in text

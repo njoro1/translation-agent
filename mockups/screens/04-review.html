@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Review — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="row tight" style="padding:3px 10px;border:1px solid var(--border);border-radius:9px;background:var(--surface-2)">
+      <svg class="ico" style="color:var(--text-3)"><use href="#i-file"/></svg>
+      <span class="small ellipsis" style="max-width:280px">Blue Birds EP03 — 青い鳥.srt</span>
+      <span class="chip mono">65 cues</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill warn"><span class="dot"></span>1 error · 4 warnings</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn"><svg class="ico"><use href="#i-save"/></svg>Save changes</button>
+    <button class="btn primary"><svg class="ico"><use href="#i-refresh"/></svg>Re-check quality</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn on rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 412px;gap:16px;align-items:start">
+
+        <!-- ============================================== LEFT: CUES ==== -->
+        <div class="stack">
+
+          <section class="card">
+            <div class="card-body tight row wrap" style="gap:8px">
+              <button class="filter-chip on" data-action="chip">All <span class="n">65</span></button>
+              <button class="filter-chip" data-action="chip"><svg class="ico" style="width:12px;height:12px"><use href="#i-check"/></svg>OK <span class="n">60</span></button>
+              <button class="filter-chip" data-action="chip"><svg class="ico" style="width:12px;height:12px"><use href="#i-alert"/></svg>Warnings <span class="n">4</span></button>
+              <button class="filter-chip" data-action="chip"><svg class="ico" style="width:12px;height:12px"><use href="#i-x"/></svg>Failed <span class="n">1</span></button>
+
+              <div class="tb-divider" style="margin:0 4px"></div>
+
+              <div class="field" style="max-width:240px;height:28px">
+                <svg class="ico" style="width:13px;height:13px"><use href="#i-search"/></svg>
+                <span class="ph">Search…</span>
+              </div>
+
+              <div class="spacer"></div>
+
+              <span class="switch on" style="font-size:12px"><span class="track"></span>Only problems</span>
+              <button class="btn sm ghost icon" title="Export"><svg class="ico"><use href="#i-download"/></svg></button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="scroller" style="max-height:520px">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th style="width:46px">#</th>
+                    <th style="width:88px">Start</th>
+                    <th style="width:88px">End</th>
+                    <th style="width:30%">Source</th>
+                    <th>Translation</th>
+                    <th style="width:96px">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="warnrow" data-action="selectrow"><td class="idx">1</td><td class="tc">00:00.000</td><td class="tc">00:02.300</td><td class="src">セリフその1、ちゃんと読める長さ。</td><td class="tr">Line 1 that reads naturally.</td><td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Warning</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">2</td><td class="tc">00:02.600</td><td class="tc">00:04.900</td><td class="src">セリフその2、ちゃんと読める長さ。</td><td class="tr">Line 2 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">3</td><td class="tc">00:05.200</td><td class="tc">00:07.500</td><td class="src">セリフその3、ちゃんと読める長さ。</td><td class="tr">Line 3 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">4</td><td class="tc">00:07.800</td><td class="tc">00:10.100</td><td class="src">セリフその4、ちゃんと読める長さ。</td><td class="tr">Line 4 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr class="bad" data-action="selectrow"><td class="idx">5</td><td class="tc">00:10.400</td><td class="tc">00:12.700</td><td class="src">セリフその5、ちゃんと読める長さ。</td><td class="tr"><span style="color:var(--err)">&lt;|zh|&gt;Leaked tag line</span></td><td><span class="badge err"><svg class="ico"><use href="#i-x"/></svg>Error</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">6</td><td class="tc">00:13.000</td><td class="tc">00:15.300</td><td class="src">セリフその6、ちゃんと読める長さ。</td><td class="tr">Line 6 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">7</td><td class="tc">00:15.600</td><td class="tc">00:17.900</td><td class="src">セリフその7、ちゃんと読める長さ。</td><td class="tr">Line 7 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">8</td><td class="tc">00:18.200</td><td class="tc">00:20.500</td><td class="src">セリフその8、ちゃんと読める長さ。</td><td class="tr">Line 8 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">9</td><td class="tc">00:20.800</td><td class="tc">00:23.100</td><td class="src">セリフその9、ちゃんと読める長さ。</td><td class="tr">Line 9 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr class="sel" data-action="selectrow"><td class="idx">10</td><td class="tc">00:23.400</td><td class="tc">00:25.700</td><td class="src">セリフその10、ちゃんと読める長さ。</td><td class="tr"><span style="color:var(--warn)">&lt;|zh|&gt;Leaked tag line</span></td><td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Warning</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">11</td><td class="tc">00:26.000</td><td class="tc">00:28.300</td><td class="src">セリフその11、ちゃんと読める長さ。</td><td class="tr">Line 11 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">12</td><td class="tc">00:28.600</td><td class="tc">00:30.900</td><td class="src">セリフその12、ちゃんと読める長さ。</td><td class="tr">Line 12 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                  <tr class="warnrow" data-action="selectrow"><td class="idx">13</td><td class="tc">00:31.200</td><td class="tc">00:33.500</td><td class="src">セリフその13、ちゃんと読める長さ。</td><td class="tr">Line 13 that reads naturally.</td><td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Warning</span></td></tr>
+                  <tr data-action="selectrow"><td class="idx">14</td><td class="tc">00:33.800</td><td class="tc">00:36.100</td><td class="src">セリフその14、ちゃんと読める長さ。</td><td class="tr">Line 14 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Timeline</span>
+              <div class="head-spacer"></div>
+              <span class="chip err">1 error</span>
+              <span class="chip warn">4 warnings</span>
+              <button class="btn sm ghost">Zoom fit</button>
+            </div>
+            <div class="card-body tight">
+              <div class="timeline">
+                <div class="cue ok" style="left:0.4%;width:3.1%"></div>
+                <div class="cue ok" style="left:4%;width:3.1%"></div>
+                <div class="cue ok" style="left:7.7%;width:3.1%"></div>
+                <div class="cue ok" style="left:11.4%;width:3.1%"></div>
+                <div class="cue err" style="left:15.1%;width:3.1%"></div>
+                <div class="cue ok" style="left:18.8%;width:3.1%"></div>
+                <div class="cue ok" style="left:22.5%;width:3.1%"></div>
+                <div class="cue ok" style="left:26.2%;width:3.1%"></div>
+                <div class="cue ok" style="left:29.9%;width:3.1%"></div>
+                <div class="cue warn" style="left:33.6%;width:3.1%"></div>
+                <div class="cue ok" style="left:37.3%;width:3.1%"></div>
+                <div class="cue ok" style="left:41%;width:3.1%"></div>
+                <div class="cue warn" style="left:44.7%;width:3.1%"></div>
+                <div class="cue ok" style="left:48.4%;width:3.1%"></div>
+                <div class="cue ok" style="left:52.1%;width:3.1%"></div>
+                <div class="cue ok" style="left:55.8%;width:3.1%"></div>
+                <div class="cue warn" style="left:59.5%;width:3.1%"></div>
+                <div class="cue ok" style="left:63.2%;width:3.1%"></div>
+                <div class="cue ok" style="left:66.9%;width:3.1%"></div>
+                <div class="cue warn" style="left:70.6%;width:3.1%"></div>
+                <div class="cue ok" style="left:74.3%;width:3.1%"></div>
+                <div class="cue ok" style="left:78%;width:3.1%"></div>
+                <div class="cue ok" style="left:81.7%;width:3.1%"></div>
+                <div class="cue ok" style="left:85.4%;width:3.1%"></div>
+                <div class="cue ok" style="left:89.1%;width:3.1%"></div>
+                <div class="cue ok" style="left:92.8%;width:3.1%"></div>
+                <div class="playhead" style="left:34%"></div>
+                <div class="ruler"><span>00:00</span><span>03:12</span><span>06:24</span><span>09:36</span><span>12:47</span></div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- ============================================ RIGHT: INSPECT ==== -->
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">Cue inspector</span>
+            <div class="head-spacer"></div>
+            <button class="btn sm ghost icon"><svg class="ico"><use href="#i-chevron"/></svg></button>
+            <span class="chip mono">10 / 65</span>
+            <button class="btn sm ghost icon" style="transform:rotate(180deg)"><svg class="ico"><use href="#i-chevron"/></svg></button>
+          </div>
+
+          <div class="card-body stack-sm">
+
+            <div class="row tight">
+              <span class="label w92">In</span>
+              <div class="field mono" style="height:30px"><span class="val">00:23.400</span></div>
+              <button class="btn icon sm">−</button>
+              <button class="btn icon sm">+</button>
+            </div>
+            <div class="row tight">
+              <span class="label w92">Out</span>
+              <div class="field mono" style="height:30px"><span class="val">00:25.700</span></div>
+              <button class="btn icon sm">−</button>
+              <button class="btn icon sm">+</button>
+            </div>
+
+            <div class="row tight">
+              <span class="chip mono">2.30 s</span>
+              <span class="chip ok mono">7.6 cps</span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div>
+              <div class="section-label">Source</div>
+              <div class="small dim" style="padding:9px 11px;background:var(--inset);border:1px solid var(--border-soft);border-radius:8px">
+                セリフその10、ちゃんと読める長さ。
+              </div>
+            </div>
+
+            <div>
+              <div class="row mb4">
+                <span class="section-label" style="margin:0">Translation</span>
+                <div class="spacer"></div>
+                <span class="tiny muted mono">27 / 80</span>
+              </div>
+              <div class="field focus" style="height:auto;min-height:132px;align-items:flex-start;padding:10px 12px">
+                <span class="val" style="white-space:normal;font-size:13px;line-height:1.55">&lt;|zh|&gt;Leaked tag line</span>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="row tight">
+              <span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>asr_tag_leakage_error</span>
+            </div>
+            <div class="row tight">
+              <button class="btn sm primary"><svg class="ico"><use href="#i-zap"/></svg>Auto-fix</button>
+              <button class="btn sm"><svg class="ico"><use href="#i-refresh"/></svg>Re-translate</button>
+            </div>
+
+          </div>
+
+          <div class="card-foot">
+            <button class="btn sm"><svg class="ico"><use href="#i-undo"/></svg>Revert</button>
+            <button class="btn sm"><svg class="ico"><use href="#i-copy"/></svg>Copy</button>
+            <div class="spacer"></div>
+            <button class="btn sm primary"><svg class="ico"><use href="#i-save"/></svg>Save</button>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot" style="background:var(--warn)"></span>
+    <span class="nowrap">Cue 10 / 65</span>
+    <span class="tail">1 unsaved edit</span>
+    <span class="kbd">↑ ↓</span><span>Navigate</span>
+    <button class="btn sm ghost"><svg class="ico"><use href="#i-chevron"/></svg>Log</button>
+  </footer>
+
+</div>
+</body>
+</html>

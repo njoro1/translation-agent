@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Run · YouTube Cloud — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="seg">
+      <button class="on" data-action="seg"><svg class="ico"><use href="#i-link"/></svg>YouTube Cloud</button>
+      <button data-action="seg"><svg class="ico"><use href="#i-file"/></svg>Local Cloud</button>
+      <button data-action="seg"><svg class="ico"><use href="#i-cpu"/></svg>Offline</button>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="select"><svg class="ico"><use href="#i-sparkle"/></svg>Auto · detect<svg class="ico"><use href="#i-chevron"/></svg></div>
+    <div class="select"><svg class="ico"><use href="#i-globe"/></svg>Auto detect<svg class="ico"><use href="#i-chevron"/></svg></div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill ok"><span class="dot"></span>Ready</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn primary"><svg class="ico"><use href="#i-play"/></svg>Run</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn on"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div class="grid-3 fill">
+
+        <!-- ------------------------------------------------- SOURCE -->
+        <section class="card is-active">
+          <div class="card-head">
+            <span class="step-num">1</span>
+            <span class="card-title">Source</span>
+            <div class="head-spacer"></div>
+            <span class="chip acc">YouTube</span>
+          </div>
+
+          <div class="card-body stack-sm">
+            <div class="field focus">
+              <svg class="ico"><use href="#i-link"/></svg>
+              <span class="val">https://www.youtube.com/watch?v=kQ8xT2mLp9o</span>
+              <svg class="ico" style="width:13px;height:13px"><use href="#i-x"/></svg>
+            </div>
+
+            <button class="btn primary w100"><svg class="ico"><use href="#i-search"/></svg>Inspect</button>
+
+            <div class="thumb" style="aspect-ratio:2.1/1">
+              <div class="play"><svg class="ico" style="width:16px;height:16px"><use href="#i-play"/></svg></div>
+              <span class="dur">12:47</span>
+            </div>
+
+            <div>
+              <div class="h3" style="line-height:1.35">2026年做自媒体是什么样？小宁子工作室 Room Tour 2.0</div>
+              <div class="tiny muted mt4">小宁子 · 128K subscribers</div>
+            </div>
+
+            <div class="row wrap tight">
+              <span class="chip">ja</span>
+              <span class="chip">1080p</span>
+              <span class="chip ok"><svg class="ico" style="width:11px;height:11px"><use href="#i-check"/></svg>English track</span>
+            </div>
+
+            <div class="hair"></div>
+
+            <div class="section-label">Caption tracks</div>
+            <div class="stack-sm" style="gap:6px">
+              <div class="row" style="padding:8px 10px;border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:8px">
+                <span class="checkbox on"><svg class="ico"><use href="#i-check"/></svg></span>
+                <span class="small" style="font-weight:600">English</span>
+                <div class="spacer"></div>
+                <span class="badge ok">Auto</span>
+              </div>
+              <div class="row" style="padding:8px 10px;border:1px solid var(--border-soft);border-radius:8px">
+                <span class="checkbox"></span>
+                <span class="small">Japanese</span>
+                <div class="spacer"></div>
+                <span class="badge mute">Auto</span>
+              </div>
+              <div class="row" style="padding:8px 10px;border:1px solid var(--border-soft);border-radius:8px">
+                <span class="checkbox"></span>
+                <span class="small">Chinese (Simplified)</span>
+                <div class="spacer"></div>
+                <span class="badge mute">Manual</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ----------------------------------------------- PIPELINE -->
+        <section class="card">
+          <div class="card-head">
+            <span class="step-num">2</span>
+            <span class="card-title">Pipeline</span>
+          </div>
+
+          <div class="card-body stack" style="gap:14px">
+
+            <div>
+              <div class="section-label">Output</div>
+              <div class="stack-sm" style="gap:9px">
+                <div class="row">
+                  <span class="label w92">Path</span>
+                  <div class="field mono"><span class="val">C:\Videos\subs\小宁子工作室 Room Tour 2.0.srt</span></div>
+                  <button class="btn icon sm"><svg class="ico"><use href="#i-folder"/></svg></button>
+                </div>
+                <div class="row">
+                  <span class="label w92">Format</span>
+                  <div class="select" style="min-width:96px">SRT<svg class="ico"><use href="#i-chevron"/></svg></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div>
+              <div class="section-label">Translation</div>
+              <div class="stack-sm" style="gap:9px">
+                <div class="row" style="padding:10px 11px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:9px">
+                  <span class="pill acc"><span class="dot"></span>Cloud LLM</span>
+                  <span class="mono small">gpt-4o-mini</span>
+                  <div class="spacer"></div>
+                  <span class="chip">.env</span>
+                </div>
+                <div class="row">
+                  <span class="label w92">Context</span>
+                  <div class="select" style="flex:1 1 auto">Standard<svg class="ico"><use href="#i-chevron"/></svg></div>
+                  <span class="label" style="margin-left:10px">Batch</span>
+                  <div class="field" style="max-width:70px"><span class="val">8</span></div>
+                </div>
+                <div class="row">
+                  <span class="label w92">Memory</span>
+                  <div class="select" style="flex:1 1 auto">Auto<svg class="ico"><use href="#i-chevron"/></svg></div>
+                  <span class="label" style="margin-left:10px">Glossary</span>
+                  <div class="field"><span class="ph">None</span></div>
+                  <button class="btn icon sm"><svg class="ico"><use href="#i-folder"/></svg></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div>
+              <div class="section-label">Content preset</div>
+              <div class="stack-sm" style="gap:9px">
+                <div class="select"><svg class="ico"><use href="#i-sparkle"/></svg>Auto · detect from source<svg class="ico"><use href="#i-chevron"/></svg></div>
+                <div class="row wrap" style="gap:6px">
+                  <span class="chip">auto</span><span class="chip acc">anime</span><span class="chip">drama</span>
+                  <span class="chip">music</span><span class="chip">documentary</span><span class="chip">variety</span>
+                  <span class="chip">lecture</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ---------------------------------------------- INSPECTOR -->
+        <div class="stack">
+
+          <section class="card is-active">
+            <div class="card-head">
+              <span class="step-num">3</span>
+              <span class="card-title">Readiness</span>
+              <div class="head-spacer"></div>
+              <span class="pill ok"><span class="dot"></span>4 / 4</span>
+            </div>
+            <div class="card-body tight">
+              <div class="ready-list">
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">Source selected</div><div class="rs">kQ8xT2mLp9o</div></div>
+                </div>
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">Backend ready</div><div class="rs">gpt-4o-mini</div></div>
+                </div>
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">Output writable</div><div class="rs">C:\Videos\subs\</div></div>
+                </div>
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">yt-dlp · ffmpeg</div><div class="rs">bundled</div></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Last run</span>
+              <div class="head-spacer"></div>
+              <span class="chip">18 min ago</span>
+            </div>
+            <div class="card-body stack-sm">
+              <div class="row">
+                <svg class="ico" style="color:var(--ok)"><use href="#i-check"/></svg>
+                <span class="small ellipsis" style="font-weight:600">Blue Birds EP03 — 青い鳥.srt</span>
+              </div>
+
+              <div class="tiles c4" style="gap:8px">
+                <div class="tile"><div class="tv">65</div><div class="tk">CUES</div></div>
+                <div class="tile ok"><div class="tv">0</div><div class="tk">FAILED</div></div>
+                <div class="tile warn"><div class="tv">4</div><div class="tk">WARN</div></div>
+                <div class="tile ok"><div class="tv" style="font-size:15px;padding-top:5px">PASS</div><div class="tk">GATE</div></div>
+              </div>
+
+              <div class="row tight">
+                <button class="btn sm primary">Open Review</button>
+                <button class="btn sm">Open Quality</button>
+                <div class="spacer"></div>
+                <button class="btn sm icon"><svg class="ico"><use href="#i-folder"/></svg></button>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot"></span>
+    <span class="nowrap">Idle</span>
+    <span class="tail">Ready</span>
+    <button class="btn sm ghost"><svg class="ico"><use href="#i-chevron"/></svg>Log</button>
+  </footer>
+
+</div>
+</body>
+</html>

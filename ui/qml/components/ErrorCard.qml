@@ -3,12 +3,12 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 
-// Structured failure surface (UX review S-02).
+// Structured failure surface.
 //
 // A failed run used to say only "Finished with errors (exit N). See the log."
 // while the log drawer was collapsed, so the user had to discover a hidden
-// control and read raw CLI output. This card states the cause in plain
-// language and offers the single action most likely to fix it.
+// control and read raw CLI output. This card states the cause in plain language
+// and offers the single action most likely to fix it.
 Rectangle {
     id: root
 
@@ -16,8 +16,9 @@ Rectangle {
     visible: appBridge.failureActive
     radius: Theme.radiusMd
     color: Theme.errorTint
-    border.color: Theme.error
+    border.color: Qt.rgba(Theme.error.r, Theme.error.g, Theme.error.b, 0.45)
     border.width: 1
+    implicitHeight: content.implicitHeight + 2 * Theme.md
 
     readonly property string remedy: appBridge.failureRemediation
 
@@ -52,12 +53,15 @@ Rectangle {
             appBridge.requestTab(0)
             return
         default:
-            appBridge.logVisible = true
+            appBridge.requestTab(3)
         }
     }
 
     ColumnLayout {
-        anchors.fill: parent
+        id: content
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
         anchors.margins: Theme.md
         spacing: Theme.sm
 
@@ -74,7 +78,7 @@ Rectangle {
                 Label {
                     anchors.centerIn: parent
                     text: "!"
-                    color: Theme.accentText
+                    color: Theme.accentInk
                     font.pixelSize: Theme.fontLabel
                     font.bold: true
                 }
@@ -112,7 +116,7 @@ Rectangle {
             wrapMode: Text.WordWrap
             maximumLineCount: 2
             elide: Text.ElideRight
-            font.family: "Consolas"
+            font.family: Theme.monoFont
         }
 
         Label {
@@ -122,79 +126,36 @@ Rectangle {
             color: Theme.text
             font.pixelSize: Theme.fontSmall
             wrapMode: Text.WordWrap
-            font.family: "Consolas"
+            font.family: Theme.monoFont
         }
 
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.sm
 
-            Button {
+            AppButton {
                 text: root.remedyLabel
+                variant: "danger"
+                small: true
                 onClicked: root.applyRemedy()
-
-                background: Rectangle {
-                    radius: Theme.radiusSm
-                    color: parent.hovered ? Theme.errorHover : Theme.error
-                }
-                contentItem: Label {
-                    text: parent.text
-                    color: Theme.accentText
-                    font.pixelSize: Theme.fontSmall
-                    font.bold: true
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                Accessible.name: root.remedyLabel
-                Accessible.role: Accessible.Button
             }
 
-            Button {
+            AppButton {
                 id: detailsSwitch
+                text: detailsSwitch.checked ? "Hide details" : "Show details"
+                small: true
+                // ``checked`` is FINAL on Button, so this is a real toggle
+                // button rather than a shadowing property.
                 checkable: true
-                checked: false
-                text: checked ? "Hide details" : "Show details"
-                onClicked: checked = !checked
-
-                background: Rectangle {
-                    radius: Theme.radiusSm
-                    color: parent.hovered ? Theme.surfaceAlt : Theme.surface
-                    border.color: Theme.border
-                }
-                contentItem: Label {
-                    text: parent.text
-                    color: Theme.text
-                    font.pixelSize: Theme.fontSmall
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                Accessible.name: "Show error details"
-                Accessible.role: Accessible.Button
             }
 
             Item { Layout.fillWidth: true }
 
-            Button {
+            AppButton {
                 text: "Dismiss"
+                variant: "ghost"
+                small: true
                 onClicked: appBridge.dismissFailure()
-
-                background: Rectangle {
-                    radius: Theme.radiusSm
-                    color: parent.hovered ? Theme.surfaceAlt : "transparent"
-                    border.color: Theme.border
-                }
-                contentItem: Label {
-                    text: parent.text
-                    color: Theme.textMuted
-                    font.pixelSize: Theme.fontSmall
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                Accessible.name: "Dismiss error"
-                Accessible.role: Accessible.Button
             }
         }
     }

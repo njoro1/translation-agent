@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Run · Offline (local) — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="seg">
+      <button data-action="seg"><svg class="ico"><use href="#i-link"/></svg>YouTube Cloud</button>
+      <button data-action="seg"><svg class="ico"><use href="#i-file"/></svg>Local Cloud</button>
+      <button class="on" data-action="seg"><svg class="ico"><use href="#i-cpu"/></svg>Offline</button>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="select"><svg class="ico"><use href="#i-sparkle"/></svg>Auto · detect<svg class="ico"><use href="#i-chevron"/></svg></div>
+    <div class="select"><svg class="ico"><use href="#i-globe"/></svg>Spoken: ja<svg class="ico"><use href="#i-chevron"/></svg></div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill warn"><span class="dot"></span>Needs 1 model</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn primary"><svg class="ico"><use href="#i-download"/></svg>Download model &amp; Run</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn on"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div class="grid-3 fill">
+
+        <!-- ------------------------------------------------- SOURCE -->
+        <section class="card is-active">
+          <div class="card-head">
+            <span class="step-num">1</span>
+            <span class="card-title">Source</span>
+            <div class="head-spacer"></div>
+            <span class="chip acc">Local file</span>
+          </div>
+
+          <div class="card-body stack-sm">
+            <div class="dropzone" style="padding:22px 18px">
+              <svg class="ico"><use href="#i-upload"/></svg>
+              <div class="small mt8" style="font-weight:600">Drop media here</div>
+              <button class="btn sm mt10"><svg class="ico"><use href="#i-folder"/></svg>Browse</button>
+            </div>
+
+            <div class="hair"></div>
+
+            <div class="row">
+              <div class="thumb" style="width:92px;flex:0 0 auto;aspect-ratio:16/9;border-radius:8px">
+                <div class="play" style="width:24px;height:24px"><svg class="ico" style="width:11px;height:11px"><use href="#i-play"/></svg></div>
+              </div>
+              <div class="ellipsis">
+                <div class="small" style="font-weight:600">Room Tour 2.0 — raw capture.mkv</div>
+                <div class="row tight mt4">
+                  <span class="chip">2.14 GB</span><span class="chip">12:47</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="hair"></div>
+
+            <div class="row">
+              <span class="label w92">Spoken</span>
+              <div class="select" style="flex:1 1 auto">auto<svg class="ico"><use href="#i-chevron"/></svg></div>
+            </div>
+            <div class="row">
+              <span class="label w92">Translate from</span>
+              <div class="select" style="flex:1 1 auto">ja · Japanese<svg class="ico"><use href="#i-chevron"/></svg></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ----------------------------------------------- PIPELINE -->
+        <section class="card">
+          <div class="card-head">
+            <span class="step-num">2</span>
+            <span class="card-title">Pipeline</span>
+          </div>
+
+          <div class="card-body stack" style="gap:14px">
+
+            <div>
+              <div class="section-label">Transcription</div>
+              <div class="stack-sm" style="gap:9px">
+                <div class="row" style="padding:10px 11px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:9px">
+                  <span class="pill ok"><span class="dot"></span>SenseVoiceSmall</span>
+                  <div class="spacer"></div>
+                  <span class="chip mono">235 MB</span>
+                </div>
+                <div class="row">
+                  <span class="label w92">Preprocess</span>
+                  <div class="select" style="flex:1 1 auto">Auto<svg class="ico"><use href="#i-chevron"/></svg></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div>
+              <div class="section-label">Translation</div>
+              <div class="stack-sm" style="gap:9px">
+                <div class="row" style="padding:10px 11px;background:var(--warn-soft);border:1px solid rgba(245,166,35,.3);border-radius:9px">
+                  <svg class="ico" style="color:var(--warn)"><use href="#i-alert"/></svg>
+                  <span class="small" style="font-weight:600">Hy-MT2-1.8B-Q8_0</span>
+                  <div class="spacer"></div>
+                  <span class="chip warn mono">1.9 GB</span>
+                  <button class="btn sm primary"><svg class="ico"><use href="#i-download"/></svg>Download</button>
+                </div>
+                <div class="row">
+                  <span class="label w92">Context</span>
+                  <div class="select" style="flex:1 1 auto">Standard<svg class="ico"><use href="#i-chevron"/></svg></div>
+                  <span class="label" style="margin-left:10px">Batch</span>
+                  <div class="field" style="max-width:70px"><span class="val">12</span></div>
+                </div>
+                <div class="row">
+                  <span class="label w92">Memory</span>
+                  <div class="select" style="flex:1 1 auto">Auto<svg class="ico"><use href="#i-chevron"/></svg></div>
+                  <span class="label" style="margin-left:10px">Glossary</span>
+                  <div class="field"><span class="ph">None</span></div>
+                  <button class="btn icon sm"><svg class="ico"><use href="#i-folder"/></svg></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div>
+              <div class="section-label">Content preset</div>
+              <div class="select"><svg class="ico"><use href="#i-sparkle"/></svg>Auto · detect from audio<svg class="ico"><use href="#i-chevron"/></svg></div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div>
+              <div class="section-label">Output</div>
+              <div class="row">
+                <span class="label w92">Path</span>
+                <div class="field mono"><span class="val">D:\capture\Room Tour 2.0 — raw capture.srt</span></div>
+                <button class="btn icon sm"><svg class="ico"><use href="#i-folder"/></svg></button>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ---------------------------------------------- INSPECTOR -->
+        <div class="stack">
+
+          <section class="card is-active">
+            <div class="card-head">
+              <span class="step-num">3</span>
+              <span class="card-title">Readiness</span>
+              <div class="head-spacer"></div>
+              <span class="pill warn"><span class="dot"></span>3 / 4</span>
+            </div>
+            <div class="card-body tight">
+              <div class="ready-list">
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">Source selected</div><div class="rs">12:47 · 2.14 GB</div></div>
+                </div>
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">ASR models ready</div><div class="rs">SenseVoice + VAD</div></div>
+                </div>
+                <div class="ready warn">
+                  <span class="mark"><svg class="ico"><use href="#i-alert"/></svg></span>
+                  <div>
+                    <div class="rt">Translation model missing</div>
+                    <div class="rs">Hy-MT2-1.8B-Q8_0 · 1.9 GB</div>
+                    <button class="btn sm primary mt8"><svg class="ico"><use href="#i-download"/></svg>Download &amp; continue</button>
+                  </div>
+                </div>
+                <div class="ready ok">
+                  <span class="mark"><svg class="ico"><use href="#i-check"/></svg></span>
+                  <div><div class="rt">Output writable</div><div class="rs">D:\capture\</div></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Models</span>
+              <div class="head-spacer"></div>
+              <button class="btn sm ghost"><svg class="ico"><use href="#i-folder"/></svg>Folder</button>
+            </div>
+            <table class="tbl">
+              <tbody>
+                <tr>
+                  <td class="small">Hy-MT2-1.8B</td>
+                  <td class="tc" style="width:70px">1.9 GB</td>
+                  <td style="width:104px"><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Missing</span></td>
+                </tr>
+                <tr>
+                  <td class="small">SenseVoiceSmall</td>
+                  <td class="tc" style="width:70px">235 MB</td>
+                  <td style="width:104px"><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>Ready</span></td>
+                </tr>
+                <tr>
+                  <td class="small">fsmn-vad</td>
+                  <td class="tc" style="width:70px">1.7 MB</td>
+                  <td style="width:104px"><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>Ready</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot" style="background:var(--warn)"></span>
+    <span class="nowrap">Waiting on model</span>
+    <span class="tail">Offline mode</span>
+    <button class="btn sm ghost"><svg class="ico"><use href="#i-chevron"/></svg>Log</button>
+  </footer>
+
+</div>
+</body>
+</html>

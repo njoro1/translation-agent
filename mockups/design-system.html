@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Design system — Translation Agent redesign</title>
+<link rel="stylesheet" href="assets/mock.css">
+<script src="assets/icons.js"></script>
+<script src="assets/app.js"></script>
+<style>
+  body { overflow: auto; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 24px 80px; }
+  .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .sw { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+  .sw .chipc { height: 56px; }
+  .sw .meta { padding: 8px 10px; }
+  .sw .nm { font-size: 11.5px; font-weight: 600; }
+  .sw .hx { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }
+  .demo { padding: 16px; border: 1px solid var(--border-soft); border-radius: var(--r-md); background: var(--surface-2); }
+  .demo + .demo { margin-top: 10px; }
+  .demo-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .typerow { display: grid; grid-template-columns: 150px 1fr; gap: 14px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
+  .typerow .tk { font-size: 11px; color: var(--text-3); font-family: var(--mono); }
+  h2.sec { font-size: 17px; font-weight: 600; margin: 34px 0 6px; letter-spacing: -.2px; }
+  p.sec { font-size: 12.5px; color: var(--text-3); margin-bottom: 14px; max-width: 760px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="row mb16">
+    <div class="logo">T</div>
+    <div>
+      <div class="h1">Design system</div>
+      <div class="dim small">Translation Agent · redesign foundations</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" data-action="theme"><span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span><span data-theme-label>Dark</span></button>
+    <a class="btn" href="index.html"><svg class="ico"><use href="#i-arrow"/></svg>All screens</a>
+  </div>
+
+  <!-- ============================================================ COLOR -->
+  <h2 class="sec">Colour</h2>
+
+  <div class="section-label">Surfaces &amp; text</div>
+  <div class="swatch-grid mb16">
+    <div class="sw"><div class="chipc" style="background:var(--bg)"></div><div class="meta"><div class="nm">background</div><div class="hx" data-hex="#0A0C11">#0A0C11</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--surface)"></div><div class="meta"><div class="nm">surface</div><div class="hx">#12161E</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--surface-2)"></div><div class="meta"><div class="nm">surfaceAlt</div><div class="hx">#161B25</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--surface-3)"></div><div class="meta"><div class="nm">surfaceRaised</div><div class="hx">#1C2230</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--inset)"></div><div class="meta"><div class="nm">inset (fields)</div><div class="hx">#0C0F15</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--border)"></div><div class="meta"><div class="nm">border</div><div class="hx">#242B3A</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--text)"></div><div class="meta"><div class="nm">text</div><div class="hx">#E9ECF3</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--text-3)"></div><div class="meta"><div class="nm">textMuted</div><div class="hx">#6E7891</div></div></div>
+  </div>
+
+  <div class="section-label">Accent &amp; semantics</div>
+  <div class="swatch-grid">
+    <div class="sw"><div class="chipc" style="background:var(--accent)"></div><div class="meta"><div class="nm">accent</div><div class="hx">#7C5CFF</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--ok)"></div><div class="meta"><div class="nm">success</div><div class="hx">#3DD68C</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--warn)"></div><div class="meta"><div class="nm">warning</div><div class="hx">#F5A623</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--err)"></div><div class="meta"><div class="nm">error</div><div class="hx">#FF5F6D</div></div></div>
+    <div class="sw"><div class="chipc" style="background:var(--info)"></div><div class="meta"><div class="nm">info</div><div class="hx">#4EA8FF</div></div></div>
+  </div>
+
+  <!-- ======================================================= TYPOGRAPHY -->
+  <h2 class="sec">Type</h2>
+  <div class="card"><div class="card-body">
+    <div class="typerow"><span class="tk">22 / 600 · h1</span><span style="font-size:22px;font-weight:600;letter-spacing:-.4px">Turn any video into English subtitles</span></div>
+    <div class="typerow"><span class="tk">19 / 600 · page</span><span style="font-size:19px;font-weight:600;letter-spacing:-.3px">Quality report</span></div>
+    <div class="typerow"><span class="tk">15 / 600 · h2</span><span style="font-size:15px;font-weight:600">Blue Birds EP03 — 青い鳥</span></div>
+    <div class="typerow"><span class="tk">13 / 400 · body</span><span style="font-size:13px">Line 10 that reads naturally, inside a two-line cue.</span></div>
+    <div class="typerow"><span class="tk">12.5 / 500 · control</span><span style="font-size:12.5px;font-weight:500">Download model &amp; Run</span></div>
+    <div class="typerow"><span class="tk">11.5 / 400 · small</span><span style="font-size:11.5px;color:var(--text-2)">Cue 10 of 65 · 1 error · 4 warnings</span></div>
+    <div class="typerow"><span class="tk">10.5 / 600 · label</span><span style="font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)">Caption tracks</span></div>
+    <div class="typerow" style="border-bottom:0"><span class="tk">11.5 · mono</span><span class="mono" style="font-size:11.5px">[translate] window 6/9 · 40 of 65 cues</span></div>
+  </div></div>
+
+  <!-- ============================================================ SPACE -->
+  <h2 class="sec">Space &amp; shape</h2>
+  <div class="card"><div class="card-body">
+    <div class="demo-row mb12">
+      <span class="chip mono">xs 4</span><span class="chip mono">sm 8</span><span class="chip mono">md 12</span>
+      <span class="chip mono">lg 16</span><span class="chip mono">xl 24</span>
+      <div class="tb-divider"></div>
+      <span class="chip mono">r 6 / 8 / 10 / 12 / 16</span>
+      <div class="tb-divider"></div>
+      <span class="chip mono">control 34 px</span><span class="chip mono">row 34 px</span><span class="chip mono">topbar 56 px</span>
+    </div>
+    <div class="demo-row">
+      <span style="width:64px;height:40px;border-radius:6px;background:var(--surface-3);border:1px solid var(--border)"></span>
+      <span style="width:64px;height:40px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border)"></span>
+      <span style="width:64px;height:40px;border-radius:10px;background:var(--surface-3);border:1px solid var(--border)"></span>
+      <span style="width:64px;height:40px;border-radius:12px;background:var(--surface-3);border:1px solid var(--border)"></span>
+      <span style="width:64px;height:40px;border-radius:16px;background:var(--surface-3);border:1px solid var(--border)"></span>
+    </div>
+  </div></div>
+
+  <!-- ======================================================= COMPONENTS -->
+  <h2 class="sec">Components</h2>
+
+  <div class="section-label">Buttons &amp; segmented control</div>
+  <div class="demo">
+    <div class="demo-row mb12">
+      <button class="btn primary"><svg class="ico"><use href="#i-play"/></svg>Run</button>
+      <button class="btn"><svg class="ico"><use href="#i-folder"/></svg>Open folder</button>
+      <button class="btn danger"><svg class="ico"><use href="#i-stop"/></svg>Cancel</button>
+      <button class="btn ghost">Ghost</button>
+      <button class="btn icon"><svg class="ico"><use href="#i-copy"/></svg></button>
+      <button class="btn off">Disabled</button>
+      <button class="btn link">Text link →</button>
+    </div>
+    <div class="demo-row">
+      <div class="seg">
+        <button class="on" data-action="seg"><svg class="ico"><use href="#i-link"/></svg>YouTube Cloud</button>
+        <button data-action="seg"><svg class="ico"><use href="#i-file"/></svg>Local Cloud</button>
+        <button data-action="seg"><svg class="ico"><use href="#i-cpu"/></svg>Offline</button>
+      </div>
+      <div class="seg">
+        <button class="on" data-action="seg">Compact</button>
+        <button data-action="seg">Comfortable</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-label mt16">Status, chips &amp; badges</div>
+  <div class="demo">
+    <div class="demo-row mb12">
+      <span class="pill ok"><span class="dot"></span>Ready</span>
+      <span class="pill warn"><span class="dot"></span>Needs 1 model</span>
+      <span class="pill err"><span class="dot"></span>Strict gate would fail</span>
+      <span class="pill acc"><span class="dot"></span>Translating</span>
+      <span class="pill mute"><span class="dot"></span>Idle</span>
+    </div>
+    <div class="demo-row mb12">
+      <span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span>
+      <span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Warning</span>
+      <span class="badge err"><svg class="ico"><use href="#i-x"/></svg>Error</span>
+      <span class="badge mute">ASR</span>
+      <div class="tb-divider"></div>
+      <span class="chip">1080p</span>
+      <span class="chip mono">≤ 6000 ms</span>
+      <span class="chip acc">anime</span>
+      <span class="chip ok">English track found</span>
+    </div>
+    <div class="demo-row">
+      <button class="filter-chip on" data-action="chip">All <span class="n">65</span></button>
+      <button class="filter-chip" data-action="chip">Warnings <span class="n">4</span></button>
+      <button class="filter-chip" data-action="chip">Failed <span class="n">1</span></button>
+      <div class="tb-divider"></div>
+      <span class="switch on"><span class="track"></span>Strict quality</span>
+      <span class="switch"><span class="track"></span>Raw JSON</span>
+      <span class="checkbox on"><svg class="ico"><use href="#i-check"/></svg></span>
+      <span class="checkbox"></span>
+    </div>
+  </div>
+
+  <div class="section-label mt16">Fields</div>
+  <div class="demo">
+    <div class="demo-row">
+      <div class="field" style="max-width:250px"><svg class="ico"><use href="#i-link"/></svg><span class="val">https://youtu.be/kQ8xT2mLp9o</span></div>
+      <div class="field focus" style="max-width:200px"><svg class="ico"><use href="#i-search"/></svg><span class="ph">Search…</span></div>
+      <div class="field readonly" style="max-width:170px"><span class="val">Read only</span></div>
+      <div class="field disabled" style="max-width:170px"><span class="val">Disabled</span></div>
+      <div class="select">SRT<svg class="ico"><use href="#i-chevron"/></svg></div>
+      <div class="field mono" style="max-width:190px"><span class="val">00:23.400</span></div>
+    </div>
+  </div>
+
+  <div class="section-label mt16">Progress, readiness &amp; stepper</div>
+  <div class="demo" style="display:grid;grid-template-columns:200px 1fr 1fr;gap:20px;align-items:start">
+    <div class="rel">
+      <svg class="ring" width="104" height="104" viewBox="0 0 104 104">
+        <circle class="track" cx="52" cy="52" r="45" stroke-width="8"/>
+        <circle class="val" cx="52" cy="52" r="45" stroke-width="8" stroke-dasharray="282.7" stroke-dashoffset="107.4"/>
+      </svg>
+      <div style="position:absolute;inset:0;display:grid;place-items:center">
+        <div class="center"><div style="font-size:23px;font-weight:650">62%</div><div class="tiny muted">40 / 65</div></div>
+      </div>
+    </div>
+    <div class="ready-list">
+      <div class="ready ok"><span class="mark"><svg class="ico"><use href="#i-check"/></svg></span><div><div class="rt">Backend ready</div><div class="rs">gpt-4o-mini · .env</div></div></div>
+      <div class="ready warn"><span class="mark"><svg class="ico"><use href="#i-alert"/></svg></span><div><div class="rt">Local model missing</div><div class="rs">1.9 GB to download</div></div></div>
+      <div class="ready err"><span class="mark"><svg class="ico"><use href="#i-x"/></svg></span><div><div class="rt">No source selected</div><div class="rs">Paste a URL or drop a file</div></div></div>
+    </div>
+    <div class="stepper">
+      <div class="step done"><span class="bullet"><svg class="ico" style="width:10px;height:10px"><use href="#i-check"/></svg></span><div><div class="st">Fetch captions</div><div class="ss">2.1 s</div></div></div>
+      <div class="step active"><span class="bullet"></span><div><div class="st">Translate</div><div class="ss">window 6 / 9</div></div></div>
+      <div class="step todo"><span class="bullet"></span><div><div class="st">Write file</div><div class="ss">strict gate on</div></div></div>
+    </div>
+  </div>
+
+  <div class="section-label mt16">Data display</div>
+  <div class="demo">
+    <div class="tiles c4 mb12">
+      <div class="tile"><div class="tv">65</div><div class="tk">TOTAL CUES</div></div>
+      <div class="tile ok"><div class="tv">0</div><div class="tk">FAILED</div></div>
+      <div class="tile warn"><div class="tv">4</div><div class="tk">WARNINGS</div></div>
+      <div class="tile acc"><div class="tv">~0:38</div><div class="tk">REMAINING</div></div>
+    </div>
+    <table class="tbl">
+      <thead><tr><th style="width:52px">#</th><th style="width:96px">Start</th><th>Source</th><th>Translation</th><th style="width:96px">Status</th></tr></thead>
+      <tbody>
+        <tr><td class="idx">2</td><td class="tc">00:02.600</td><td class="src">セリフその2、ちゃんと読める長さ。</td><td class="tr">Line 2 that reads naturally.</td><td><span class="badge ok"><svg class="ico"><use href="#i-check"/></svg>OK</span></td></tr>
+        <tr class="warnrow"><td class="idx">13</td><td class="tc">00:31.200</td><td class="src">セリフその13、ちゃんと読める長さ。</td><td class="tr">Line 13 that reads naturally.</td><td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>Warning</span></td></tr>
+        <tr class="bad"><td class="idx">18</td><td class="tc">00:43.100</td><td class="src">セリフその18、ちゃんと読める長さ。</td><td class="tr"><span style="color:var(--err)">[untranslated]</span></td><td><span class="badge err"><svg class="ico"><use href="#i-x"/></svg>Error</span></td></tr>
+      </tbody>
+    </table>
+    <div class="row mt12" style="gap:14px">
+      <div style="flex:1 1 auto"><div class="bar"><i style="width:62%"></i></div></div>
+      <div style="flex:1 1 auto"><div class="bar ok"><i style="width:100%"></i></div></div>
+      <div style="flex:1 1 auto"><div class="bar warn"><i style="width:34%"></i></div></div>
+      <div style="flex:1 1 auto"><div class="bar err"><i style="width:12%"></i></div></div>
+    </div>
+  </div>
+
+  <div class="section-label mt16">Messages &amp; console</div>
+  <div class="demo" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="stack-sm" style="gap:9px">
+      <div class="note info"><svg class="ico"><use href="#i-info"/></svg><div>An English track exists, so translation is skipped.</div></div>
+      <div class="note warn"><svg class="ico"><use href="#i-alert"/></svg><div><b>asr_tag_leakage_error</b> — a <span class="mono">[zh]</span> tag leaked into the output.</div></div>
+      <div class="note err"><svg class="ico"><use href="#i-x"/></svg><div><b>Exit code 1</b> — 2 error-severity issues exist.</div></div>
+      <div class="note ok"><svg class="ico"><use href="#i-check"/></svg><div>Offline mode makes no network calls.</div></div>
+    </div>
+    <div class="console">
+<span class="l t">16:10:18</span><span class="l"> [translate] window 4/9 · 8 cues</span>
+<span class="l t">16:10:19</span><span class="l"> <span class="warn">[retry] misaligned (7/8) — STRICT</span></span>
+<span class="l t">16:10:27</span><span class="l"> <span class="ok">[ok] aligned on retry</span></span>
+<span class="l t">16:11:26</span><span class="l"> <span class="ok">Wrote 65 cues to …</span></span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

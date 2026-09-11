@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Redesign mockups — Translation Agent</title>
+<link rel="stylesheet" href="assets/mock.css">
+<script src="assets/icons.js"></script>
+<script src="assets/app.js"></script>
+<style>
+  body { overflow: auto; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 30px 26px 90px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, 650px); gap: 22px; justify-content: center; }
+  .shot {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+    overflow: hidden; display: flex; flex-direction: column; box-shadow: var(--shadow-2);
+  }
+  .shot .cap { padding: 13px 15px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-soft); }
+  .shot .frame { width: 650px; height: 406px; overflow: hidden; position: relative; background: var(--bg); }
+  .shot iframe { width: 1440px; height: 900px; border: 0; transform: scale(.4514); transform-origin: top left; pointer-events: none; }
+  .shot .open { position: absolute; inset: 0; z-index: 2; }
+  .shot .open:hover ~ .hint { opacity: 1; }
+  .hint {
+    position: absolute; right: 10px; bottom: 10px; z-index: 3; opacity: 0; transition: opacity .15s;
+    background: var(--accent); color: #fff; font-size: 11.5px; font-weight: 600;
+    padding: 5px 10px; border-radius: 999px; pointer-events: none;
+  }
+  .num { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============================================================== HERO -->
+  <div class="row mb16">
+    <div class="logo" style="width:38px;height:38px;border-radius:12px;font-size:18px">T</div>
+    <div>
+      <div class="h1">Redesign mockups</div>
+      <div class="dim small">Translation Agent · 9 screens · 1440 × 900</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" data-action="theme"><span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span><span data-theme-label>Dark</span></button>
+    <a class="btn" href="design-system.html"><svg class="ico"><use href="#i-layers"/></svg>Design system</a>
+  </div>
+
+  <!-- ========================================================= GALLERY -->
+  <div class="gallery">
+
+    <a class="shot" href="screens/01-run-youtube.html">
+      <div class="cap">
+        <span class="num">01</span>
+        <span class="h3">Run · YouTube Cloud</span>
+        <div class="spacer"></div>
+        <span class="chip">idle · ready</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/01-run-youtube.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/02-run-offline.html">
+      <div class="cap">
+        <span class="num">02</span>
+        <span class="h3">Run · Offline (local)</span>
+        <div class="spacer"></div>
+        <span class="chip warn">model missing</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/02-run-offline.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/03-running.html">
+      <div class="cap">
+        <span class="num">03</span>
+        <span class="h3">Run · In progress</span>
+        <div class="spacer"></div>
+        <span class="chip acc">62%</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/03-running.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/04-review.html">
+      <div class="cap">
+        <span class="num">04</span>
+        <span class="h3">Review · cue inspector</span>
+        <div class="spacer"></div>
+        <span class="chip warn">1 error · 4 warnings</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/04-review.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/05-quality.html">
+      <div class="cap">
+        <span class="num">05</span>
+        <span class="h3">Quality · report</span>
+        <div class="spacer"></div>
+        <span class="chip err">gate fails</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/05-quality.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/06-settings.html">
+      <div class="cap">
+        <span class="num">06</span>
+        <span class="h3">Settings</span>
+        <div class="spacer"></div>
+        <span class="chip">own page</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/06-settings.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/07-log.html">
+      <div class="cap">
+        <span class="num">07</span>
+        <span class="h3">Log &amp; run history</span>
+        <div class="spacer"></div>
+        <span class="chip">1 284 lines</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/07-log.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/08-palette.html">
+      <div class="cap">
+        <span class="num">08</span>
+        <span class="h3">Command palette</span>
+        <div class="spacer"></div>
+        <span class="chip">Ctrl K</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/08-palette.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+    <a class="shot" href="screens/09-empty.html">
+      <div class="cap">
+        <span class="num">09</span>
+        <span class="h3">First run / empty state</span>
+        <div class="spacer"></div>
+        <span class="chip mute">nothing loaded</span>
+      </div>
+      <div class="frame">
+        <iframe src="screens/09-empty.html" scrolling="no"></iframe>
+        <span class="open"></span>
+        <span class="hint">Open full size</span>
+      </div>
+    </a>
+
+  </div>
+
+  <div class="row mt16" style="gap:10px">
+    <a class="btn" href="design-system.html"><svg class="ico"><use href="#i-layers"/></svg>Design system</a>
+    <a class="btn" href="screens/01-run-youtube.html"><svg class="ico"><use href="#i-play"/></svg>Start with screen 01</a>
+    <a class="btn" href="README.md"><svg class="ico"><use href="#i-file"/></svg>README</a>
+  </div>
+
+</div>
+</body>
+</html>

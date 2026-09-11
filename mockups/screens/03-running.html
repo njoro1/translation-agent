@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Run · In progress — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="seg">
+      <button class="on" data-action="seg"><svg class="ico"><use href="#i-link"/></svg>YouTube Cloud</button>
+      <button data-action="seg"><svg class="ico"><use href="#i-file"/></svg>Local Cloud</button>
+      <button data-action="seg"><svg class="ico"><use href="#i-cpu"/></svg>Offline</button>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="row tight" style="padding:4px 12px 4px 6px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2)">
+      <svg class="ring" width="24" height="24" viewBox="0 0 24 24">
+        <circle class="track" cx="12" cy="12" r="9.5" stroke-width="3"/>
+        <circle class="val" cx="12" cy="12" r="9.5" stroke-width="3" stroke-dasharray="59.7" stroke-dashoffset="22.7"/>
+      </svg>
+      <span class="small num" style="font-weight:600">62%</span>
+      <span class="tiny muted">window 6 / 9</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn danger"><svg class="ico"><use href="#i-stop"/></svg>Cancel</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn on"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main" style="display:flex;flex-direction:column;gap:16px">
+
+      <div style="display:grid;grid-template-columns:352px minmax(0,1fr);gap:16px;align-items:stretch">
+
+        <!-- --------------------------------------------- SOURCE -->
+        <section class="card" style="opacity:.55">
+          <div class="card-head">
+            <span class="step-num">1</span>
+            <span class="card-title">Source</span>
+            <div class="head-spacer"></div>
+            <svg class="ico" style="color:var(--ok)"><use href="#i-check"/></svg>
+          </div>
+          <div class="card-body stack-sm">
+            <div class="thumb" style="aspect-ratio:2.1/1">
+              <div class="play"><svg class="ico" style="width:16px;height:16px"><use href="#i-play"/></svg></div>
+              <span class="dur">12:47</span>
+            </div>
+            <div class="h3">Blue Birds EP03 — 青い鳥</div>
+            <div class="row wrap tight">
+              <span class="chip">65 cues</span>
+              <span class="chip">ja → en</span>
+            </div>
+            <div class="hair"></div>
+            <div class="kv"><span class="k">Model</span><span class="v">gpt-4o-mini</span></div>
+            <div class="kv"><span class="k">Preset</span><span class="v">anime</span></div>
+            <div class="kv"><span class="k">Context</span><span class="v">standard</span></div>
+          </div>
+        </section>
+
+        <!-- -------------------------------------------- LIVE RUN -->
+        <section class="card">
+          <div class="card-head">
+            <span class="step-num">2</span>
+            <span class="card-title">Live run</span>
+            <div class="head-spacer"></div>
+            <span class="pill acc"><span class="dot"></span>Translating</span>
+          </div>
+
+          <div class="card-body">
+            <div class="row" style="gap:22px;align-items:center">
+              <div class="rel" style="flex:0 0 auto">
+                <svg class="ring" width="118" height="118" viewBox="0 0 118 118">
+                  <circle class="track" cx="59" cy="59" r="51" stroke-width="9"/>
+                  <circle class="val" cx="59" cy="59" r="51" stroke-width="9"
+                          stroke-dasharray="320.4" stroke-dashoffset="121.8"/>
+                </svg>
+                <div style="position:absolute;inset:0;display:grid;place-items:center;text-align:center">
+                  <div>
+                    <div style="font-size:27px;font-weight:650;letter-spacing:-1px">62%</div>
+                    <div class="tiny muted">40 / 65 cues</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="stack-sm" style="flex:1 1 auto;gap:9px">
+                <div class="tiles c3" style="gap:8px">
+                  <div class="tile"><div class="tv">1:04</div><div class="tk">ELAPSED</div></div>
+                  <div class="tile acc"><div class="tv">~0:38</div><div class="tk">REMAINING</div></div>
+                  <div class="tile"><div class="tv">6<span style="font-size:13px;color:var(--text-3)">/9</span></div><div class="tk">WINDOWS</div></div>
+                </div>
+                <div class="bar"><i style="width:62%"></i></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card-body tight" style="border-top:1px solid var(--border-soft)">
+            <div class="section-label">Stages</div>
+            <div class="stepper">
+              <div class="step done">
+                <span class="bullet"><svg class="ico" style="width:10px;height:10px"><use href="#i-check"/></svg></span>
+                <div><div class="st">Fetch captions</div><div class="ss">2.1 s · 65 cues</div></div>
+              </div>
+              <div class="step active">
+                <span class="bullet"></span>
+                <div><div class="st">Translate</div><div class="ss">1:01 · window 6 of 9</div></div>
+              </div>
+              <div class="step todo">
+                <span class="bullet"></span>
+                <div><div class="st">Post-process</div><div class="ss">line breaks · overlap snap</div></div>
+              </div>
+              <div class="step todo">
+                <span class="bullet"></span>
+                <div><div class="st">Quality check &amp; write</div><div class="ss">strict gate on</div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- ------------------------------------------------- LOG -->
+      <section class="card" style="flex:1 1 auto;display:flex;flex-direction:column;min-height:0">
+        <div class="card-head">
+          <span class="step-num">3</span>
+          <span class="card-title">Live log</span>
+          <div class="head-spacer"></div>
+          <span class="switch on" style="font-size:11.5px"><span class="track"></span>Follow</span>
+          <button class="btn sm ghost icon"><svg class="ico"><use href="#i-search"/></svg></button>
+          <button class="btn sm ghost icon"><svg class="ico"><use href="#i-copy"/></svg></button>
+        </div>
+        <div class="card-body tight" style="display:flex;flex:1 1 auto;min-height:0">
+          <div class="console" style="flex:1 1 auto;min-height:0">
+<span class="l t">16:09:44</span><span class="l hi"> $ python translate.py "https://youtu.be/kQ8xT2mLp9o" --content-preset anime --batch 8</span>
+<span class="l t">16:09:44</span><span class="l"> [info] backend=cloud preset=anime context=standard</span>
+<span class="l t">16:09:46</span><span class="l"> <span class="ok">Fetched 65 cues. Translating into English.</span></span>
+<span class="l t">16:09:52</span><span class="l"> [translate] window 1/9 · 8 cues</span>
+<span class="l t">16:10:01</span><span class="l"> [translate] window 2/9 · 8 cues</span>
+<span class="l t">16:10:09</span><span class="l"> [translate] window 3/9 · 8 cues</span>
+<span class="l t">16:10:18</span><span class="l"> [translate] window 4/9 · 8 cues</span>
+<span class="l t">16:10:19</span><span class="l"> <span class="warn">[retry] window 4 misaligned (7/8) — retrying with STRICT</span></span>
+<span class="l t">16:10:27</span><span class="l"> <span class="ok">[ok] window 4 aligned on retry</span></span>
+<span class="l t">16:10:34</span><span class="l"> [translate] window 5/9 · 8 cues</span>
+<span class="l t">16:10:41</span><span class="l"> [tm] 0 hits, 0 stores</span>
+<span class="l t">16:10:48</span><span class="l"> [translate] window 6/9 · 8 cues</span>
+<span class="l t">16:10:48</span><span class="l hi"> _</span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot" style="background:var(--accent)"></span>
+    <span class="nowrap num">62%</span>
+    <span class="tail">[translate] window 6/9 · 40 of 65 cues</span>
+    <span class="kbd">Ctrl .</span><span>Cancel</span>
+  </footer>
+
+</div>
+</body>
+</html>

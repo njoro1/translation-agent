@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Command palette — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="field" style="max-width:290px;height:30px">
+      <svg class="ico" style="width:13px;height:13px"><use href="#i-search"/></svg>
+      <span class="ph">https://www.youtube.com/watch?v=…</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill ok"><span class="dot"></span>Ready</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn primary"><svg class="ico"><use href="#i-play"/></svg>Run</button>
+  </header>
+
+  <div class="body">
+    <nav class="rail">
+      <a class="rail-btn on"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn on"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+      <div class="grid-3" style="opacity:.35">
+        <div class="stack">
+          <section class="card"><div class="card-head"><span class="step-num">1</span><span class="card-title">Source</span></div>
+            <div class="card-body stack-sm">
+              <div class="field"><svg class="ico"><use href="#i-link"/></svg><span class="ph">https://www.youtube.com/watch?v=…</span></div>
+              <div class="hair"></div>
+              <div class="thumb" style="aspect-ratio:16/9"></div>
+              <div class="h3">Blue Birds EP03 — 青い鳥</div>
+            </div>
+          </section>
+        </div>
+        <div class="stack">
+          <section class="card"><div class="card-head"><span class="step-num">2</span><span class="card-title">Pipeline</span></div>
+            <div class="card-body stack-sm">
+              <div class="field"><span class="val">C:\Videos\subs\Blue Birds EP03 — 青い鳥.srt</span></div>
+              <div class="field"><span class="val">gpt-4o-mini</span></div>
+              <div class="field"><span class="val">standard</span></div>
+            </div>
+          </section>
+        </div>
+        <div class="stack">
+          <section class="card"><div class="card-head"><span class="step-num">3</span><span class="card-title">Readiness</span></div>
+            <div class="card-body tight">
+              <div class="ready-list">
+                <div class="ready ok"><span class="mark"><svg class="ico"><use href="#i-check"/></svg></span><div><div class="rt">Source selected</div></div></div>
+                <div class="ready ok"><span class="mark"><svg class="ico"><use href="#i-check"/></svg></span><div><div class="rt">Backend ready</div></div></div>
+                <div class="ready ok"><span class="mark"><svg class="ico"><use href="#i-check"/></svg></span><div><div class="rt">Output writable</div></div></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot"></span><span class="nowrap">Idle</span>
+    <span class="tail">Ready</span>
+  </footer>
+
+  <!-- ======================================================= PALETTE ==== -->
+  <div class="overlay">
+    <div class="palette">
+      <div class="palette-head">
+        <svg class="ico"><use href="#i-search"/></svg>
+        <input value="tra" readonly>
+        <span class="kbd">Esc</span>
+      </div>
+      <div class="palette-list">
+
+        <div class="palette-group">Run</div>
+        <div class="palette-item on">
+          <svg class="ico"><use href="#i-play"/></svg>
+          <div>Start <b>tra</b>nslation run</div>
+          <div class="spacer"></div><span class="kbd">Ctrl Enter</span>
+        </div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-stop"/></svg>
+          <div>Cancel current run</div>
+          <div class="spacer"></div><span class="kbd">Ctrl .</span>
+        </div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-refresh"/></svg>
+          <div>Re-run last settings</div>
+        </div>
+
+        <div class="palette-group">Go to</div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-list"/></svg>
+          <div>Review — <b>tra</b>nslated cues</div>
+          <div class="spacer"></div><span class="kbd">Ctrl 2</span>
+        </div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-shield"/></svg>
+          <div>Quality report</div>
+          <div class="spacer"></div><span class="kbd">Ctrl 3</span>
+        </div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-terminal"/></svg>
+          <div>Console &amp; run his<b>t</b>ory</div>
+          <div class="spacer"></div><span class="kbd">Ctrl L</span>
+        </div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-settings"/></svg>
+          <div>Settings — <b>tra</b>nslation</div>
+          <div class="spacer"></div><span class="kbd">Ctrl ,</span>
+        </div>
+
+        <div class="palette-group">Recent files</div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-file"/></svg>
+          <div>Blue Birds EP03 — 青い鳥.srt</div>
+          <div class="spacer"></div><span class="tiny muted">18 min ago</span>
+        </div>
+        <div class="palette-item">
+          <svg class="ico"><use href="#i-file"/></svg>
+          <div>Room Tour 2.0.srt</div>
+          <div class="spacer"></div><span class="tiny muted">1 h ago</span>
+        </div>
+
+      </div>
+      <div class="card-foot">
+        <span class="kbd">↑ ↓</span>
+        <span class="kbd">Enter</span>
+        <div class="spacer"></div>
+        <span class="tiny muted">9 of 34</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,14 +1,18 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import ".."
 
+// Run-state pill for the command bar: Ready / Validating / Running · 1m 12s /
+// Done / Failed / Cancelled. Carries a word, a dot and a colour (never colour
+// alone).
 Rectangle {
     id: root
 
     readonly property string state: appBridge.statusState
     readonly property bool running: state === "running" || state === "validating"
-    // Elapsed time only makes sense while a run is active.
     readonly property bool showTimer: running && elapsedSec >= 1
+
     readonly property string stateText: {
         if (state === "done") return "Done"
         if (state === "failed") return "Failed"
@@ -17,13 +21,16 @@ Rectangle {
         if (state === "running") return "Running"
         return "Ready"
     }
-    property int elapsedSec: 0
 
-    function _fmt(sec) {
-        var m = Math.floor(sec / 60)
-        var s = sec % 60
-        return m > 0 ? m + "m " + s + "s" : s + "s"
+    readonly property string tone: {
+        if (state === "done") return "ok"
+        if (state === "failed") return "err"
+        if (state === "cancelled") return "warn"
+        if (running) return "acc"
+        return "mute"
     }
+
+    property int elapsedSec: 0
 
     Timer {
         running: root.running
@@ -38,44 +45,26 @@ Rectangle {
             elapsedSec = 0
     }
 
+    implicitHeight: 24
+    implicitWidth: row.implicitWidth + 20
     radius: 999
-    implicitHeight: 26
-    implicitWidth: row.implicitWidth + 22
-    color: {
-        if (state === "done") return Theme.successTint
-        if (state === "failed") return Theme.errorTint
-        if (state === "cancelled") return Theme.warningTint
-        if (running) return Qt.rgba(0.24, 0.51, 0.96, 0.15)
-        return Theme.surfaceAlt
-    }
-    border.color: {
-        if (state === "done") return Theme.success
-        if (state === "failed") return Theme.error
-        if (state === "cancelled") return Theme.warning
-        if (running) return Theme.accent
-        return Theme.border
-    }
+    color: Theme.toneTint(root.tone)
+    border.width: 1
+    border.color: Theme.toneBorder(root.tone)
 
-    Row {
+    RowLayout {
         id: row
         anchors.centerIn: parent
-        spacing: 7
+        spacing: 6
 
         Rectangle {
-            width: 8
-            height: 8
-            radius: 4
-            anchors.verticalCenter: parent.verticalCenter
-            color: {
-                if (root.state === "done") return Theme.success
-                if (root.state === "failed") return Theme.error
-                if (root.state === "cancelled") return Theme.warning
-                if (root.running) return Theme.accent
-                return Theme.textMuted
-            }
+            Layout.preferredWidth: 6
+            Layout.preferredHeight: 6
+            radius: 3
+            color: Theme.toneColor(root.tone)
 
             SequentialAnimation on opacity {
-                running: root.running
+                running: root.running && !Theme.reducedMotion
                 loops: Animation.Infinite
                 NumberAnimation { to: 0.25; duration: 600 }
                 NumberAnimation { to: 1.0; duration: 600 }
@@ -83,15 +72,15 @@ Rectangle {
         }
 
         Label {
-            anchors.verticalCenter: parent.verticalCenter
-            // Show the live elapsed time inside the pill (the old build
-            // computed `showTimer` but never rendered it).
             text: root.showTimer
-                  ? root.stateText + "  \u00B7  " + root._fmt(root.elapsedSec)
+                  ? root.stateText + "  ·  " + Theme.formatDuration(root.elapsedSec)
                   : root.stateText
-            color: Theme.text
+            color: Theme.toneColor(root.tone)
             font.pixelSize: Theme.fontSmall
             font.bold: true
         }
     }
+
+    Accessible.role: Accessible.StaticText
+    Accessible.name: "Run status: " + root.stateText
 }

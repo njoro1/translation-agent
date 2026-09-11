@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quality — Translation Agent redesign</title>
+<link rel="stylesheet" href="../assets/mock.css">
+<script src="../assets/icons.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .hist { display: flex; align-items: flex-end; gap: 3px; height: 92px; }
+  .hist .col { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .hist .col i { display: block; border-radius: 3px 3px 0 0; background: var(--accent); opacity: .55; }
+  .hist .col.hi i { opacity: 1; }
+  .hist .col.over i { background: var(--warn); opacity: 1; }
+  .hist .lbl { font-size: 9.5px; color: var(--text-3); font-family: var(--mono); text-align: center; margin-top: 6px; }
+  .hist-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-3); }
+  .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">T</div>
+      <div>
+        <div class="brand-name">Translation Agent</div>
+        <div class="brand-sub">Subtitle Studio</div>
+      </div>
+    </div>
+
+    <div class="tb-divider"></div>
+
+    <div class="row tight" style="padding:3px 10px;border:1px solid var(--border);border-radius:9px;background:var(--surface-2)">
+      <svg class="ico" style="color:var(--text-3)"><use href="#i-file"/></svg>
+      <span class="small ellipsis" style="max-width:260px">Blue Birds EP03 — 青い鳥.srt</span>
+      <span class="chip mono">65 cues</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <span class="pill err"><span class="dot"></span>Strict gate would fail</span>
+
+    <button class="btn icon ghost" data-action="theme" title="Toggle theme">
+      <span data-theme-icon><svg class="ico"><use href="#i-sun"/></svg></span>
+    </button>
+
+    <button class="btn primary"><svg class="ico"><use href="#i-download"/></svg>Export report</button>
+  </header>
+
+  <div class="body">
+
+    <nav class="rail">
+      <a class="rail-btn"><svg class="ico"><use href="#i-play"/></svg>Run</a>
+      <a class="rail-btn rel"><svg class="ico"><use href="#i-list"/></svg>Review<span class="rail-badge">4</span></a>
+      <a class="rail-btn on"><svg class="ico"><use href="#i-shield"/></svg>Quality</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-terminal"/></svg>Log</a>
+      <a class="rail-btn"><svg class="ico"><use href="#i-settings"/></svg>Settings</a>
+      <div class="rail-gap"></div>
+      <a class="rail-btn"><svg class="ico"><use href="#i-keyboard"/></svg>Ctrl K</a>
+    </nav>
+
+    <main class="main">
+
+      <!-- ================================================== SCORE ROW ==== -->
+      <section class="card mb16">
+        <div class="card-body" style="display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:center">
+
+          <div class="row" style="gap:14px">
+            <div class="rel">
+              <svg class="ring" width="96" height="96" viewBox="0 0 96 96">
+                <circle class="track" cx="48" cy="48" r="41" stroke-width="8"/>
+                <circle cx="48" cy="48" r="41" stroke-width="8"
+                        stroke="var(--warn)" fill="none" stroke-linecap="round"
+                        stroke-dasharray="257.6" stroke-dashoffset="20.6"/>
+              </svg>
+              <div style="position:absolute;inset:0;display:grid;place-items:center">
+                <div class="center">
+                  <div style="font-size:24px;font-weight:650;letter-spacing:-.8px">92</div>
+                  <div class="tiny muted" style="margin-top:-2px">/ 100</div>
+                </div>
+              </div>
+            </div>
+            <div class="h2">Good</div>
+          </div>
+
+          <div class="tiles c7">
+            <div class="tile"><div class="tv">65</div><div class="tk">TOTAL CUES</div></div>
+            <div class="tile err"><div class="tv">1</div><div class="tk">UNTRANSLATED</div></div>
+            <div class="tile err"><div class="tv">1</div><div class="tk">ERRORS</div></div>
+            <div class="tile warn"><div class="tv">4</div><div class="tk">WARNINGS</div></div>
+            <div class="tile"><div class="tv">11.4</div><div class="tk">AVG CPS</div></div>
+            <div class="tile"><div class="tv">29</div><div class="tk">MAX LINE CHARS</div></div>
+            <div class="tile mute"><div class="tv" style="font-size:16px;padding-top:5px">FAIL</div><div class="tk">STRICT GATE</div></div>
+          </div>
+
+        </div>
+      </section>
+
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;align-items:start">
+
+        <!-- ============================================== ISSUE LIST ==== -->
+        <div class="stack">
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Issues</span>
+              <span class="chip">5</span>
+              <div class="head-spacer"></div>
+              <button class="filter-chip on" data-action="chip">All</button>
+              <button class="filter-chip" data-action="chip">Errors <span class="n">2</span></button>
+              <button class="filter-chip" data-action="chip">Warnings <span class="n">3</span></button>
+            </div>
+
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th style="width:52px">Cue</th>
+                  <th style="width:190px">Type</th>
+                  <th style="width:104px">Severity</th>
+                  <th>Message</th>
+                  <th style="width:96px"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="bad">
+                  <td class="idx">5</td>
+                  <td class="mono small">asr_tag_leakage_error</td>
+                  <td><span class="badge err"><svg class="ico"><use href="#i-x"/></svg>ERROR</span></td>
+                  <td class="src">ASR tag leaked into output</td>
+                  <td><button class="btn sm">Fix in Review</button></td>
+                </tr>
+                <tr class="bad">
+                  <td class="idx">18</td>
+                  <td class="mono small">untranslated_marker_error</td>
+                  <td><span class="badge err"><svg class="ico"><use href="#i-x"/></svg>ERROR</span></td>
+                  <td class="src">Carries the [untranslated] marker</td>
+                  <td><button class="btn sm">Fix in Review</button></td>
+                </tr>
+                <tr class="warnrow">
+                  <td class="idx">13</td>
+                  <td class="mono small">cps_warning</td>
+                  <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>WARNING</span></td>
+                  <td class="src">Reading speed 18.9 cps</td>
+                  <td><button class="btn sm">Fix in Review</button></td>
+                </tr>
+                <tr class="warnrow">
+                  <td class="idx">22</td>
+                  <td class="mono small">cjk_residue_warning</td>
+                  <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>WARNING</span></td>
+                  <td class="src">CJK residue in English output</td>
+                  <td><button class="btn sm">Fix in Review</button></td>
+                </tr>
+                <tr class="warnrow">
+                  <td class="idx">23</td>
+                  <td class="mono small">duplicate_translation_warning</td>
+                  <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>WARNING</span></td>
+                  <td class="src">Duplicate of previous translation</td>
+                  <td><button class="btn sm">Fix in Review</button></td>
+                </tr>
+                <tr class="warnrow">
+                  <td class="idx">41</td>
+                  <td class="mono small">too_long_warning</td>
+                  <td><span class="badge warn"><svg class="ico"><use href="#i-alert"/></svg>WARNING</span></td>
+                  <td class="src">Duration 6.4 s</td>
+                  <td><button class="btn sm">Fix in Review</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Distributions</span>
+              <div class="head-spacer"></div>
+              <button class="btn sm ghost">Re-check</button>
+            </div>
+            <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+
+              <div>
+                <div class="row mb8">
+                  <span class="small" style="font-weight:600">Reading speed (CPS)</span>
+                  <div class="spacer"></div>
+                  <span class="tiny muted">avg 11.4 · p95 19.2</span>
+                </div>
+                <div class="hist">
+                  <div class="col"><i style="height:12%"></i></div>
+                  <div class="col"><i style="height:26%"></i></div>
+                  <div class="col hi"><i style="height:52%"></i></div>
+                  <div class="col hi"><i style="height:88%"></i></div>
+                  <div class="col hi"><i style="height:100%"></i></div>
+                  <div class="col"><i style="height:74%"></i></div>
+                  <div class="col"><i style="height:48%"></i></div>
+                  <div class="col"><i style="height:30%"></i></div>
+                  <div class="col over"><i style="height:16%"></i></div>
+                  <div class="col"><i style="height:7%"></i></div>
+                </div>
+                <div class="hist" style="height:auto">
+                  <div class="lbl">2</div><div class="lbl">6</div><div class="lbl">10</div><div class="lbl">14</div>
+                  <div class="lbl">18</div><div class="lbl">22</div><div class="lbl">26</div><div class="lbl">30</div>
+                  <div class="lbl">34</div><div class="lbl">38</div>
+                </div>
+                <div class="hist-legend mt8">
+                  <span><span class="swatch" style="background:var(--accent)"></span>in range</span>
+                  <span><span class="swatch" style="background:var(--warn)"></span>over 18</span>
+                </div>
+              </div>
+
+              <div>
+                <div class="row mb8">
+                  <span class="small" style="font-weight:600">Cue duration</span>
+                  <div class="spacer"></div>
+                  <span class="tiny muted">avg 2.4 s · max 6.4 s</span>
+                </div>
+                <div class="hist">
+                  <div class="col"><i style="height:8%"></i></div>
+                  <div class="col hi"><i style="height:44%"></i></div>
+                  <div class="col hi"><i style="height:92%"></i></div>
+                  <div class="col hi"><i style="height:100%"></i></div>
+                  <div class="col hi"><i style="height:76%"></i></div>
+                  <div class="col"><i style="height:42%"></i></div>
+                  <div class="col"><i style="height:22%"></i></div>
+                  <div class="col over"><i style="height:11%"></i></div>
+                  <div class="col"><i style="height:5%"></i></div>
+                </div>
+                <div class="hist" style="height:auto">
+                  <div class="lbl">0.4</div><div class="lbl">1.2</div><div class="lbl">2.0</div><div class="lbl">2.8</div>
+                  <div class="lbl">3.6</div><div class="lbl">4.4</div><div class="lbl">5.2</div><div class="lbl">6.0</div>
+                  <div class="lbl">6.8</div>
+                </div>
+                <div class="hist-legend mt8">
+                  <span><span class="swatch" style="background:var(--accent)"></span>0.8 – 6.0 s</span>
+                  <span><span class="swatch" style="background:var(--warn)"></span>over 6.0 s</span>
+                </div>
+              </div>
+
+            </div>
+          </section>
+        </div>
+
+        <!-- ================================================ SIDE PANEL ==== -->
+        <div class="stack">
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Gate</span>
+              <div class="head-spacer"></div>
+              <span class="switch on" style="font-size:11.5px"><span class="track"></span>Strict</span>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:10px">
+              <div class="row tight">
+                <span class="badge err"><svg class="ico"><use href="#i-x"/></svg>Exit 1</span>
+                <span class="small dim">2 errors block the run</span>
+              </div>
+              <button class="btn sm w100"><svg class="ico"><use href="#i-refresh"/></svg>Re-run ignoring gate</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Thresholds</span>
+              <div class="head-spacer"></div>
+              <button class="btn sm ghost">Edit</button>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:7px">
+              <div class="kv"><span class="k">Characters / second</span><span class="v">warn 18 · error 22</span></div>
+              <div class="kv"><span class="k">Characters / line</span><span class="v">warn 80 · error 110</span></div>
+              <div class="kv"><span class="k">Duration</span><span class="v">0.8 – 6.0 s</span></div>
+              <div class="kv"><span class="k">Lines per cue</span><span class="v">warn 2 · error 3</span></div>
+              <div class="divider"></div>
+              <div class="kv"><span class="k">Leakage · empty · marker</span><span class="v" style="color:var(--err)">error</span></div>
+              <div class="kv"><span class="k">Residue · duplicate · overlap</span><span class="v" style="color:var(--warn)">warning</span></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Run context</span>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:7px">
+              <div class="kv"><span class="k">Mode</span><span class="v">YouTube Cloud</span></div>
+              <div class="kv"><span class="k">Model</span><span class="v">gpt-4o-mini</span></div>
+              <div class="kv"><span class="k">Preset</span><span class="v">anime</span></div>
+              <div class="kv"><span class="k">Translation memory</span><span class="v">0 hits</span></div>
+              <div class="kv"><span class="k">Wall clock</span><span class="v">1 m 42 s</span></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <span class="card-title">Export</span>
+            </div>
+            <div class="card-body tight stack-sm" style="gap:8px">
+              <button class="btn w100"><svg class="ico"><use href="#i-file"/></svg>quality_report.json</button>
+              <button class="btn w100"><svg class="ico"><use href="#i-list"/></svg>Issue list as CSV</button>
+            </div>
+          </section>
+
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="dot" style="background:var(--err)"></span>
+    <span class="nowrap">Gate failed</span>
+    <span class="tail">5 issues · 2 errors, 3 warnings · 65 cues · avg CPS 11.4</span>
+    <span class="kbd">Ctrl L</span><span>Log</span>
+    <button class="btn sm ghost"><svg class="ico"><use href="#i-chevron"/></svg>Expand</button>
+  </footer>
+
+</div>
+</body>
+</html>

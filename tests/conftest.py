@@ -11,6 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Must match main.py: the custom controls replace `background` / `contentItem`,
+# which the native Windows style refuses (and then silently ignores them).
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 import pytest
 from PySide6.QtCore import QUrl

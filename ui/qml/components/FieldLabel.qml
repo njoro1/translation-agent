@@ -2,10 +2,9 @@ import QtQuick
 import QtQuick.Controls
 import ".."
 
+// Small uppercase field label.
 Label {
     color: Theme.textMuted
     font.pixelSize: Theme.fontSmall
-    font.bold: true
-    font.letterSpacing: 0.6
     elide: Text.ElideRight
 }
