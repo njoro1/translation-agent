@@ -270,9 +270,9 @@ SectionPanel {
                                     appBridge.youtubeSelectedResolution = "best"
                                 } else {
                                     appBridge.youtubeSelectedCodec =
-                                            formatRow.modelData.codec
+                                            String(formatRow.modelData.codec)
                                     appBridge.youtubeSelectedResolution =
-                                            formatRow.modelData.resolution
+                                            String(formatRow.modelData.resolution)
                                 }
                             }
                         }
@@ -298,20 +298,19 @@ SectionPanel {
             FieldLabel { text: "Codec"; Layout.preferredWidth: 60 }
             CompactComboBox {
                 id: codecCombo
+                objectName: "youtubeCodecCombo"
                 Layout.fillWidth: true
                 model: appBridge.youtubeCodecs
                 textRole: "label"
-                currentIndex: {
-                    var items = appBridge.youtubeCodecs
-                    var sel = appBridge.youtubeSelectedCodec
-                    for (var i = 0; i < items.length; i++)
-                        if (items[i].id === sel) return i
-                    return 0
-                }
+                valueRole: "id"
+                // indexOfValue() keeps the picker in sync without hand-rolled
+                // string coercion loops (a "720" vs 720 mismatch used to make
+                // the picker snap back to "Best" and discard the pick).
+                currentIndex: Math.max(0, indexOfValue(appBridge.youtubeSelectedCodec))
                 onActivated: {
                     var items = appBridge.youtubeCodecs
                     if (currentIndex >= 0 && currentIndex < items.length)
-                        appBridge.youtubeSelectedCodec = items[currentIndex].id
+                        appBridge.youtubeSelectedCodec = String(items[currentIndex].id)
                 }
             }
         }
@@ -324,20 +323,19 @@ SectionPanel {
             FieldLabel { text: "Res."; Layout.preferredWidth: 60 }
             CompactComboBox {
                 id: resCombo
+                objectName: "youtubeResolutionCombo"
                 Layout.fillWidth: true
                 model: appBridge.youtubeResolutions
                 textRole: "label"
-                currentIndex: {
-                    var items = appBridge.youtubeResolutions
-                    var sel = appBridge.youtubeSelectedResolution
-                    for (var i = 0; i < items.length; i++)
-                        if (items[i].value === sel) return i
-                    return items.length - 1
-                }
+                valueRole: "value"
+                // The model's values and the stored selection are both strings
+                // ("720" / "best"), so indexOfValue() matches exactly — no
+                // int-vs-string coercion that can silently fail.
+                currentIndex: Math.max(0, indexOfValue(appBridge.youtubeSelectedResolution))
                 onActivated: {
                     var items = appBridge.youtubeResolutions
                     if (currentIndex >= 0 && currentIndex < items.length)
-                        appBridge.youtubeSelectedResolution = items[currentIndex].value
+                        appBridge.youtubeSelectedResolution = String(items[currentIndex].value)
                 }
             }
         }
@@ -349,10 +347,13 @@ SectionPanel {
             spacing: Theme.sm
 
             Label {
+                objectName: "youtubeSelectionLabel"
                 Layout.fillWidth: true
                 text: root.hasSelection
                       ? "Selected: " + appBridge.youtubeSelectedFormatLabel
-                      : "No matching stream for this codec/resolution."
+                      : (appBridge.youtubeSelectionError !== ""
+                         ? appBridge.youtubeSelectionError
+                         : "No matching stream for this codec/resolution.")
                 color: root.hasSelection ? Theme.text : Theme.warning
                 font.pixelSize: Theme.fontSmall
                 wrapMode: Text.WordWrap
@@ -516,6 +517,30 @@ SectionPanel {
             id: downloadDirDialog
             title: "Choose the YouTube download folder"
             onAccepted: appBridge.setYouTubeDownloadDir(selectedFolder)
+        }
+
+        // --- Recovery notice ------------------------------------------------
+        // A recoverable hiccup (e.g. a stale partial download that had to be
+        // restarted) is promoted here so it is not lost in the raw log below.
+        Rectangle {
+            Layout.fillWidth: true
+            visible: appBridge.youtubeVideoNotice !== ""
+            radius: Theme.radiusSm
+            color: Theme.warningTint
+            border.color: Theme.warning
+            border.width: 1
+            Layout.preferredHeight: noticeLabel.implicitHeight + 2 * Theme.sm
+
+            Label {
+                id: noticeLabel
+                anchors.fill: parent
+                anchors.margins: Theme.sm
+                text: appBridge.youtubeVideoNotice
+                color: Theme.warning
+                font.pixelSize: Theme.fontSmall
+                wrapMode: Text.WordWrap
+                verticalAlignment: Text.AlignVCenter
+            }
         }
 
         // --- Download progress / result -------------------------------------

@@ -132,22 +132,6 @@ def detect_cjk_from_cues(cues, sample_size: int = 80) -> str | None:
     sample = " ".join(c.text or "" for c in cues[:sample_size])
     return detect_cjk_language(sample)
 
-    for ch in text:
-        cp = ord(ch)
-        if (
-            0x4E00 <= cp <= 0x9FFF
-            or 0x3400 <= cp <= 0x4DBF
-            or 0x20000 <= cp <= 0x2A6DF
-            or 0xF900 <= cp <= 0xFAFF
-            or 0x3040 <= cp <= 0x30FF
-            or 0x31F0 <= cp <= 0x31FF
-            or 0xFF66 <= cp <= 0xFF9D
-            or 0xAC00 <= cp <= 0xD7A3
-            or 0x1100 <= cp <= 0x11FF
-            or 0x3130 <= cp <= 0x318F
-        ):
-            return True
-    return False
 
 _PUNCT_SPLIT_RE = re.compile(r"(?<=[。！？；，、：,!?;])\s*")
 

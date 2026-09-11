@@ -23,19 +23,29 @@ Rectangle {
         spacing: Theme.sm
 
         // Header band (always visible, toggles collapse when there is a title).
-        RowLayout {
+        //
+        // The click target wraps the layout instead of living inside it:
+        // ``anchors.fill`` on a child of a *Layout* is undefined behaviour
+        // (Qt warned "Detected anchors on an item that is managed by a layout").
+        Item {
             visible: root.title !== ""
             Layout.fillWidth: true
-            spacing: Theme.sm
+            Layout.preferredHeight: header.implicitHeight
 
-            Label {
-                text: root.expanded ? "\u25BC" : "\u25B6"
-                color: Theme.textMuted
-                font.pixelSize: Theme.fontSmall
-            }
-            FieldLabel {
-                Layout.fillWidth: true
-                text: root.title.toUpperCase()
+            RowLayout {
+                id: header
+                anchors.fill: parent
+                spacing: Theme.sm
+
+                Label {
+                    text: root.expanded ? "\u25BC" : "\u25B6"
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fontSmall
+                }
+                FieldLabel {
+                    Layout.fillWidth: true
+                    text: root.title.toUpperCase()
+                }
             }
 
             MouseArea {

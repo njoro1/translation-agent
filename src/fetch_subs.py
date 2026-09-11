@@ -12,19 +12,22 @@ Strategy:
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 import urllib.request
 
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 
 from .srt_io import Cue
 
-# Hide console windows spawned by subprocess on Windows.
-_SUBPROCESS_CREATION_FLAGS = 0
-if os.name == "nt":
-    _SUBPROCESS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+# The yt-dlp launcher resolution lives in :mod:`src.ytdlp` (see that module for
+# why it is a separate, import-free module). Re-exported under the historical
+# names so existing callers and tests keep working.
+from .ytdlp import (  # noqa: F401  (re-exported)
+    YtdlpError,
+    _SUBPROCESS_CREATION_FLAGS,
+    run_ytdlp_capture,
+    yt_dlp_cmd as _yt_dlp_cmd,
+)
 
 # Public web-client Innertube key YouTube ships in its pages; used only to ask
 # for the English-localized title (hl=en). If it ever stops working, the code
@@ -53,20 +56,15 @@ def extract_video_id(url: str) -> str:
 def _yt_dlp_metadata(url: str) -> tuple[str | None, str | None]:
     """Return (title, language_code) via yt-dlp, or (None, None) on failure."""
     try:
-        result = subprocess.run(
-            ["yt-dlp", "--no-warnings", "--print", "%(title)s|%(language)s", url],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+        stdout = run_ytdlp_capture(
+            _yt_dlp_cmd() + ["--no-warnings", "--print", "%(title)s|%(language)s", url],
             timeout=60,
-            check=True,
-            creationflags=_SUBPROCESS_CREATION_FLAGS,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except YtdlpError:
+        # Metadata is a nice-to-have; the caller falls back to other sources.
         return None, None
 
-    line = result.stdout.strip()
+    line = stdout.strip()
     if "|" not in line:
         return (line or None), None
     title, lang = line.rsplit("|", 1)

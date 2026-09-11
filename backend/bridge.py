@@ -9,7 +9,17 @@ import sys
 import time
 import urllib.request
 
-from PySide6.QtCore import QObject, Property, QRunnable, QSettings, QThreadPool, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QObject,
+    Property,
+    QRunnable,
+    QSettings,
+    Qt,
+    QThreadPool,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QDesktopServices
 
 import translate
@@ -333,7 +343,7 @@ class _YouTubeDownloadWorker(QRunnable):
 
     def __init__(
         self, kind: str, url: str, format_selector: str, out_template: str,
-        token: int = 0,
+        token: int = 0, expect: dict | None = None,
     ) -> None:
         super().__init__()
         self.kind = kind
@@ -341,6 +351,10 @@ class _YouTubeDownloadWorker(QRunnable):
         self.format_selector = format_selector
         self.out_template = out_template
         self.token = token
+        # What the finished file should look like: {"codec": "h264",
+        # "height": 720, "cap": True}. Used only for a post-download sanity
+        # check; a mismatch is reported, never silently accepted.
+        self.expect = expect or None
         self.proc_ref: dict = {}
         self.canceled = False
         self.signals = _YouTubeDownloadSignal()
@@ -355,6 +369,46 @@ class _YouTubeDownloadWorker(QRunnable):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _verify(self, path: str) -> str:
+        """Compare the produced file with what the user asked for.
+
+        Best effort: needs ffmpeg or ffprobe to inspect the file, and only ever
+        *reports*. Returns a warning line ("" when the file matches or could
+        not be checked).
+        """
+        expect = self.expect
+        if not expect or not path:
+            return ""
+        probe = youtube_media.probe_video_file(path)
+        if not probe:
+            return ""
+        want_codec = (expect.get("codec") or "").strip().lower()
+        want_height = int(expect.get("height") or 0)
+        got_codec = (probe.get("codec") or "").strip().lower()
+        got_height = int(probe.get("height") or 0)
+        # "Best (any)" accepts *any* codec, so only the height matters there.
+        # Comparing against the literal id "best" would warn on every download.
+        any_codec = bool(expect.get("cap")) or want_codec in ("", "best")
+
+        problems = []
+        if want_codec and got_codec and not any_codec and want_codec != got_codec:
+            problems.append(
+                f"codec {youtube_media._CODEC_LABEL.get(got_codec, got_codec)}"
+                f" instead of "
+                f"{youtube_media._CODEC_LABEL.get(want_codec, want_codec)}")
+        if want_height and got_height:
+            if expect.get("cap"):
+                if got_height > want_height:
+                    problems.append(f"{got_height}p instead of \u2264 {want_height}p")
+            elif got_height != want_height:
+                problems.append(f"{got_height}p instead of {want_height}p")
+        if not problems:
+            return ""
+        return ("[warn] The downloaded file is "
+                + " and ".join(problems)
+                + ". YouTube sometimes re-maps a stream; re-run the download "
+                  "or pick another resolution if this is not what you wanted.")
+
     @Slot()
     def run(self) -> None:
         try:
@@ -366,6 +420,9 @@ class _YouTubeDownloadWorker(QRunnable):
                     proc_ref=self.proc_ref,
                     cancel_check=lambda: self.canceled,
                 )
+                warning = self._verify(path)
+                if warning:
+                    self.signals.progress.emit(warning + "\n")
             else:
                 path = youtube_media.download_subtitle(
                     self.url, "en", self.out_template,
@@ -602,6 +659,10 @@ class AppBridge(QObject):
         self._youtube_video_downloading = False
         self._youtube_video_progress = 0
         self._youtube_video_status = ""
+        # Headline for recoverable hiccups (e.g. a stale partial download that
+        # had to be restarted). Kept separate from the raw status log so the UI
+        # can show it as a banner instead of burying it in the line noise.
+        self._youtube_video_notice = ""
         self._youtube_sub_downloading = False
         self._youtube_sub_status = ""
         self._youtube_downloading = False  # combined convenience flag
@@ -1893,7 +1954,11 @@ class AppBridge(QObject):
             heights = sorted((int(h) for h in fam.keys()), reverse=True)
         else:
             heights = sorted((int(h) for h in self._youtube_resolutions), reverse=True)
-        items = [{"value": h, "label": f"{h}p"} for h in heights]
+        # ``value`` is a STRING on purpose. QML hands the picked value straight
+        # back to ``youtubeSelectedResolution``, which stores a string; an int
+        # here forced every comparison (and every write) through a coercion
+        # that silently failed.
+        items = [{"value": str(h), "label": f"{h}p"} for h in heights]
         items.append({"value": "best", "label": "Best"})
         return items
 
@@ -2024,20 +2089,49 @@ class AppBridge(QObject):
                 self._youtube_selected_resolution = "best"
         self.youtubeInfoChanged.emit()
 
-    @Property(object, notify=youtubeInfoChanged)
-    def youtubeSelectedResolution(self):
+    # NOTE: this must stay typed ``str``. Declaring it ``object`` makes PySide6
+    # register the property as ``PySide::PyObjectWrapper``, which the QML engine
+    # *refuses to write* ("Cannot assign int to PySide::PyObjectWrapper"). Every
+    # pick in the resolution dropdown was silently dropped, leaving the stored
+    # selection at "best" — which downloads the highest-quality stream while
+    # the UI happily shows the resolution the user chose.
+    @Property(str, notify=youtubeInfoChanged)
+    def youtubeSelectedResolution(self) -> str:
         return self._youtube_selected_resolution
 
     @youtubeSelectedResolution.setter
     def youtubeSelectedResolution(self, value) -> None:
+        # Always store a string ("720" or "best"). The QML picker may hand us a
+        # bare int (720), a double (720.0 — JavaScript numbers) or a string;
+        # normalize_resolution collapses all of them.
+        value = youtube_media.normalize_resolution(value)
         if self._youtube_selected_resolution != value:
             self._youtube_selected_resolution = value
             self.youtubeInfoChanged.emit()
+
+    @Property(str, notify=youtubeInfoChanged)
+    def youtubeSelectionError(self) -> str:
+        """Why the current (codec, resolution) pair cannot be downloaded.
+
+        Empty when the pair is available. Lets the UI say *what* is missing
+        ("no H.264 stream at 480p; available: 1080p, 720p, 360p") instead of a
+        generic "no matching stream".
+        """
+        if not self._youtube_matrix and not self._youtube_best:
+            return ""
+        return youtube_media.describe_unavailable(
+            {"matrix": self._youtube_matrix, "best": self._youtube_best},
+            self._youtube_selected_codec,
+            self._youtube_selected_resolution,
+        )
 
     @Property(dict, notify=youtubeInfoChanged)
     def youtubeSelectedOption(self) -> dict:
         if not self._youtube_matrix and not self._youtube_best:
             return {}
+        # Strict: only an option that *exactly* matches the pair is returned.
+        # An unavailable pair yields {} so the UI/download can refuse instead
+        # of quietly substituting something else.
         return youtube_media.resolve_video_option(
             {"matrix": self._youtube_matrix, "best": self._youtube_best},
             self._youtube_selected_codec,
@@ -2067,6 +2161,15 @@ class AppBridge(QObject):
     @Property(str, notify=youtubeDownloadChanged)
     def youtubeVideoStatus(self) -> str:
         return self._youtube_video_status
+
+    @Property(str, notify=youtubeDownloadChanged)
+    def youtubeVideoNotice(self) -> str:
+        """Headline for a recoverable hiccup; empty when nothing went wrong.
+
+        Lets the UI banner a restart (e.g. "stale partial removed, restarting")
+        instead of hiding it among the raw yt-dlp log lines.
+        """
+        return self._youtube_video_notice
 
     @Property(bool, notify=youtubeDownloadChanged)
     def youtubeSubDownloading(self) -> bool:
@@ -2197,10 +2300,33 @@ class AppBridge(QObject):
         )
 
     def _selected_format_selector(self) -> str:
+        """Exact yt-dlp selector for the current pick; "" when unavailable.
+
+        There is deliberately **no** ``bv*+ba/b`` fallback. Falling back to
+        "best" is exactly what made the download ignore the dropdowns: the UI
+        showed the chosen codec/resolution while yt-dlp fetched whatever the
+        globally best stream was.
+        """
         opt = self.youtubeSelectedOption
         if opt and opt.get("format_selector"):
-            return opt["format_selector"]
-        return "bv*+ba/b"
+            return str(opt["format_selector"])
+        return ""
+
+    def _selected_expectation(self) -> dict:
+        """What the finished file must look like, for the post-download check."""
+        opt = self.youtubeSelectedOption or {}
+        height = opt.get("resolution")
+        try:
+            height = int(height)
+        except (TypeError, ValueError):
+            height = 0
+        codec = str(opt.get("codec") or "").strip().lower()
+        return {
+            "codec": codec,
+            "height": height,
+            # "Best (any)" + a height is a cap (≤ Np), not an exact match.
+            "cap": codec == "best",
+        }
 
     # --- Video download (independent of the subtitle download) ---------------
 
@@ -2213,10 +2339,25 @@ class AppBridge(QObject):
         if self._youtube_video_downloading:
             return
         selector = self._selected_format_selector()
+        if not selector:
+            # Never silently download "whatever is best" — say what is missing.
+            reason = self.youtubeSelectionError or (
+                "This video is not available in the selected format "
+                f"({self.youtubeSelectedFormatLabel or 'current selection'}).")
+            self._youtube_video_progress = 0
+            self._youtube_video_status = (
+                f"[error] {reason}\n"
+                "Choose one of the combinations listed above, then try again.\n")
+            self._youtube_video_notice = reason
+            self._youtube_downloaded_video = ""
+            self.youtubeDownloadChanged.emit()
+            self._set_status("Video not available in that format/resolution.")
+            return
         template = self._youtube_out_template() + ".%(ext)s"
         self._youtube_video_downloading = True
         self._youtube_video_progress = 0
         self._youtube_video_status = "Starting video download…\n"
+        self._youtube_video_notice = ""
         self._youtube_downloaded_video = ""
         self._youtube_downloading = True
         self.youtubeDownloadChanged.emit()
@@ -2224,7 +2365,8 @@ class AppBridge(QObject):
 
         self._youtube_video_gen += 1
         worker = _YouTubeDownloadWorker(
-            "video", url, selector, template, self._youtube_video_gen
+            "video", url, selector, template, self._youtube_video_gen,
+            expect=self._selected_expectation(),
         )
         worker.signals.progress.connect(self._append_log)
         worker.signals.progress.connect(self._on_youtube_video_progress_line)
@@ -2250,6 +2392,12 @@ class AppBridge(QObject):
 
     def _on_youtube_video_progress_line(self, text: str) -> None:
         self._youtube_video_status += text
+        # yt-dlp recovery steps are reported as "[warn] …"; promote them to the
+        # banner so a restart is visible instead of scrolling past in the log.
+        if text.lstrip().startswith("[warn]"):
+            notice = text.strip()[len("[warn]"):].strip()
+            if notice:
+                self._youtube_video_notice = notice
         self.youtubeDownloadChanged.emit()
 
     def _on_youtube_video_percent(self, pct: int) -> None:
@@ -2288,6 +2436,8 @@ class AppBridge(QObject):
             _, _, path = payload.split(":", 2)
             self._youtube_video_progress = 100
             self._youtube_downloaded_video = path
+            # A recovery banner ("restarting…") is stale once the file landed.
+            self._youtube_video_notice = ""
             self._youtube_video_status += f"[ok] saved: {path}\n"
             self._set_status(f"YouTube video saved: {os.path.basename(path)}")
         else:

@@ -940,7 +940,6 @@ def translate_cues(
         print(f"[prompt] Content addendum applied ({prompt_profile}).", flush=True)
 
     if hy_mt2:
-        system_prompt: str | None = None
         temperature = HY_MT2_TEMPERATURE
         extra_body = {
             "top_p": HY_MT2_TOP_P,
@@ -954,9 +953,8 @@ def translate_cues(
             flush=True,
         )
     else:
-        system_prompt = build_system_prompt(
-            source_language, glossary=glossary, addendum=addendum
-        )
+        # No system prompt is built here: it is built *per window* below, so it
+        # can carry that batch's chengyu / classical / emotion flags.
         temperature = 0.3
         extra_body = None
 

@@ -1,9 +1,9 @@
 """Probe the YouTube inspection pipeline with a REAL video.
 
 Runs youtube_media.inspect_video() live, feeds the result through the same
-JSON round-trip as the bridge, then replays every (codec, resolution) pair
-the UI can select and flags any that resolve to nothing (the source of the
-"No matching stream for this codec/resolution." message).
+JSON round-trip as the bridge, then replays every (codec, resolution) pair the
+UI can actually offer and reports the exact yt-dlp selector each one resolves
+to — plus a couple of pairs the UI cannot offer, which must now be refused.
 """
 from __future__ import annotations
 
@@ -57,7 +57,11 @@ print("\n== bridge replay (exact UI path) ==", flush=True)
 b = AppBridge()
 b._settings.clear()
 b.url = URL
-b._on_youtube_info("INFO:" + json.dumps(info))
+# ``_on_youtube_info`` drops any payload whose generation tag does not match
+# the bridge's current one, and the tag travels before the first "|". Setting
+# the URL bumps the generation, so take the value *after* that.
+b._youtube_info_gen += 1
+b._on_youtube_info(f"INFO:{b._youtube_info_gen}|" + json.dumps(info))
 
 print("hasInfo:", b.youtubeHasInfo)
 print("youtubeCodecs    :", b.youtubeCodecs)
@@ -67,18 +71,75 @@ for r in b.youtubeFormatRows:
     print("   ", r)
 
 failures = []
-combos = [(c["id"], r["value"]) for c in b.youtubeCodecs for r in b.youtubeResolutions]
-combos.append(("best", "best"))
-for codec, res in combos:
+
+print("\n== every pair the UI can offer ==")
+# The resolution list is codec-aware, so it must be read *after* selecting the
+# codec — that is the only way to enumerate combinations a user can pick.
+for codec_item in b.youtubeCodecs:
+    codec = codec_item["id"]
     b.youtubeSelectedCodec = codec
-    b.youtubeSelectedResolution = res
-    opt = b.youtubeSelectedOption
-    ok = bool(opt and opt.get("format_selector"))
-    tag = "OK " if ok else "FAIL"
-    print(f"  [{tag}] codec={codec!r:6} res={res!r:8} -> "
-          f"{(opt or {}).get('format_selector')!r} size={(opt or {}).get('filesize')}")
-    if not ok:
-        failures.append((codec, res, opt))
+    for res_item in b.youtubeResolutions:
+        res = res_item["value"]
+        b.youtubeSelectedResolution = res
+        opt = b.youtubeSelectedOption
+        ok = bool(opt and opt.get("format_selector"))
+        tag = "OK " if ok else "FAIL"
+        print(f"  [{tag}] codec={codec!r:6} res={res!r:8} -> "
+              f"{(opt or {}).get('format_selector')!r} "
+              f"size={(opt or {}).get('filesize')}")
+        if not ok:
+            failures.append((codec, res, opt))
+
+print("\n== pairs that genuinely do not exist (must refuse) ==")
+# Do NOT hard-code "144p" — plenty of videos really do serve it. Instead build
+# the cartesian product of every codec x every height the video offers anywhere,
+# and keep only the holes in the matrix. Those are the true "unavailable" pairs.
+all_heights = sorted(
+    {int(h) for fam in (info.get("matrix") or {}).values() for h in fam}
+    | {int(h) for h in (info.get("resolutions") or [])},
+    reverse=True,
+)
+missing = []
+for codec_item in b.youtubeCodecs:
+    cid = codec_item["id"]
+    if cid == "best":
+        continue  # "best (any)" legitimately serves every height, capped
+    fam = (info.get("matrix") or {}).get(cid) or {}
+    have = {int(h) for h in fam}
+    for h in all_heights:
+        if h not in have:
+            missing.append((cid, h))
+
+if not missing:
+    print("  (this video offers every codec x height combination; nothing to refuse)")
+else:
+    for cid, h in missing:
+        b.youtubeSelectedCodec = cid
+        b.youtubeSelectedResolution = str(h)
+        opt = b.youtubeSelectedOption
+        served = bool((opt or {}).get("format_selector"))
+        reason = b.youtubeSelectionError
+        status = "SERVED " if served else "REFUSED"
+        print(f"  [{status}] codec={cid!r:6} res={h!r:6} -> {reason!r}")
+        if served:
+            failures.append((cid, h, opt))
+        elif "not available" not in reason.lower():
+            print("      ^ refused but the message does not say 'not available'")
+            failures.append((cid, h, reason))
+
+# The dropdown list itself must never offer a hole either: for every codec, each
+# listed resolution has to resolve.
+print("\n== dropdown lists contain no holes ==")
+for codec_item in b.youtubeCodecs:
+    cid = codec_item["id"]
+    b.youtubeSelectedCodec = cid
+    for res_item in b.youtubeResolutions:
+        res = res_item["value"]
+        b.youtubeSelectedResolution = res
+        if not (b.youtubeSelectedOption or {}).get("format_selector"):
+            print(f"  [HOLE] codec={cid!r} res={res!r}")
+            failures.append(("hole", cid, res))
+print("  (no output above == every offered entry resolves)")
 
 # Row-click simulation (what MouseArea.onClicked does).
 print("\n== row-click replay ==")
@@ -98,3 +159,4 @@ for r in b.youtubeFormatRows:
 
 print("\nRESULT:", "ALL SELECTIONS RESOLVED" if not failures
       else f"{len(failures)} FAILURES -> {failures}")
+sys.exit(1 if failures else 0)

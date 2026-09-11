@@ -114,7 +114,10 @@ Rectangle {
                     font.pixelSize: Theme.fontSmall
 
                     Accessible.name: "Show raw JSON progress lines"
-                    Accessible.role: Accessible.CheckableMenuItem
+                    // QML's Accessible does not expose CheckableMenuItem (it
+                    // resolved to undefined and logged a warning on load); a
+                    // Switch is announced as a CheckBox.
+                    Accessible.role: Accessible.CheckBox
 
                     indicator: Rectangle {
                         implicitWidth: 30

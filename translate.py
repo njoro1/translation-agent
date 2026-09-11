@@ -719,11 +719,24 @@ def _run_pipeline(
 
 
 def _video_selector_for(choice: str, info: dict) -> str:
-    """Build a yt-dlp format selector for the user's codec preference."""
+    """Build a yt-dlp format selector for the user's codec preference.
+
+    Raises ``RuntimeError`` when the video has no such stream: there is
+    deliberately no ``bv*+ba/b`` fallback, which would quietly download a
+    different codec/resolution than the one that was asked for.
+    """
+    # Local import, like the rest of this module's yt-dlp usage: the import in
+    # ``_download_youtube_media`` is function-scoped and does NOT make the name
+    # visible here, which used to crash ``--download-video <codec>`` with a
+    # NameError instead of downloading.
+    from src import youtube_media
+
     opt = youtube_media.resolve_video_option(info, choice, "best")
     if opt and opt.get("format_selector"):
         return opt["format_selector"]
-    return "bv*+ba/b"
+    reason = youtube_media.describe_unavailable(info, choice, "best")
+    raise RuntimeError(
+        reason or f"No {choice} stream is available for this video.")
 
 
 def _download_youtube_media(args) -> None:
@@ -858,8 +871,9 @@ def main(argv: list[str] | None = None) -> int:
 
         # Point the translation backend at the local server transactionally so
         # subsequent GUI runs are never contaminated by a stale local endpoint.
+        # Only OPENAI_BASE_URL is touched here (the API key is read-only in this
+        # path), so only it needs restoring afterwards.
         prev_base_url = os.environ.get("OPENAI_BASE_URL")
-        prev_api_key = os.environ.get("OPENAI_API_KEY")
         os.environ["OPENAI_BASE_URL"] = base_url
         try:
             settings = load_settings(override_model=args.local_model_name)
