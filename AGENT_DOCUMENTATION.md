@@ -2,11 +2,21 @@
 
 > **Audience:** AI agents, coding assistants, and automated refactoring tools.
 > **Goal:** Provide complete, precise, actionable context so an agent can understand, modify, test, and extend this codebase without guessing.
-> **Last updated:** Mode-simplification pass (three pipeline modes, cloud rescue removed, content presets, context-first translation windows, result JSON, GUI rework). 320-test suite passing (`python -m pytest -q`).
+> **Last updated:** Strict YouTube format selection (codec/resolution picks are now honoured exactly or refused with a reason) + pyflakes clean-up + packaged-build integrity guards. 593-test suite (`python -m pytest -q`; the 14 packaged-exe tests skip only when `dist/TranslationAgent/` is absent).
 >
 > **Canonical source of truth:** This file is the consolidated developer/AI reference. It supersedes the
 > now-archived `PROJECT.md`, `CLAUDE.md`, `TASKS.md`, and `updated implementation plan.md` (their content has
 > been folded in below). `README.md` remains the user-facing quick start.
+>
+> **2026-09-11 root cleanup:** ten planning/review documents that had accumulated in the
+> project root were verified against the code, folded in below where still relevant, and
+> removed. Gone: `TASK_LIST.md`, `full implementation.md` (a.k.a. `AGENT_IMPLEMENTATION_PLAN.md`),
+> `FOLLOWUP_REVIEW.md`, `IMPROVEMENTS_TRIAGE.md`, `REMAINING_RECOMMENDATIONS.md`,
+> `UX_RESEARCH_REPORT.md`, `UX_FIXES_IMPLEMENTATION_PLAN.md`, `FRONTEND_DESIGN.md`,
+> `implementation_plan.md`. All were fully executed, superseded, or made obsolete by the
+> mode-simplification pass (cloud rescue removal in particular). The two documents that
+> remain at the root are this file and `README.md`. See §18 for the classification and for
+> the small number of items that were **not** implemented.
 
 ---
 
@@ -33,8 +43,8 @@ translation-agent/
 ├── main.py                     # PySide6 + QML GUI entry point (canonical)
 ├── gui.py                      # Compatibility shim → main.main()
 │
-├── build_exe.bat               # PyInstaller one-file Windows build
-├── TranslationAgent.spec       # PyInstaller spec (reference)
+├── build_exe.bat               # PyInstaller onedir Windows build
+├── TranslationAgent.spec       # PyInstaller spec (git-ignored, machine-specific, regenerated per build)
 │
 ├── requirements.txt            # Core: PySide6, yt-dlp, youtube-transcript-api, openai, dotenv, imageio-ffmpeg
 ├── requirements-gui.txt        # Just PySide6 (subset of requirements.txt)
@@ -47,6 +57,8 @@ translation-agent/
 │   ├── __init__.py
 │   ├── config.py               # .env loading + OpenAI client construction
 │   ├── fetch_subs.py           # YouTube subtitle fetching + title resolution
+│   ├── ytdlp.py                # yt-dlp resolution + subprocess/in-process runner
+│   ├── youtube_media.py        # Video/subtitle download, format selection, ffmpeg merge
 │   ├── srt_io.py               # Cue dataclass + SRT read/write + filename sanitize
 │   ├── translate.py            # LLM translation (context windows, numbered-item protocol) + validation
 │   ├── batching.py             # Character-aware batch splitting for small CPU models
@@ -101,13 +113,21 @@ translation-agent/
 ├── tools/
 │   ├── benchmark.py            # Offline benchmark harness (tools/benchmark.py)
 │   ├── benchmark_preprocess.py # ASR preprocessing profile benchmark (cue counts, CER/WER)
-│   └── check_srt.py            # SRT diagnostic (cue count, avg/max duration)
+│   ├── compare_context_modes.py# Context-mode A/B harness (alignment failures, reference similarity)
+│   ├── check_srt.py            # SRT diagnostic (cue count, avg/max duration)
+│   ├── screenshot_ui.py        # Offscreen UI screenshot helper
+│   └── stamp_spec_header.py    # Applies the "GENERATED FILE" banner to TranslationAgent.spec
 │
-├── tests/                      # pytest suite (251 tests, no network/keys/binaries)
+├── tests/                      # pytest suite (593 collected; no network/keys/binaries)
 │   ├── test_srt_io.py, test_translate_parsing.py, test_translate_validation.py
 │   ├── test_batching.py, test_glossary.py, test_translation_memory.py
-│   ├── test_subtitle_quality.py, test_local_asr_splitting.py, test_local_server.py
-│   ├── test_fetch_subs.py, test_fansub_upgrade.py, test_cjk.py, test_cli_flags.py
+│   ├── test_subtitle_quality.py, test_quality_extended.py, test_local_asr_splitting.py
+│   ├── test_local_server.py, test_fetch_subs.py, test_fansub_upgrade.py, test_cjk.py
+│   ├── test_cli_flags.py, test_presets.py, test_context_windows.py, test_result_json.py
+│   ├── test_pipeline_modes.py, test_asr_preprocess.py, test_followup_fixes.py
+│   ├── test_youtube_media.py, test_youtube_format_selection.py, test_ytdlp.py
+│   ├── test_build_contract.py, test_packaged_exe_smoke.py
+│   ├── test_ui_models.py, test_ux_bridge.py, test_ui_hygiene.py, test_qml_smoke.py
 │   └── …
 │
 ├── benchmark/
@@ -115,11 +135,12 @@ translation-agent/
 │   └── cases.json              # Benchmark case definitions
 │
 ├── docs/
+│   ├── PREPROCESS_BENCHMARK.md # Preprocessing profile methodology + results
 │   └── archive/                # Archived docs (PROJECT.md, CLAUDE.md, TASKS.md, IMPLEMENTATION_PLAN.md)
 │
 ├── build/                      # PyInstaller intermediate build artifacts
-├── dist/                       # PyInstaller output (TranslationAgent.exe)
-├── debug.log                   # Rotating runtime log (GUI mode)
+├── dist/                       # PyInstaller output (dist/TranslationAgent/TranslationAgent.exe)
+├── debug.log                   # Rotating runtime log (GUI mode; git-ignored)
 │
 └── __pycache__/                # Python bytecache
 
@@ -205,8 +226,9 @@ The system prompt for cloud translation is built from `_FOREIGNIZATION_DIRECTIVE
   - Returns `(cues, english_video_title, source_language_code)`.
 
 **External dependencies:**
-- `yt-dlp` (CLI): `yt-dlp --print %(title)s|%(language)s <url>`
-  - Called via `subprocess.run` with `CREATE_NO_WINDOW` on Windows.
+- `yt-dlp`: `--print %(title)s|%(language)s <url>`
+  - Invoked through `src/ytdlp.run_ytdlp_capture()` — a subprocess in normal
+    runs, in-process when the app is frozen. See §4.13.
 - `youtube-transcript-api`: `YouTubeTranscriptApi.list(video_id)` → `TranscriptList`
   - `find_manually_created_transcript([lang])` → fallback `find_generated_transcript([lang])` → fallback first available track.
 - Innertube player API (HTTP POST to `https://www.youtube.com/youtubei/v1/player` with a public key):
@@ -332,11 +354,70 @@ Compatibility shim. `python gui.py` → `from main import main` → `main()`. Ca
 
 ---
 
+### 4.13 `src/ytdlp.py` — how yt-dlp is invoked
+
+**Responsibility:** Locate yt-dlp and run it, both from source and from the
+packaged executable.
+
+**Two execution modes** (chosen by `use_inprocess()`):
+
+| Mode | When | How |
+| --- | --- | --- |
+| Subprocess | normal installs | `yt-dlp` on PATH (or `YT_DLP_BIN`), else `python -m yt_dlp`; stdout is streamed and the `Popen` is exposed for cancellation |
+| In-process | `sys.frozen` (no `YT_DLP_BIN`) | `yt_dlp.main(argv)` runs in this thread with `sys.stdout`/`sys.stderr` swapped for a line sink |
+
+**Why the in-process mode exists:** a one-file PyInstaller build has no Python
+interpreter to spawn — `sys.executable` *is* the app — and an end user cannot be
+assumed to have `yt-dlp.exe` installed. `yt_dlp.main()` is called with the same
+CLI arguments (minus the launcher prefix, stripped by `_strip_launcher()`), so
+the output is identical to the subprocess version and every existing
+`[download]` / `[info]` / `Destination:` parser keeps working. It also fixes
+`--windowed` builds, where `sys.stdout` is `None`.
+
+**Key functions:**
+- `yt_dlp_cmd() -> list[str]` — subprocess prefix (`YT_DLP_BIN` → PATH → `python -m yt_dlp`).
+- `run_ytdlp(cmd, on_line, cancel_check, proc_ref, env) -> int` — streaming; `on_line(line)` may return `False` to abort.
+- `run_ytdlp_capture(cmd, timeout, env) -> str` — one-shot `--dump-json` / `--print` queries.
+- `yt_dlp_available() -> bool` — accounts for the bundled copy (the old `shutil.which("yt-dlp")` guard was wrong for frozen builds).
+
+**Errors:** `YtdlpUnavailable`, `YtdlpTimeout`, `YtdlpFailed` (`.output` carries
+yt-dlp's own message). Escape hatch: `YT_DLP_INPROC=1` forces the in-process
+path, which is how the tests exercise it.
+
+**Related:** `src/youtube_media._ffmpeg_exe()` also looks in
+`sys._MEIPASS` / next to the `.exe` for a bundled `ffmpeg*.exe`, because
+`shutil.which()` cannot see binaries PyInstaller unpacked there.
+
+> **ffmpeg must be named `ffmpeg.exe` for the merge to run.** yt-dlp's
+> `--ffmpeg-location <dir>` only recognises a binary literally called
+> `ffmpeg` / `ffmpeg.exe`; a packaged binary such as
+> `ffmpeg-win-x86_64-v7.1.exe` is *never* found, so the video+audio merge
+> silently never runs and the user gets two separate files. `_ffmpeg_exe()`
+> therefore returns a `ffmpeg.exe` — copying the discovered binary to a
+> `ffmpeg.exe` sidecar (in the bundle dir if writable, else a temp dir) when the
+> real name differs — and `_run_yt_dlp` passes that file's directory to
+> `--ffmpeg-location`. Note: `build_exe.bat` bundles the binary under its real
+> name (`ffmpeg-win-x86_64-v7.1.exe`) — PyInstaller's `--add-binary` treats the
+> destination as a *directory*, so it cannot rename at build time. The runtime
+> rename above is what yields the `ffmpeg.exe` yt-dlp needs. Regression tests
+> live in `tests/test_ytdlp.py`
+> (`TestFfmpegMerge`, `TestFrozenFfmpegLookup`).
+
+---
+
 ## 7. Build & Distribution
 
 ### 7.1 PyInstaller Spec (`build_exe.bat`)
 
-Produces `dist/TranslationAgent.exe` with `--onefile --windowed`.
+Produces a **onedir** bundle at `dist/TranslationAgent/TranslationAgent.exe`
+(with `--onedir --windowed`). We deliberately avoid `--onefile`: the bundle is
+~350 MB (it embeds the funasr + llama vendored binaries), and onefile re-extracts
+the whole thing to `%TEMP%\_MEIxxxx` on every launch — which triggers
+"Failed to extract Crypto…" (PYI-16308) when antimalware blocks the crypto `.pyd`
+mid-extraction, or when the temp drive is full / the path exceeds MAX_PATH.
+onedir keeps files on disk, so there is no runtime extraction and that error class
+disappears (and startup is far faster). Run the app from
+`dist/TranslationAgent/TranslationAgent.exe`.
 
 **Bundled data:**
 - `ui/qml` (QML source)
@@ -344,8 +425,15 @@ Produces `dist/TranslationAgent.exe` with `--onefile --windowed`.
 - `vendor/llama` (llama-server + DLLs)
 - `PySide6/qml/Qt`, `PySide6/qml/QtQml`, `PySide6/qml/QtQuick`
 - `PySide6/plugins/platforms`, `imageformats`, `styles`, `iconengines`, `qmltooling`
-- `ffmpeg` (from `imageio-ffmpeg`)
-- Hidden imports: `backend.*`, `src.*`, `translate`, `dotenv`, `openai`
+- `ffmpeg` (from `imageio-ffmpeg`) — bundled under its real name
+  (`ffmpeg-win-x86_64-v7.1.exe`); `src.youtube_media._ensure_ffmpeg_exe_named()`
+  copies it to `ffmpeg.exe` at runtime so yt-dlp's `--ffmpeg-location` scan
+  finds it and the video+audio merge actually runs (otherwise downloads ship as
+  two separate files)
+- `yt-dlp` (as a Python package — `--hidden-import yt_dlp` pulls in yt-dlp's own
+  PyInstaller hook, which collects the extractors, `requests`/`certifi` and the
+  yt-dlp-ejs JS helpers)
+- Hidden imports: `backend.*`, `src.*`, `translate`, `dotenv`, `openai`, `yt_dlp`
 
 **Prerequisites for build:**
 - `vendor/funasr/llama-funasr-sensevoice.exe`
@@ -358,6 +446,10 @@ Produces `dist/TranslationAgent.exe` with `--onefile --windowed`.
 - QML imports resolve from `_MEIPASS/PySide6/qml` then `_MEIPASS/ui/qml`.
 - `vendor/funasr` and `vendor/llama` resolve from `_MEIPASS/vendor/...`.
 - `debug.log` is written **next to the `.exe`**, not in `_MEIPASS`.
+- yt-dlp runs **in-process** (§4.13); it must not be shelled out to.
+- **yt-dlp-ejs** needs a JS runtime (deno/node/bun) for some YouTube formats.
+  The JS helpers are bundled, but the runtime itself is not — if it is missing,
+  yt-dlp reports the usual "yt-dlp-ejs" error and the app surfaces it.
 
 
 ---
@@ -473,7 +565,102 @@ Tests live in `tests/` and cover:
 - `test_result_json.py` — `--result-json` schema, final-line contract, untranslated flagging.
 - `test_quality_extended.py` — tag/markup leakage, CJK residue, duplicates, overlap.
 
-Run with `python -m pytest -q` (currently 320 passing, no network / keys / binaries required).
+Run with `python -m pytest -q` (593 tests, ~110 s; no network / keys / binaries
+required). Latest verified run: **593 passed**, 4 deprecation warnings.
+The 14 `tests/test_packaged_exe_smoke.py` tests **skip** when `dist/TranslationAgent/`
+is absent and **run** when it is present — a skip is honest about what was not verified.
+Note: always pass `--basetemp <a path that does not exist yet>`; pytest's garbage
+collection of old numbered temp dirs becomes a bulk delete that the sandbox blocks.
+
+**Static checks (run these too):**
+
+```bash
+python -m pyflakes translate.py main.py gui.py backend/*.py backend/**/*.py src/*.py
+```
+
+pyflakes catches `undefined name` and unused-variable bugs that the test suite
+cannot reach. It is deliberately **not** part of the runtime requirements —
+install it in a scratch venv (`pip install pyflakes`).
+
+Worth knowing: two shipped bugs were invisible to tests and only pyflakes found
+them — `backend/bridge.py` used `Qt.EditRole` without importing `Qt` (the
+"Replace all" button raised `NameError`), and `translate.py` referenced
+`youtube_media` from a function while the import lived inside a *different*
+function (the CLI could not download video at all). Treat a clean pyflakes run
+as a release gate.
+
+**Scope — and what is *not* a bug.** `translate.py` imports `openai` and
+`dotenv` at module level without referencing them in that file. That is
+intentional: PyInstaller only bundles modules it can see are imported, and
+`src/translate.py` imports `openai` lazily, so these top-level imports exist
+purely to make the packaged build include them. Do **not** "clean them up".
+Anything genuinely unused should still be removed — pyflakes only reports
+`imported but unused`, so the gate above is filtered to undefined names and
+unused variables.
+
+**The build has no full end-to-end test — but its contract is checked.**
+
+`tests/test_build_contract.py` parses the real `build_exe.bat` and fails if the
+build could not succeed, without running PyInstaller:
+
+- every path the script guards with `if not exist` (vendor binaries) exists, and
+  every `--add-data` / `--add-binary` source exists;
+- every `--hidden-import` name actually resolves (a stale name silently drops
+  code out of the exe);
+- the runtime-critical modules are declared;
+- **every `PySide6.QtXxx` imported in first-party code has a matching
+  `--hidden-import`** — the built exe ships a trimmed Qt, so a new Qt import
+  would otherwise crash only *inside the packaged app*;
+- the spec is not treated as build input, still parses, and carries its header;
+- the script resolves PySide6/ffmpeg dynamically (i.e. stays portable).
+
+Mutation-checked: adding an undeclared `PySide6.QtBluetooth` import and
+renaming a guarded vendor binary each make it fail, so it is not vacuous.
+
+**The built exe is also smoke-tested, and its currency is enforced.**
+
+`tests/test_packaged_exe_smoke.py` launches `dist/TranslationAgent/TranslationAgent.exe`
+with `QT_QPA_PLATFORM=offscreen`, waits for `debug.log` to report the QML load,
+then kills it. It skips (not passes) when the bundle is absent — a skip is
+honest about what was not verified.
+
+Unlike a plain "does it start" test, it guards against **green-lighting a build
+that does not reflect the source**, which is how a smoke test normally lies:
+
+- `test_build_is_newer_than_all_bundled_sources` — fails if any bundled
+  first-party `.py` / `.qml` is newer than the exe, naming the stale files.
+- `test_bundle_is_internally_consistent` — buckets `_internal/**` by build
+  *date* and fails when the newest date holds under half the files. This is the
+  signature of a build interrupted mid-COLLECT: the old directory survives, a
+  few new files land on top, and **the exe still launches**. The mtime check
+  above cannot see it, because the exe is the *old* file and looks current.
+- `test_bundled_qml_matches_the_source_tree` — an `--add-data` miss can ship an
+  older `Main.qml` / `YouTubeVideoPanel.qml`; compares bytes.
+
+> **If you rebuild, check the exit code.** A PyInstaller run can fail during
+> COLLECT and still leave a plausible-looking `dist/`. The observed causes were
+> a sandbox blocking PyInstaller's own cleanup of a large output directory
+> (`SAFE_DELETE_BULK_CONFIRM_REQUIRED`), and `ENOSPC` when the target drive is
+> full. On the latter: a full onedir build needs roughly 1 GB free.
+
+**Known limitation: `TranslationAgent.spec` is machine-specific.**
+
+The `GENERATED FILE — do not hand-edit` banner is applied *after* the build by
+`tools/stamp_spec_header.py`, called from `build_exe.bat`. It cannot live in the
+spec itself: PyInstaller rewrites the file from the CLI flags on every run, so a
+hand-added comment is destroyed by the very next build — exactly when a
+contributor is most likely to open it and start editing. The stamper keeps the
+`# -*- coding: utf-8 -*-` declaration on line 1 (Python only honours it within
+the first two lines) and is idempotent.
+
+`build_exe.bat` invokes `python -m PyInstaller` with explicit flags and does
+**not** read the `.spec`; PyInstaller happens to write a spec back out after
+each run, which is why the committed file contains absolute paths such as
+`C:\Users\Njoro\...\Python312\Lib\site-packages\...`. Those paths describe the
+last build machine only. Building with the committed spec on any other machine
+will fail; use `build_exe.bat` (it resolves PySide6 and ffmpeg via `python -c`
+at build time), or regenerate the spec there. Do not hand-edit the committed
+spec — the next build overwrites it.
 
 **Manual validation checklist:**
 1. YouTube URL with manual subtitles → SRT with correct timestamps and translated English text.
@@ -551,12 +738,12 @@ Run with `python -m pytest -q` (currently 320 passing, no network / keys / binar
 
 | Issue | Severity | Details |
 |-------|----------|---------|
-| Single git commit | High | `9d2a21a` predates QML migration; most current work is uncommitted. |
+| Git history is coarse | Medium | Six commits total (`9ae8599` latest); the mode-simplification, UX-rework and YouTube-format work is largely uncommitted working-tree state. Commit before any risky change. |
 | `vendor/` untracked | Medium | Binaries exist locally but are not committed or gitignored. Decide policy. |
-| Tests | Low | `pytest` suite in `tests/` now covers SRT, parsing, batching, glossary, translation memory, quality, and ASR splitting. |
-| `SectionCard.qml` deleted | Low | Tracked in old commit but absent from disk; not referenced by current QML. |
-| `last_completed_task.txt` present | Low | Appears to be a work artifact. |
-| `_test_meipass` dir | Low | Appears to be a PyInstaller test artifact. |
+| `TranslationAgent.spec` is machine-specific | Low | Regenerated by every build; contains absolute paths from the last build machine. Git-ignored. Never hand-edit. |
+| `_probe_youtube.py`, `_e2e_download.py`, `_verify_ui_message.py`, `_shot_*.py`, `_check_*.py`, `_mix_probe/` in root | Low | Scratch probes/artifacts; not part of the shipped pipeline. |
+| `combined md files.txt`, `improvements.txt`, `full implementation.md` predecessors | Low | Historical scratch inputs. (`full implementation.md` was removed in the 2026-09-11 cleanup.) |
+| 5 UI sub-features from the UX plan never landed | Low | See §18.3 — stage timers, mode-aware language labels, resolved-preset label, YouTube step strip. |
 
 ---
 
@@ -605,9 +792,10 @@ Edit `_URL_PATTERNS` in `src/fetch_subs.py`. Each pattern must capture the 11-ch
 
 ### 11.4 Changing GUI Layout
 
-Edit `ui/qml/Main.qml`, `ui/qml/views/DashboardView.qml`, `ui/qml/views/SettingsView.qml`, and components under `ui/qml/components/`.
+Edit `ui/qml/Main.qml` and the components under `ui/qml/components/`. Do **not** edit
+`ui/qml/archive/**` — that tree is retired pre-rework UI and is not loaded at runtime.
 
-To expose a new field to QML, add it to `AppBridge` in `backend/bridge.py` as a `Property` with a setter that calls `_set_field` / emits the appropriate signal.
+To expose a new field to QML, add it to `AppBridge` in `backend/bridge.py` as a `Property` with a setter that calls `_set_field` / emits the appropriate signal. Keep presentation in QML and state in the bridge.
 
 ### 11.5 Adding a New Backend
 
@@ -619,9 +807,8 @@ To expose a new field to QML, add it to `AppBridge` in `backend/bridge.py` as a 
 
 - Run `build_exe.bat` after any Python/QML change.
 - Ensure `vendor/` binaries and `gguf/` models are present.
-- The output is `dist/TranslationAgent.exe`. Run it from the folder containing it so relative paths resolve.
-
-- **Components:** `Card`, `CustomTextField`, `PrimaryButton`, `Sidebar`, `StyledRadioButton`.
+- The output is `dist/TranslationAgent/TranslationAgent.exe` (onedir). Run it from
+  that folder so `debug.log` and relative model paths resolve.
 
 ---
 
@@ -1014,4 +1201,89 @@ into this canonical reference and **moved to `docs/archive/`** (content preserve
   source languages, offline Hy-MT2 path).
 - Consider graceful handling when `vendor/` binaries are absent at runtime (currently
   only enforced at build time).
-- See `IMPROVEMENTS_TRIAGE.md` for the Deferred backlog.
+- See §18.3 for the open backlog.
+
+---
+
+## 18. Project State Record (2026-09-11 consolidation)
+
+### 18.1 What was removed from the repository root
+
+Ten root-level Markdown documents were read, checked against the working tree, and
+deleted. Each had either been fully executed, superseded by a later pass, or made
+obsolete by a product decision.
+
+| Document | Verdict | Why |
+|---|---|---|
+| `TASK_LIST.md` | **Implemented** | Checklist for the mode-simplification / presets / context / UI pass. Every box ticked, Definition of Done met. Superseded by the code. |
+| `full implementation.md` (self-titled `AGENT_IMPLEMENTATION_PLAN.md`) | **Implemented** | The master brief for that same pass. All five requirements landed (3 modes, rescue removal, FFmpeg preprocessing, content presets, context-first windows, UI rework). |
+| `implementation_plan.md` | **Implemented** | YouTube download / flow-separation plan, marked `STATUS: COMPLETE` at 348 tests. Superseded by later YouTube-format-selection work (now 593 tests). |
+| `FOLLOWUP_REVIEW.md` | **Implemented + partly obsolete** | P0-1…P0-7 and P1-1/P1-2 all fixed. Its cloud-rescue sections (P0-1, and the rescue rows in the tables) describe a feature that was subsequently **removed** — obsolete. |
+| `IMPROVEMENTS_TRIAGE.md` | **Superseded + partly obsolete** | Triage of `improvements.txt`. Approved items landed; many "Deferred" items (context window, ASR presets, extended quality checks) were later implemented; rescue items obsolete. Its own banner already declared itself superseded. |
+| `REMAINING_RECOMMENDATIONS.md` | **Obsolete** | A forward-looking backlog that has since been almost entirely delivered: context windows, ASR presets (as content presets), extended CJK quality checks, GUI JSON-progress consumption, bundled CJK fonts, cue preview table, quality panel. |
+| `UX_FIXES_IMPLEMENTATION_PLAN.md` | **Implemented, 5 sub-items not** | 23-task UX plan. Verified implemented: inline cue editing + save-back, failure classification + `ErrorCard`, honest readiness rows, log counters, `revealCue`, light theme, accessibility names, hygiene tests. See §18.3 for the sub-items that never landed. |
+| `UX_RESEARCH_REPORT.md` | **Superseded** | A 3 KB fragment (its §11 status section only) reporting the same 23 tasks complete. The plan file above carried the substance. |
+| `FRONTEND_DESIGN.md` | **Superseded** | Design spec for the reworked GUI. The design landed; the code and §4.12 are now authoritative, and the doc's `AppBridge` contract listing had drifted. |
+| — | — | (`README.md` was kept: it is the user-facing quick start.) |
+
+Nothing was lost: every still-relevant fact from these documents is either already in
+this file or recorded in §18.3 below. Copies are in
+`docs/archive/root-md-2026-09-11/`.
+
+### 18.2 Current verified state
+
+- **593 tests pass** — verified 2026-09-11 with `python -m pytest -q` (108.8 s, 4
+  non-blocking `QSortFilterProxyModel.invalidateFilter()` deprecation warnings from
+  `backend/models/results.py:218`). The 14 packaged-exe tests run rather than skip when
+  `dist/TranslationAgent/` exists.
+- **Exactly three pipeline modes**: `youtube_cloud`, `local_cloud`, `offline`.
+  Cloud rescue is **removed** — no `--cloud-rescue*` flag, no `CLOUD_RESCUE_*` env var,
+  no `src/rescue.py`, no GUI control. The only surviving mention in the tree is a stale
+  string in `ui/qml/archive/views/SettingsView.qml` (retired UI, not loaded).
+- **Content presets** (`src/presets.py`): `auto`, `drama`, `anime`, `music`,
+  `documentary`, `variety`, `lecture` — verified field-by-field against the plan table.
+- **Context-first translation** (`src/translation_windows.py`): `off`/`light`/`standard`/`deep`;
+  `standard` is the default for both backends, benchmark-verified.
+- **`--asr-preset` and `--context-window` do not exist.** They were superseded by
+  `--content-preset` and `--context-mode` respectively. Do not reintroduce them.
+- **GUI**: Run / Review / Quality tabs + log drawer; inline-editable virtualized cue
+  table with save-back and re-check; failure classification with remediation; light and
+  dark themes; bundled Noto Sans JP.
+- **Build**: `build_exe.bat` produces an **onedir** bundle at
+  `dist/TranslationAgent/TranslationAgent.exe` (deliberately not onefile — see §7.1).
+
+### 18.3 Open backlog (verified as *not* implemented)
+
+Small UI items from `UX_FIXES_IMPLEMENTATION_PLAN.md` that were never built. None are
+correctness issues; all are polish.
+
+1. **S-07 stage timers** — `stageSequence`, `stageStartedAt`, `stageElapsedSec`,
+   `estimatedRemainingSec` history. (`estimatedRemainingSec` exists as a property, but
+   the ordered stage list and per-stage elapsed timer do not.)
+2. **S-04 mode-aware language labels** — `languageControlLabel` / `languageControlHint`.
+   The single header control exists; the label does not switch between
+   "Source language" and "Spoken language" per mode.
+3. **S-06 resolved-preset echo** — `resolvedPresetLabel` / `lastResolvedPreset`
+   ("Auto → detected: anime") is not exposed.
+4. **S-08 YouTube step strip** — `youtubeStep` ("1 Paste link → 2 Get subtitles →
+   3 Translate") is not implemented. The collapsible video panel and the subtitle-panel
+   data-flow sentence did land.
+5. **S-11 expand chevron** for long cue lines in the Review table.
+
+Longer-horizon items, all still deferred by design:
+
+- Fuzzy translation memory (`--tm-fuzzy`).
+- Bilingual ASS output (`--bilingual`) — blocked by the "target language is English"
+  invariant.
+- Automatic cue splitting — blocked by the "cue count in == cue count out" invariant.
+- Timing enforcement beyond the documented overlap snap.
+- Sound-tag modes (`--sound-tags strip|note|ass-comment`).
+- Whisper reintroduction — explicitly forbidden.
+- Runtime graceful degradation when `vendor/` binaries are missing (build-time only today).
+
+### 18.4 Documentation conventions for the next pass
+
+- Update **this file** for any developer/architecture/CLI/env change.
+- Update **`README.md`** for anything user-visible.
+- Do not create new root-level planning or review documents. If a plan is needed, put it
+  in `docs/` and delete it when the work lands.

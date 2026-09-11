@@ -13,7 +13,7 @@ OpenAI-compatible LLM.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # then edit .env and fill in your credentials
+copy .env.example .env       # then edit .env and fill in your credentials
 ```
 
 ## Configure (`.env`)
@@ -103,7 +103,10 @@ pip install pyinstaller
 build_exe.bat          # or run the pyinstaller command inside it directly
 ```
 
-This produces `dist/TranslationAgent.exe`. The PyInstaller build bundles the QML
+This produces an onedir bundle at `dist/TranslationAgent/TranslationAgent.exe`
+(deliberately not `--onefile`: the ~350 MB bundle would re-extract to `%TEMP%` on
+every launch, which is what caused the `Failed to extract Crypto…` error). The
+PyInstaller build bundles the QML
 files from `ui/qml`, and at runtime the app writes a rotating `debug.log` in the
 **same directory as the exe** (startup info, the exact `argv` each run uses,
 pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder so
