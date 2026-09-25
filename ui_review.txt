@@ -1,0 +1,394 @@
+---
+
+# Translation Agent — UI Redesign Specification (v1.0)
+
+**Audience:** an implementation agent working in **PySide6 + QML**.
+**Scope:** user‑interface structure, behaviour, layout, states, and visual language **only**. Engine/backend logic, model downloads, ASR/translation algorithms, and persistence mechanics are **out of scope** except where the UI must *reflect* them. Where a UI change implies a backing data change, it is described as a requirement on the reactive state the QML context exposes — never as code.
+**How to use this document:** every change carries a **Why** grounded in observed defects (cited by screenshot batch). Read the *Why* before altering anything; the rationale is the acceptance criterion. Do not "improve" a specified behaviour back toward the old design — the old design is the documented failure. Implement in the **build order** of §11; the logic‑first phases retire entire classes of bugs before any pixel is moved.
+
+**Tag legend:** `[bug]` = deterministic defect observed ≥2 batches, fix as stated. `[principle]` = structural rule. `[nice‑to‑have]` = previously optional, included here by owner request. `[inferred]` = state never observed on screen; design given, validate per Appendix A.
+
+---
+
+## 1. The Governing Principle — one store, bound views
+
+> **Corollary 1.1 — No independent duplicates.** A concept (theme, quality gate, pipeline mode, language pair, glossary, batch, memory, context mode, rolling summary, foreignization) exists as **exactly one reactive value** in the configuration store exposed to the QML context. Every widget that shows or edits that concept **binds** to it. Flipping any editor updates every other editor and every status mirror in the same frame, with no reload and no manual sync. Two widgets holding the *same* concept as *separate* local state is the root defect of the current app and is forbidden.
+>
+> **Corollary 1.2 — Pills are read‑only; controls edit.** A *status pill* (the rounded label in the top bar / card headers, e.g. `● Ready`, `Gate: off`, `No report yet`) is **never** interactive and **never** carries an action verb. It displays the current bound value as a noun‑state. Editing happens only through switches, segmented controls, dropdowns, chips, and buttons. This kills the recurring "is this label the current value or the thing it will do?" confusion (observed: top‑bar `Light theme` / `Strict gate off` read as actions while in‑panel toggles read as states, and the Quality GATE card showed a header switch **ON** beside a body pill **Off** — a self‑contradiction within ~40 px).
+>
+> **Corollary 1.3 — Invariants are prose, not disabled controls.** A value the product never lets the user change (output language = English; foreignization = always on) is rendered as a **static sentence** in the relevant panel, never as a text input or toggle that *looks* editable and says `(locked)` / `Always on`. Observed: `Target language: English (locked)` as an input reads as a bug; the same fact as a prose line in the About block reads correctly. Generalise the About treatment.
+>
+> **Corollary 1.4 — Effective value + provenance, never a vanishing placeholder.** Any field that inherits from `.env`, auto‑detection, or a default shows **what is in effect** as the value, with provenance as secondary text (e.g. `gpt‑4o‑mini · inherited from .env`). A placeholder like `from .env when blank` is forbidden because it disappears on focus and makes *unset* and *intentionally inheriting* visually identical (observed across Settings). The security reassurance `Never persisted to disk` belongs on the **API key** (the actual secret), shown **inline**, not as a hover‑only tooltip on the unrelated *Cloud model* field (observed batches 4–5), and must not contradict the same field's inheritance message.
+
+**Editor map (the concrete expression of 1.1).** Implement each row as one store key with the listed bound surfaces. "Removed" columns are duplicates that must cease to exist as independent widgets.
+
+| Concept | Store key | Bound editors (sync live) | Read‑only mirrors | Removed / de‑duplicated |
+|---|---|---|---|---|
+| Theme | `ui.theme` | top‑bar toggle; Settings ▸ Appearance segmented | — | the action‑label `Light theme` button (becomes a real state‑showing toggle) |
+| Density / Accent / Reduce‑motion | `ui.*` | Settings ▸ Appearance | — | (single home; fine) |
+| Source type | `run.source` (youtube \| localfile) | Run ▸ Source selector | top‑bar status strip text | the flattened 3‑cell `YouTube Cloud / Local Cloud / Offline` control (everywhere) |
+| Translation engine | `run.engine` (cloud \| local) | Run ▸ Engine selector; Settings ▸ Appearance (bound) | top‑bar status strip text | same flattened control; the `Local Cloud` oxymoron |
+| Spoken (input) language | `lang.spoken` | Run ▸ labeled select (present in **all** modes); Settings ▸ Translation (bound) | — | the two **unlabeled** top‑bar dropdowns; the empty `Translate from` select |
+| Output language | *invariant = English* | — | prose line in Run + Settings + About | the `English (locked)` input; the 2nd top‑bar dropdown |
+| Strict quality gate | `run.strictGate` | Run switch; Settings switch; Quality card switch | top‑bar pill; Quality card body pill (read‑only) | the contradictory dual‑value rendering |
+| Rolling scene summary | `run.rollingSummary` | Run switch; Settings switch (bound) | — | (was truncated `summar…` → fix via §2.2) |
+| Context mode | `run.contextMode` | Run select; Settings select (bound) | — | (single value, two bound editors OK) |
+| Batch size | `run.batch` | Run field; Settings field (bound) | — | — |
+| Translation memory | `run.memory` | Run select; Settings select (bound) | — | — |
+| Glossary | `run.glossary` | Run **one** control; Settings **one** control (bound) | — | the duplicate `…` + `Choose glossary` pair |
+| Content preset | `run.preset` | chip row (the editor) | — | the parallel `Auto · detect` dropdown that mirrored the chips |
+| Foreignization | *invariant = on* | — | prose | the `✓ Always on` fake toggle |
+| Cloud base URL / model / API key | `cloud.*` | Settings ▸ Translation (bound editors) | Run `.env` chip **removed** | the `.env` badge leaking into the Run screen |
+| Local model path / threads / lock‑RAM | `local.*` | Settings ▸ Translation | Run local‑model status (derived, read‑only) | the duplicated `missing` badge (one source, see §5.4) |
+| ASR/VAD binaries & models, ffmpeg, segments, silences, cue‑budget, speech/noise, tag policy | `asr.*` | Settings ▸ Transcription | Run readiness line (derived) | — |
+
+**Why.** Across five batches the same disease recurred at every level: the gate was simultaneously ON and Off; mode/theme/language each had 2–4 homes; Readiness showed a denominator that didn't match its rows; Settings pretended to have eight categories while rendering one blob. These are not independent bugs. They are one missing abstraction. §1 removes the abstraction gap, and most visual symptoms stop occurring on their own.
+
+---
+
+## 2. Design system the agent must reuse (tokens & rules)
+
+Define these **once** and reference them everywhere. Inventing per‑screen variants is how the current app drifted.
+
+### 2.1 Status vocabulary `[principle]`
+Adopt the **model‑table STATE column** (observed as the only consistent, greyscale‑safe status system in the app) as the universal vocabulary. Three *levels* × three *meanings*, each encoded as **icon + colour + text** (shape leads, colour assists — survives greyscale and colour‑blindness):
+
+| Meaning | Icon | Colour token | Example text |
+|---|---|---|---|
+| Pass / ready / verified | ✓ | success (green) | `Verified`, `Ready`, `Backend ready` |
+| Warning / attention / not‑created | △ | warn (amber) | `Missing`, `Not created`, `Enter a YouTube URL` |
+| Error / blocking | ✕ | error (red) | `Failed`, `Run blocked` |
+| Not applicable (mode‑dependent) | – (en‑dash in a muted circle) | neutral‑muted | `n/a — not used in YouTube mode` |
+| Unchecked / unknown (not yet evaluated) | ○ (open ring) | neutral‑muted | `Not checked` |
+
+**Critical distinction `[bug]`:** *not‑applicable* (–) and *unchecked* (○) are **different facts** and must look different. Today one grey dash means both (`ASR model … n/a` in YouTube mode vs `Output folder writable … n/a`), which is why the Readiness fraction (`1/2` vs `1/3`) is incomparable and doesn't match the four visible rows. See §6.4.
+**Remove** the ad‑hoc **bolding** used in Readiness to mean "blocker / changed / important" (observed inconsistent across modes); replace with the table above.
+
+### 2.2 Truncation & overflow policy `[principle]`
+Truncation is currently systemic (`Rolling scene summar…`, `Only problems → Show…`, `Download model &…`, `Network calls in Offl…`, gauge labels `STRETCH`, the `· dist\gg` path bleeding across table columns). New rule, applied globally:
+- Body/label text **wraps** to a second line when space allows; if it must clip, it clips with a trailing ellipsis **and** carries a tooltip holding the full string. `[nice‑to‑have]`
+- **Primary controls and CTAs never truncate** and never change hue per context (see §3.3). If a label won't fit, the control grows or the layout reflows — the string is never cut mid‑word.
+- Table columns get **minimum widths** and **own their content**; a cell may not paint over its neighbour (fixes the SIZE/PURPOSE collision `[bug]`). Overflow inside a cell ellipsizes + tooltip.
+- Horizontal groups that can overflow a card (the seven quality gauges) **wrap or scroll**, never clip at the card edge `[bug]`.
+- Every `select`/input has a **placeholder or effective value**; an empty control that renders as a blank box (observed `Translate from`) is a defect `[bug]`.
+
+### 2.3 Contrast & accessibility targets `[principle]` `[nice‑to‑have: light‑theme verification]`
+- Secondary/helper text (muted labels, `0 = auto`, `Not needed for YouTube mode`, `Auto‑named from the title`, placeholders, disabled toolbar items) must meet **WCAG AA** on both themes. Current dark‑theme helper text fails.
+- Status never relies on colour alone — §2.1 shape‑first encoding satisfies this.
+- **Both themes are first‑class.** The light theme must be rendered and checked for the same AA contrast and for accent application (the accent swatches in Settings ▸ Appearance must visibly recolour focus rings, active states, and the primary action in *both* themes). Verify density (`Compact`/`Comfortable`) and `Reduce motion` actually apply and are honoured by every animation/transition.
+
+### 2.4 Layout & baseline grid rules `[principle]`
+- **Shared vertical baseline across sibling columns.** On the Run screen the `1 Source` / `2 Processing` / readiness headers currently sit on different baselines per mode (the `2` header clips off the top in two modes while `1` and `3` stay). All columns in a screen align to one grid; switching modes must not move a header `[bug]`.
+- **Constant‑height containers for mode‑swapped content.** The SOURCE panel changes shape drastically between YouTube and local modes, making the left third *jump* and destroying muscle memory. Reserve a fixed container (skeleton/min‑height) so toggling swaps **content**, not **layout** `[bug]`.
+- **No floating element over real content.** The `Open Settings` button currently overlaps and clips the pipeline footer text. Floating/overlay controls dock to a reserved gutter or the content reserves space; they never sit on top of readable text `[bug]`.
+- Whole‑screen scroll, not independent column scroll, wherever columns are meant to be read together (Run). If a column must scroll independently (long Settings), it uses anchored sections + a *working* scroll‑spy (§5).
+
+### 2.5 Control semantics `[principle]`
+Fix the noun/action ambiguity once: **pill = read‑only status** (Corollary 1.2); **switch / segmented / dropdown / chip / button = editor**; **prose = invariant** (Corollary 1.3); **badge attached to a field = derived status mirror** of that field's bound value, never an independent second widget (fixes the `missing` badge appearing twice for one fact `[bug]`).
+
+### 2.6 Empty‑state pattern `[principle]`
+Standardise on the **Log screen's** treatment (observed as the only correct one): a calm centred one‑line prompt, ghosted/inert actions, **no machinery**. The Quality screen today renders its *entire* apparatus ghosted — a THRESHOLDS table advertising `warn 18 · error 22` against zero data, which reads as fake results. Forbidden. Empty = prompt only; toolbars appear **when and only when** data exists. Apply to Review (cues/timeline/inspector/find‑replace) and Quality (issues/distributions/export) identically.
+
+---
+
+## 3. Global chrome
+
+### 3.1 Top bar — tear it down `[bug]`
+Today it carries eight concerns, two of which (the mode segmented control and the two unlabeled language dropdowns) duplicate Settings/Run, one of which (the theme button) is mis‑semantyped, and whose primary action mutates colour + label and truncates. New top bar, left→right:
+1. **Identity** (logo + `Translation Agent / Subtitle Studio`).
+2. **Global status strip** — a single derived, read‑only line composed from the store, e.g. `● Ready · YouTube → Cloud LLM · English out`. Replaces the scattered `Ready` / `Strict gate off` / `No report yet` pills with one honest, always‑consistent mirror (Corollary 1.2). Its dot uses §2.1.
+3. *(spacer)*
+4. **Theme toggle** — a real state‑showing control bound to `ui.theme` (no longer an action‑label).
+5. **Commands** button (opens §4.2 palette).
+6. **The one primary action** (see 3.3).
+
+**Removed from the top bar:** the mode segmented control (lives in Run + bound Settings), both unlabeled language dropdowns (language lives in Run, present in all modes; output is prose per 1.3), and the persistent `Save` button (see 3.4).
+**Why:** a global bar that mutates its primary action per mode destroys the learned anchor, and duplicate independent widgets are the desync source. Observed: top‑bar `Ctrl Enter → Run` advertised while the Offline button actually said `Download model &…` (contradiction); the two unlabeled dropdowns had no visible relationship to the panel's Spoken/Translate‑from fields, so authority was unknowable.
+
+### 3.2 Bottom status bar `[bug]`
+Currently mixes *clickable* chips with *legend* chips indistinguishably, and repeats Log/Commands entry points that also live in the left rail. New rule: each item is styled as **either** a button (hover/press affordance) **or** a hint (flat, non‑interactive, e.g. shortcut legends) — never both. Keep the context‑sensitive shortcut hints (they're good) but make their non‑interactivity obvious. Remove duplicate *launchers* that the left rail + palette already own; the bottom bar is for **status + contextual hints**, not navigation.
+**Why:** observed users cannot tell which chips do anything; Log and Commands each had two entry points with no hierarchy.
+
+### 3.3 The primary action `[bug]`
+One button, one hue (accent), one label grammar, **never truncated, never recoloured per mode**:
+- Default: `▶ Run`.
+- Blocked by a precondition: still `Run`, **disabled**, with the reason shown inline next to it or as a tooltip (e.g. `Run — needs translation model`). The model download is a **secondary** action placed in the Source/Processing panel, not a hijack of the global button.
+- Running: the same slot becomes `■ Cancel` (same hue family, full label) — see §6.6.
+**Why:** observed the global button flipped purple↔amber, changed label, and clipped to `Download model &…` at the window edge — the most important control on screen, broken. A precondition must never redefine the primary action's identity.
+
+### 3.4 Save model — autosave `[bug]`
+The `● Saved` pill and an enabled `Save` button coexisted on **100%** of Settings frames (deterministic contradiction encoding opposite facts). Switch to **autosave**: drop the persistent `Save` button; emit a transient `Saved ✓` toast on commit; show a small **dirty** indicator (a dot on the affected section / a `● Unsaved` pill) only while a change is pending. The top‑bar status strip (3.1) carries the saved/dirty state so there's one truth.
+**Why:** two simultaneous save affordances is the same independent‑duplicate disease as 1.1, applied to the save lifecycle.
+
+---
+
+## 4. Navigation model
+
+### 4.1 Left rail `[principle]`
+Keep the persistent icon rail (Run / Review / Quality / Log / Settings + bottom Ctrl K) — it's one of the few things that worked. Two changes: (a) the active state must be unambiguous and must reflect *actual* current screen (it does on the main screens; the failure was inside Settings, fixed in §5); (b) the rail is the **only** persistent nav — the bottom bar and top bar no longer duplicate launchers (§3.2).
+**Why:** the rail's stability is an asset; the duplication around it is the liability.
+
+### 4.2 Commands palette (Ctrl K) `[inferred]` `[nice‑to‑have]`
+Referenced on every screen, never observed. Design it as the **single discoverable launcher** over four namespaces, fuzzy‑matched:
+- **Navigate:** Run, Review, Quality, Log, Settings (+ deep links to a Settings *section*).
+- **Actions:** Run, Cancel run, Export report, Re‑check quality, Open file, Choose glossary, Purge cache, Download model.
+- **Toggles:** theme, strict gate, rolling summary, reduce motion (each shows current bound state; invoking flips the store per 1.1).
+- **Jump‑to‑setting:** typing `api key` / `batch` / `model path` lands on the exact field and focuses it.
+The palette is read‑only‑status‑aware (toggle rows show the live value) and is the honest replacement for the Settings search box that currently compensates for broken navigation (§5). Mark `[inferred]`: validate its command list against the real action set once populated states exist (Appendix A).
+**Why:** a global palette removes the need for the bottom‑bar chip clutter and the duplicate Log/Commands entry points, and gives keyboard users one mental model.
+
+---
+
+## 5. Settings screen — rebuild the IA honestly
+
+### 5.1 The defect, stated plainly `[bug]`
+Observed across batches 3–5: the left rail lists eight categories (*Appearance · Translation · Transcription · Models & storage · Shortcuts · Environment · Data & privacy · About*), but the content pane is **one undifferentiated scroll** holding *all* of it, and the highlighted pill (`Appearance`, then `Translation`) has **zero causal relationship** to what's rendered — the same `Translation` pill sat over genuine Translation fields *and* over shortcuts/version/network/about/model‑table across batches, with no scroll position where it was correct. The presence of a free‑text `Search settings…` box is the confession that the taxonomy doesn't work. A user hunting "where do I set the cloud model?" has no reliable path, and the menu actively misleads them about where they are. This is the worst structural defect in the product.
+
+### 5.2 Choose one real design (never the current fake) `[principle]`
+Implement **either (a)** or **(b)**; do not ship the hybrid that exists now.
+- **(a) True gating (preferred given the volume).** Clicking a category renders **only** that category's controls. Mapping (re‑file the blob into these owners):
+  - *Appearance* → theme, density, accent, reduce‑motion **only**.
+  - *Translation* → context mode, batch, memory, glossary, cloud base URL/model/API key, local model path/threads/lock‑RAM, spoken‑language editor. (Output language = prose per 1.3; foreignization = prose per 1.3.)
+  - *Transcription* → ffmpeg preprocess, threads, max segment, end/min silence, cue budget, speech/noise, drop/keep ASR tags, ASR/VAD binaries, ASR/VAD models.
+  - *Models & storage* → the model inventory table + folder/purge actions + the single `missing`/`verified` status source.
+  - *Shortcuts* → an **editable** remap surface (see 5.5) — or, if not editable, move the read‑only list to *About/Help* and delete the category.
+  - *Data & privacy* → the network‑calls statement, API‑key persistence statement, debug log location, and the destructive reset (gated, see 5.6).
+  - *About* → version, paths, registry, `Copy diagnostics`, documentation link (see 5.6).
+  - *Environment* → fold into About/Data‑privacy or delete if it owns nothing unique.
+  The `Search settings…` box then filters/jumps **within** the selected category (convenience), and the palette's *jump‑to‑setting* (4.2) cross‑links categories.
+- **(b) Single anchored page with a *working* scroll‑spy.** If one scroll is kept, the rail must track content correctly, sections must be anchored, and categories that own nothing are deleted. The pill must never sit over disjoint content again.
+
+**Why:** the navigation must predict the content. Right now it doesn't, and search is load‑bearing because of it.
+
+### 5.3 De‑duplicate against the store `[principle]`
+Per §1, the Pipeline/source‑engine control and the spoken‑language editor that appear in Settings must be **bound mirrors** of the same store keys used on Run — flipping one updates the other instantly. They are not independent widgets. (This is allowed and good; the prohibition is on independent state.)
+**Why:** observed mode + theme + target‑language each had 2–4 independent homes that disagreed.
+
+### 5.4 Model inventory table — bug fixes `[bug]`
+- **SIZE column = bytes only.** Remove the `· dist\gg` path fragment that physically overlaps the PURPOSE column (`242.4 MB · dist\gg` painting over `ASR`). The folder row already states the path; the fragment is redundant *and* colliding.
+- **Cache row verb.** `translation_memory.sqlite3` (purpose *Cache*, state *Not created*) must read **Create** / **Build**, not **Download** — you don't download a local cache the app builds. `[bug]` (recurred 3 batches).
+- **One status source.** The `missing` fact for the translation model currently appears as both a field badge (`Local model path … missing`) and a table row (`Hy‑MT2… Missing`). Make the table the single source; the field shows a derived read‑only mirror linked to the row (Corollary 2.5 / 1.1).
+- Keep the **STATE** column's icon+colour+text encoding — it's the §2.1 model; don't change it, *export* it.
+
+### 5.5 Shortcuts `[principle]` `[nice‑to‑have]`
+The read‑only shortcut list currently lives inside the Settings blob *and* is mirrored in the bottom bar *and* (per design) the palette. A read‑only list under "Settings" is decoration. Either make *Shortcuts* a real **remap editor** (record a key combo, show conflicts, reset‑to‑default), or move the reference list to *About/Help* and remove the category. One home, correct semantics.
+**Why:** three renderings of one fact, none editable, one mis‑filed.
+
+### 5.6 Quarantine diagnostics & destruction `[bug]` `[principle]`
+- **Raw internals out of the main flow.** Full install path (`C:\xampp\htdocs\…`), models path, result‑JSON path, the literal registry key `HKEY_CURRENT_USER\…`, `Frozen build: yes`, `Python 3.12.4`, `Qt 6.11.1`, `Settings stored in: QSettings (registry)` are developer telemetry, not configuration. Replace inline strings with **one‑line summaries** (`Settings saved locally · models in your app folder · offline makes no network calls`) and push the raw strings behind the existing **Copy diagnostics** button (the About block already implies this model — adopt it). The truncated privacy label `Network calls in Offl…` must be written in full (2.2) so the reassurance `none` has a readable subject. `[bug]`
+- **Destructive action quarantined.** `Clear stored settings` (wipes config) currently sits at equal visual weight, same row, beside the benign `Open debug.log`. Separate it spatially into a *Danger zone* within *Data & privacy*, style it as destructive, and gate it behind a **typed confirmation** naming what it will erase. `[bug]`
+**Why:** a reset‑to‑factory control adjacent to a safe one, with raw secrets/paths splashed across the page, is both a footgun and a trust leak.
+
+### 5.7 Provenance & security fields `[bug]`
+Apply Corollary 1.4: cloud base URL / model / API key show effective value + provenance inline; `Never persisted to disk` moves onto the **API key**, inline, and stops contradicting the inheritance message on the model field. The `.env` chip / `model from .env` badge is **removed from the Run screen** entirely (it leaks file mechanics into the operator's face); provenance lives only here, expressed per 1.4.
+**Why:** observed the hover‑only tooltip on the wrong field, and `.env` jargon on Run with no indication of where the file is or what's safe to touch.
+
+---
+
+## 6. Run screen
+
+### 6.1 Two‑axis source/engine `[bug]` `[principle]`
+Replace the flattened 3‑cell `YouTube Cloud / Local Cloud / Offline` control with **two independent selectors**: *Source* (YouTube URL / local media file) × *Engine* (cloud LLM / local model). The matrix becomes honest; the `Local Cloud` oxymoron disappears; the previously‑hidden fourth combination (YouTube source + local engine) either works or is **visibly disabled with a stated reason** — never silently impossible. `[bug]` (the flattening is what created the contradiction and the missing cell.)
+**Why:** the control conflated two orthogonal axes; users couldn't reason about *why* a combination was unavailable.
+
+### 6.2 Columns & baseline `[bug]`
+Per §2.4: lock `Source` / `Processing` / readiness to one shared vertical baseline (no clipped header); give the SOURCE panel a constant‑height container so YouTube↔local toggles swap content, not layout. Rename the middle column from `PIPELINE` to **`Processing`** (it's a form, not a flow) **and** add a thin horizontal **stage strip** above it: `Source → Transcribe → Translate → Gate → Write`. The strip is idle‑grey normally and **lights/animates per stage during a run**, finally honouring the "pipeline" the old label promised and giving the run‑in‑progress state (6.6) a home. `[nice‑to‑have: stage strip]`
+**Why:** observed independent column scroll + per‑mode reflow made the numbered 1‑2‑3 system meaningless; the name over‑promised a flow that didn't exist.
+
+### 6.3 Source panel content (preserve & tidy)
+- *YouTube mode:* URL field + `Inspect` + the "Paste a YouTube URL" dropzone + the English‑subtitle explainer + `Download English subtitle` (disabled until inspect yields a track) + the collapsible **Video download (optional)** accordion. Design the **Inspect result** state `[inferred][nice‑to‑have]`: after inspect, show the detected English subtitle track (format, line count, a preview snippet) inline, turning `Download English subtitle` active; if no English track, show a §2.1 warning row with the reason. Expand the accordion to reveal its options with the same constant‑height discipline.
+- *Local mode:* dropzone + `Browse` + `No file selected` placeholder + the **spoken‑language** select (the *only* language editor here; the empty `Translate from` select is removed per §3.1/§5.7 — output is prose). 
+Both modes render into the **same container height** (2.4).
+**Why:** the panel's drastic shape change was a muscle‑memory killer; the unobserved Inspect/accordion sub‑states need defined designs so they don't regress into the same jitter.
+
+### 6.4 Readiness — derived, honest, out of the numbered flow `[bug]`
+`1 Source` and `2 Processing` are things the user *does*; readiness is a **passive validator**, so it is **not** step `3`. Present it as a derived status panel (or fold into the top‑bar strip + a compact card) whose **score denominator equals the rows actually shown**, using §2.1's five distinct treatments so *not‑applicable* (–) and *unchecked* (○) never share a glyph. Concretely: in YouTube mode, ASR is `– n/a (not used in YouTube mode)`, output‑folder is `○ not checked until a path resolves`; the badge reads e.g. `2 of 3 actionable · 1 n/a`, and the number matches the visible rows. Remove the inconsistent **bolding** that tried to mean "blocker." `[bug]` (denominator mismatch + overloaded dash + ad‑hoc bold, all observed.)
+**Why:** a checklist score that doesn't match what's on screen, and a fraction that changes meaning between modes, teaches the user to ignore the validator — the one component whose job is to be trusted.
+
+### 6.5 De‑duplicate the inline pickers `[bug]`
+Within Processing: **content preset = chip row only** (delete the parallel `Auto · detect` dropdown that mirrored it); **glossary = one control** (delete the `…` + `Choose glossary` pair, keep one labeled button); **language = the one labeled pair from 6.3, present in every mode** (the top‑bar dropdowns are gone, so there's no orphaned authority); `Batch`, `Context`, `Memory` are bound inline editors per §1 (convenience) mirroring Settings. Fix the truncated `Rolling scene summar…` and the `Strict quality gate (errors fail the run)` label via §2.2 (wrap/tooltip), and ensure the `Open Settings` floating button no longer overlaps the footer text (§2.4) — dock it or reserve space; better, replace it with a *link* into the bound Settings section since the fields are now mirrors anyway.
+**Why:** two controls for one value, stranded labels, and a floating button eating real content were all observed.
+
+### 6.6 Run‑in‑progress & failed states `[inferred][nice‑to‑have]`
+Never observed; design now, validate per Appendix A.
+- **In progress:** primary slot → `■ Cancel` (3.3); the stage strip (6.2) animates the active stage; a live progress readout (current stage, %/line counter, elapsed) sits in the readiness area; the Log screen streams lines in real time (Follow on); Readiness re‑evaluates live where meaningful. No modal blocking — the user can watch Log/Review while it runs.
+- **Failed:** the stage strip **halts on the failing stage** with a §2.1 error marker and the reason; an inline error banner appears on Run (not only in Log); a red row is appended to Log; the primary slot returns to `▶ Run` (retry) with the failure reason as a tooltip; partial output, if any, is surfaced in Review with a `failed` severity so it isn't silently lost.
+- **Cancelled:** strip resets to idle; a neutral `cancelled` note in Log; primary returns to `Run`.
+**Why:** the most consequential state of a pipeline tool was completely unrepresented; designing it inside the same stage‑strip/primary‑slot system avoids inventing a second vocabulary mid‑run.
+
+---
+
+## 7. Review screen
+
+Empty state follows §2.6 (prompt only; today it ghosted the whole toolbar set). Populated design `[inferred — validate density per Appendix A]`:
+- **CUES table:** virtualized `ListView`/`TableView` for large subtitle sets `[nice‑to‑have]`; columns `# · START · END · SOURCE · TRANSLATION`. Severity tints the **row's left border + a leading icon** (greyscale‑safe per 2.1), **never the text** (keeps long translations readable). Multi‑line translations wrap within the cell with ellipsis+tooltip (2.2).
+- **Filter pills** `All / OK / Warnings / Failed` carry **live counts** bound to real rows; the `Only problems` toggle and the truncated `Show…` label fixed via 2.2; search spans source+translation.
+- **TIMELINE:** a horizontal cue strip synced to table selection — click a bar → scroll+highlight the row; drag‑select a range → filter. Replaces the empty ghosted box.
+- **CUE INSPECTOR:** selected cue's source / target / timing / notes / quality‑flags, with **prev/next** navigation `[nice‑to‑have]`; editing the target marks the row dirty (autosave per 3.4) and re‑runs the per‑cue quality check live.
+- **FIND & REPLACE:** live **match count** as you type `[nice‑to‑have]`, regex toggle, `Replace all` disabled until ≥1 match; scope = every cue (state it).
+- **Cross‑link:** a cue's quality flags deep‑link to its row in Quality (8.1).
+**Why:** editing ergonomics, scanning, and density can't be judged from `0 cues`; the rules above are chosen to hold at any volume, but the *tuning* (row height, column widths, virtualization threshold) must be checked against a real run (Appendix A).
+
+---
+
+## 8. Quality screen
+
+Empty state follows §2.6 — **collapse to a single prompt**; do **not** render the ghosted THRESHOLDS table advertising `warn 18 · error 22` against zero data (observed; it reads as fake results). Populated design `[inferred — validate per Appendix A]`:
+- **ISSUES table:** uses §2.1 status language (row tint + icon + `CUE · TYPE · SEVERITY · MESSAGE`); **sortable by severity** `[nice‑to‑have]`; **click‑a‑row → jumps to that cue in Review** `[nice‑to‑have]`; filter by Errors/Warnings with live counts; `Re‑check` re-runs the gate against the loaded result.
+- **GATE card:** the header switch is a **bound editor** of `run.strictGate` (1.1); the body `Off`/`On` becomes a **read‑only mirror** pill (1.2) — eliminating the within‑card ON/OFF contradiction `[bug]`. `Re‑run with the gate off` is an action, styled as such.
+- **THRESHOLDS:** show the **active preset name**; editing any value marks the preset **`custom`** `[nice‑to‑have]`; truncated rows (`Leakage · empty · m…`, `Residue · duplicate · …`) fixed via 2.2 with full labels + tooltips. Values are derived from the preset, not free‑floating.
+- **DISTRIBUTIONS:** real **histograms with axis labels** for reading‑speed (CPS) and cue duration `[nice‑to‑have]`; consider a log axis if durations skew heavily (validate with a real run, Appendix A); the existing legends (`in range` / `over the warning threshold` / `outside the target duration`) wire to the actual preset thresholds and to §2.1 colours.
+- **Micro‑gauges replaced `[bug]`:** the seven undecodable abbreviations (`TOT/UNG/ERN/WP/AW/MS/STRETCH`), which also overflowed the card edge, are **replaced by labelled metric chips** with a hover/click breakdown. Never ship an abbreviation a user can't read.
+- **RUN CONTEXT:** fills from the real run (source, engine, model, duration, cue/error/warning counts) — currently `No run loaded`.
+- **EXPORT:** un‑ghosts to live `quality_report.json` and `Issue list as CSV` actions when a run exists.
+- **Top‑bar `Export report` / `Re‑check quality` / `Save changes`:** disabled (not ghosted‑visible) until a run loads; their enabled state is bound to the store (1.1).
+**Why:** the empty screen's wall of dead UI implied capability the user couldn't use and showed threshold *values* that looked like *results*; the populated rules keep the same components but bind them to real data and to the single status vocabulary.
+
+---
+
+## 9. Log screen
+
+Already the **correct empty‑state model** (2.6) — keep it. Changes: wire **RUN HISTORY** to real runs (each entry = timestamp, source, engine, outcome with §2.1 status, click → loads that result into Review/Quality); resolve the unexplained `empty` filter chip `[bug]` — either label it (`blank lines`) via tooltip or remove it; the console keeps `Follow`, level filters (`Info/Warn/Error`) with live counts, `Copy`/`Export`/`Clear`. During a run (6.6) the console streams.
+**Why:** it's the one screen that handled emptiness right; the only gaps are the un‑wired history and one ambiguous control.
+
+---
+
+## 10. Theme, density & motion
+
+- **Light theme is first‑class** (2.3): render and AA‑check it; verify the five accent swatches recolour focus rings, active/selected states, the primary action, and §2.1 status accents in *both* themes; verify `Compact`/`Comfortable` density actually changes spacing and that nothing truncates differently between them (2.2); verify `Reduce motion` disables the stage‑strip animation (6.2), toasts' motion (3.4), and any transitions.
+- **Why:** these toggles exist in Settings but were never observed applying; a control that doesn't visibly do something is a fake setting (1.3 spirit).
+
+---
+
+## 11. Build order (phased; logic first)
+
+Implement in this sequence. Each phase has an **acceptance gate** the agent must pass before the next.
+
+1. **Phase 0 — State model (§1).** Expose one reactive configuration store to the QML context; convert every duplicate widget into a bound view; make pills read‑only. *Gate:* flipping the gate on Run updates the Quality header switch, the Quality body pill, the Settings switch, and the top‑bar strip in the same frame, with no reload; same for theme, mode, language. The desync bugs are physically impossible.
+2. **Phase 1 — Global chrome (§3).** Top‑bar teardown, status strip, autosave, primary‑action rules, bottom‑bar semantics. *Gate:* no truncated/recoloured primary CTA in any mode; no simultaneous `Saved`+`Save`; top bar shows no duplicate mode/language editors.
+3. **Phase 2 — Settings IA (§5).** Re‑file into true categories (or anchored scroll‑spy); quarantine diagnostics + destructive; model‑table bug fixes; provenance/security fields; de‑duplicate shortcuts. *Gate:* the highlighted category always matches rendered content; `Clear stored settings` is gated and separated; SIZE column no longer collides; cache row reads Create/Build; raw paths only behind Copy diagnostics.
+4. **Phase 3 — Run (§6).** Two‑axis selectors, shared baseline, constant‑height source container, Processing rename + stage strip, derived readiness with correct denominator and 5‑way status, de‑duplicated pickers, Inspect/accordion states, run‑in‑progress/failed/cancelled. *Gate:* switching modes moves no header and jumps no layout; readiness number equals visible rows; the 4th matrix cell is disabled‑with‑reason or works; Cancel/Retry behave per 6.6.
+5. **Phase 4 — Visual language (§2).** Status vocabulary exported app‑wide; truncation/overflow policy; contrast AA pass both themes; no floating‑over‑content. *Gate:* every status uses icon+colour+text; no mid‑word truncation on a control; helper text meets AA in dark *and* light.
+6. **Phase 5 — Review & Quality populated (§7, §8)** + empty‑state unification. *Gate:* empty screens show a prompt only (no ghosted machinery); populated screens bind to real data; gauges replaced by labelled chips; cross‑links work. *(Validate density per Appendix A.)*
+7. **Phase 6 — Commands palette (§4.2)** + Log history wiring (§9) + theme/density/motion verification (§10). *Gate:* palette launches/toggles/jumps correctly; RUN HISTORY loads results; all three appearance toggles visibly apply.
+
+**Why this order:** Phases 0–2 delete the trust‑destroying contradictions (a tool whose status indicators lie is unusable regardless of beauty) with zero visual risk. Pixels come only after the model is honest. Phase 5's populated layouts depend on the Phase 0 store and Phase 4 vocabulary, so they cannot precede them.
+
+---
+
+## 12. Definition of done — acceptance checklist
+
+The agent self‑verifies each line; any failure is a regression of a documented defect.
+
+- [ ] Flipping **any** bound editor (gate / theme / mode / language / batch / memory / glossary / preset) updates **all** its mirrors and editors in the same frame, no reload. (§1)
+- [ ] No status **pill** is clickable or carries an action verb; no editor is a pill. (§1.2)
+- [ ] Output language and foreignization appear **only as prose**, never as locked inputs / always‑on toggles. (§1.3)
+- [ ] Inheriting fields show **effective value + provenance inline**; `Never persisted to disk` is on the **API key**, inline; no `.env` jargon on Run. (§1.4, §5.7)
+- [ ] Top bar = identity + one read‑only status strip + theme toggle + Commands + one primary action; **no** mode control, **no** unlabeled language dropdowns, **no** persistent Save button. (§3.1, §3.4)
+- [ ] Primary action never truncates and never recolours per mode; blocked = disabled `Run` + inline reason; running = `Cancel`; failed = `Run` (retry) + reason. (§3.3, §6.6)
+- [ ] Bottom bar distinguishes buttons from hints; no duplicate launchers of rail/palette items. (§3.2)
+- [ ] Settings: highlighted category **matches** rendered content (true gating or working scroll‑spy); `Search settings…` is convenience, not the only nav. (§5.2)
+- [ ] Settings: raw paths/registry/versions only behind **Copy diagnostics**; privacy label un‑truncated; `Clear stored settings` in a separated, typed‑confirmation danger zone. (§5.6)
+- [ ] Model table: SIZE = bytes only (no column collision); cache row verb = Create/Build; `missing` has one source. (§5.4)
+- [ ] Shortcuts: editable remap **or** moved to Help — not a read‑only list mis‑filed under Settings. (§5.5)
+- [ ] Run: two independent selectors (source × engine); the flattened 3‑cell control and the `Local Cloud` label are gone; the 4th combo works or is disabled‑with‑reason. (§6.1)
+- [ ] Run: column headers share one baseline across all modes; SOURCE panel is constant‑height (toggling swaps content, not layout). (§6.2, §2.4)
+- [ ] Run: middle column renamed `Processing` with a stage strip that animates during a run. (§6.2)
+- [ ] Run: readiness is **not** numbered as a step; its score denominator equals visible rows; *n/a* (–) and *unchecked* (○) are visually distinct; no ad‑hoc bolding. (§6.4, §2.1)
+- [ ] Run: content preset = chips only; glossary = one control; language pair present in every mode; no floating button over text. (§6.5, §2.4)
+- [ ] Run: Inspect result and the Video‑download accordion have defined states. (§6.3)
+- [ ] App‑wide: every status = icon+colour+text (greyscale‑safe); no mid‑word truncation on controls; truncated text has tooltips; tables don't paint over neighbours; overflowing groups wrap/scroll; empty selects have placeholders/effective values. (§2.1, §2.2)
+- [ ] Both themes meet WCAG AA on helper/secondary text; accent/density/reduce‑motion visibly apply. (§2.3, §10)
+- [ ] Empty states everywhere follow the Log pattern (prompt only); Quality shows **no** ghosted threshold numbers against zero data. (§2.6, §8)
+- [ ] Review: virtualized cues, left‑border+icon severity tint (not text), live filter counts, synced timeline, inspector prev/next, find‑replace live count. (§7)
+- [ ] Quality: issues sortable + cross‑linked to Review; gate header = editor, body = read‑only mirror; thresholds show preset name + `custom` marking; distributions are labelled histograms; the seven micro‑gauges are replaced by labelled chips; run context + export bound to real data. (§8)
+- [ ] Log: RUN HISTORY wired and loads results; the `empty` chip is labelled or removed. (§9)
+- [ ] Commands palette navigates / acts / toggles / jumps‑to‑setting, with toggles showing live bound state. (§4.2)
+
+---
+
+## Appendix A — Validation probes for `[inferred]` states
+
+These states were never observed on screen; their designs above are reasoned, not measured. If/when the following frames can be captured, check the marked assumptions; if a probe contradicts the spec, **only the listed bullet changes** — Phases 0–4 (the architecture) are unaffected because they were never data‑dependent.
+
+1. **Review with ≥50 cues**, including ≥1 `failed`‑severity row and ≥1 multi‑line translation → validates row‑tint legibility, virtualization threshold, cell wrap/ellipsis, inspector height, timeline density.
+2. **Quality with mixed severities + a heavily skewed duration distribution** → validates the labelled‑chip replacement for the gauges actually carries the signal, and whether the duration histogram needs a **log axis**.
+3. **A run in progress + a failed run** → validates the stage‑strip animation, the Cancel/Retry primary‑slot behaviour, live Readiness re‑evaluation, and error surfacing on Run + Log + Review.
+4. **Commands palette opened** → validates the four‑namespace command list against the real action set.
+5. **Light theme rendered** → validates accent application and AA contrast inversion.
+6. **YouTube Inspect yielding (a) an English track and (b) no English track** → validates both Inspect result states.
+
+## Appendix B — Backend/engine notes surfaced by the UI (NOT UI work — flag to engineering)
+
+Listed only because the UI exposed them; the agent must **not** attempt these as part of this UI spec.
+- The app runs from a **XAMPP `htdocs` web‑docroot** (`C:\xampp\htdocs\translation-agent\dist\TranslationAgent`) — an unusual deployment for a Qt desktop app and a likely source of path‑handling quirks the UI currently has to paper over (long absolute paths, `auto‑detected from the models folder` fragility). Worth fixing upstream; the UI's job here was simply to stop *displaying* it raw (§5.6).
+- Settings persistence is `QSettings (registry)` while secrets are claimed *never persisted* — the UI now states both honestly (§1.4, §5.6); engineering should confirm the API‑key non‑persistence claim is actually enforced, since the UI promise depends on it.
+
+## Appendix C — Traceability (every flagged defect → spec section)
+
+Confirms coverage, including all `[nice‑to‑have]` items, so nothing from the diagnostic phase was dropped.
+
+| # | Observed defect (batch) | Spec § |
+|---|---|---|
+| 1 | Mode toggle conflates 2 axes; `Local Cloud` oxymoron; 4th cell hidden (1,4,5) | 6.1, 1 |
+| 2 | `PIPELINE` is a form, not a flow (1) | 6.2 |
+| 3 | Readiness numbered as step 3; fraction ≠ visible rows (1,2,3) | 6.4 |
+| 4 | Config scattered 4 places; `.env` leak on Run (1,4,5) | 1, 5.7, 6.5 |
+| 5 | Columns scroll independently; `2` header clips per mode (1,2,3) | 6.2, 2.4 |
+| 6 | SOURCE panel shape jumps between modes (1,2,3) | 6.2, 2.4 |
+| 7 | Grey `n/a` overloaded (not‑applicable vs unchecked) (1,2,3) | 2.1, 6.4 |
+| 8 | Primary CTA mutates colour/label + truncates (1) | 3.3, 6.6 |
+| 9 | Bottom bar `Ctrl Enter→Run` contradicts Offline button (1) | 3.3, 3.2 |
+| 10 | Language in 2–4 disconnected/unlabeled places (1,3,4,5) | 3.1, 6.3, 5.3, 1.3 |
+| 11 | Content preset dropdown + chips duplicate (1,2,3) | 6.5 |
+| 12 | Glossary `…` + `Choose` duplicate (1,2,3,4) | 6.5, 5.3 |
+| 13 | Log/Commands double entry; bottom bar mixes buttons+hints (1) | 3.2, 4.1, 4.2 |
+| 14 | Systemic truncation (`summar…`, `Show…`, `Offl…`, gauges, empty select) (1,3,4,5) | 2.2 |
+| 15 | Floating `Open Settings` overlaps footer text (1) | 2.4, 6.5 |
+| 16 | Readiness ad‑hoc bolding unexplained (1,2,3) | 2.1, 6.4 |
+| 17 | Low contrast on dark helper text (1,3,4) | 2.3 |
+| 18 | Quality micro‑gauges unreadable + overflow card (1,4) | 8, 2.2 |
+| 19 | Quality empty = ghosted dashboard w/ fake threshold numbers (1,2,4) | 2.6, 8 |
+| 20 | Settings nav facade; pill ≠ content; search load‑bearing (2,3,4,5) | 5.1, 5.2 |
+| 21 | `Saved` pill + `Save` button coexist (2,3,4,5) | 3.4 |
+| 22 | `.env`/auto‑detect placeholders hide effective value (2,3,4,5) | 1.4, 5.7 |
+| 23 | `Foreignization = Always on` fake setting (2,3,4) | 1.3, 5.2 |
+| 24 | `Target language = English (locked)` fake input (2,3,4,5) | 1.3, 5.2 |
+| 25 | Shortcuts in 3 places, read‑only, mis‑filed (3,4,5) | 5.5, 4.2 |
+| 26 | Model table SIZE/PURPOSE column collision (3,4,5) | 5.4, 2.2 |
+| 27 | Cache row wrong verb `Download` (3,4,5) | 5.4 |
+| 28 | `Clear stored settings` equal weight w/ safe action (3,4,5) | 5.6 |
+| 29 | Raw paths/registry/versions leaked inline (3,4,5) | 5.6 |
+| 30 | Gate has 4 homes, self‑contradictory (1,2,3,4,5) | 1, 1.2, 8 |
+| 31 | Theme 2 homes; mode 2 homes (2,3,4,5) | 1, 3.1, 5.3 |
+| 32 | `missing` badge duplicated for one fact (4,5) | 5.4, 2.5 |
+| 33 | `Never persisted` on wrong field, hover‑only (4,5) | 1.4, 5.7 |
+| 34 | GATE card header ON vs body pill Off (2,4) | 1.2, 8 |
+| 35 | Log empty good vs Quality empty bad (inconsistency) (2,4) | 2.6 |
+| 36 | Log `empty` filter chip unexplained (2) | 9 |
+| 37 | Status wording noun‑vs‑action ambiguity (1,2,3,4,5) | 1.2, 2.5 |
+| 38 | Model‑table STATE = the one good status system (3,4,5) | 2.1 (generalise) |
+| 39 | YouTube Inspect result unobserved (1) | 6.3 `[inferred]` |
+| 40 | Video‑download accordion unobserved (1) | 6.3 `[inferred]` |
+| 41 | Run‑in‑progress / failed states unobserved (all) | 6.6 `[inferred]` |
+| 42 | Commands palette unobserved (all) | 4.2 `[inferred]` |
+| 43 | Light theme unobserved (all) | 2.3, 10 `[inferred]` |
+| 44 | Review/Quality populated layouts unobserved (all) | 7, 8 `[inferred]` |
+| 45 | XAMPP htdocs deployment smell (3) | App. B (non‑UI) |
+| 46 | API‑key non‑persistence claim vs registry store (4,5) | App. B (non‑UI) |
+| 47 | `[nice‑to‑have]` tooltips on truncated text | 2.2 |
+| 48 | `[nice‑to‑have]` greyscale‑safe shape‑leads status | 2.1 |
+| 49 | `[nice‑to‑have]` virtualized cue list | 7 |
+| 50 | `[nice‑to‑have]` timeline ↔ table sync | 7 |
+| 51 | `[nice‑to‑have]` inspector prev/next | 7 |
+| 52 | `[nice‑to‑have]` find‑replace live match count | 7 |
+| 53 | `[nice‑to‑have]` sortable issues + cross‑link to Review | 8 |
+| 54 | `[nice‑to‑have]` custom‑preset marking on threshold edit | 8 |
+| 55 | `[nice‑to‑have]` labelled histograms + log‑axis consideration | 8, App. A |
+| 56 | `[nice‑to‑have]` run context + export bound to real data | 8 |
+| 57 | `[nice‑to‑have]` autosave transient toast + dirty dot | 3.4 |
+| 58 | `[nice‑to‑have]` stage strip on Run | 6.2 |
+| 59 | `[nice‑to‑have]` light‑theme verification pass | 2.3, 10 |
+| 60 | `[nice‑to‑have]` editable shortcuts remap | 5.5 |
+
+**End of specification.** Build Phases 0–4 first; they retire the contradictions that make the current UI untrustworthy. The populated Review/Quality layouts (Phases 5) and the inferred states (Appendix A) are the only parts that should be re‑examined against real data — the architecture above is not.

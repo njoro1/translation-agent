@@ -33,6 +33,10 @@ Item {
         anchors.fill: parent
         anchors.margins: 18
         spacing: 16
+        // Toolbars, timeline and inspector exist only when there is a result.
+        // Before that they were a ghosted grid of disabled controls (UI review
+        // D4 / T-4.6).
+        visible: appBridge.resultReady
 
         // =========================================================== LEFT ==
         ColumnLayout {
@@ -64,6 +68,20 @@ Item {
                         enabled: appBridge.canOpenOutputFolder
                         onClicked: appBridge.openInExternalEditor()
                         Accessible.name: "Open the output file in an external editor"
+                    },
+                    // Edits live in the model until they are written back. The
+                    // bridge slot has existed all along (`saveEditedSubtitles`)
+                    // with no caller, so a fixed cue could never be kept — the
+                    // only way to persist one was to press Run again. Enabled on
+                    // the edit count, not on `resultReady`: a loaded run with no
+                    // edits has nothing to save (UI review 5.13).
+                    AppButton {
+                        objectName: "review.saveChanges"
+                        text: "Save changes"
+                        small: true
+                        iconName: "save"
+                        enabled: appBridge.cueEditedCount > 0
+                        onClicked: appBridge.saveEditedSubtitlesToDefault()
                     },
                     AppButton {
                         text: "Revert all"
@@ -106,11 +124,19 @@ Item {
                     spacing: 8
 
                     Timeline {
+                        id: timeline
                         Layout.fillWidth: true
                         bars: appBridge.cueTimeline
                         ruler: appBridge.cueTimelineRuler
                         selectedCue: root.selectedCueNumber
                         playhead: -1
+
+                        // Click a bar to jump to that cue; drag across the
+                        // track to filter the table to that span. The timeline
+                        // used to be read-only, so finding the cue behind a red
+                        // bar was a manual hunt (UI review 5.3).
+                        onBarClicked: (cue) => table.selectCue(cue)
+                        onRangeSelected: (first, last) => table.filterToCueRange(first, last)
                     }
 
                     Label {
@@ -162,7 +188,10 @@ Item {
                 AppCard {
                     Layout.fillWidth: true
                     title: "Find & replace"
-                    note: "applies to every cue"
+                    // The scope is stated, not implied: this card has no cue
+                    // selection concept, so "every cue" is the honest answer and
+                    // it belongs on screen before the button is pressed.
+                    note: "every cue \u00b7 " + appBridge.qualityTotalCues + " total"
 
                     ColumnLayout {
                         width: parent.width
@@ -195,11 +224,39 @@ Item {
 
                             Item { Layout.fillWidth: true }
 
+                            // Live match count. `findField.text` and
+                            // `regexSwitch.checked` are the only inputs, so the
+                            // count is recomputed whenever either changes —
+                            // there is no second source of truth to drift.
+                            Label {
+                                id: matchLabel
+                                objectName: "review.matchCount"
+                                readonly property int matches: {
+                                    const needle = findField.text
+                                    const asRegex = regexSwitch.checked
+                                    appBridge.cueEditedCount   // re-count after a replace
+                                    if (needle === "")
+                                        return 0
+                                    return appBridge.countCueMatches(needle, asRegex)
+                                }
+                                text: findField.text === ""
+                                      ? ""
+                                      : matches === 1 ? "1 match"
+                                                      : matches + " matches"
+                                color: matches === 0 ? Theme.warning : Theme.textMuted
+                                font.pixelSize: Theme.fontSmall
+                                font.family: Theme.monoFont
+                            }
+
                             AppButton {
+                                objectName: "review.replaceAll"
                                 text: "Replace all"
                                 small: true
                                 iconName: "refresh"
-                                enabled: appBridge.resultReady && findField.text !== ""
+                                // Disabled until there is something to replace,
+                                // not merely until a needle was typed.
+                                enabled: appBridge.resultReady
+                                         && matchLabel.matches > 0
                                 onClicked: {
                                     const n = appBridge.replaceInCues(
                                                     findField.text, replaceField.text,
@@ -224,5 +281,19 @@ Item {
                 Item { Layout.fillHeight: true }
             }
         }
+    }
+
+    // Empty = a prompt and nothing else.
+    EmptyState {
+        objectName: "review.emptyState"
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 80, 460)
+        visible: !appBridge.resultReady
+        iconName: "list"
+        title: "No cues to review yet"
+        body: "Run a translation and the cue table, timeline and inspector "
+              + "appear here. Every row is editable in place."
+        actionLabel: "Go to Run"
+        onActionTriggered: root.navigateRequested(0)
     }
 }

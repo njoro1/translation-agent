@@ -6,9 +6,11 @@ import logging.handlers
 import os
 import platform
 import re
+import shutil
 import sys
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 from PySide6.QtCore import (
     QObject,
@@ -17,6 +19,7 @@ from PySide6.QtCore import (
     QSettings,
     Qt,
     QThreadPool,
+    QTimer,
     QUrl,
     Signal,
     Slot,
@@ -26,7 +29,7 @@ from PySide6.QtGui import QDesktopServices
 
 import translate
 
-from src import ass_io, srt_io, subtitle_quality, youtube_media
+from src import ass_io, gguf_check, srt_io, subtitle_quality, youtube_media
 from .controllers.translation import TranslationWorker
 from .models.results import CueFilterProxyModel, CueResultModel, QualityIssuesModel
 from .models.run_config import RunConfig
@@ -54,30 +57,41 @@ _LOCAL_MODEL_URLS = (
 )
 
 
-def resolve_local_model_path(gguf_dir: str) -> str:
-    """Resolve the preferred local translation model path in `gguf_dir`.
+def resolve_local_model_path(gguf_dir: str, *extra_dirs: str) -> str:
+    """Resolve the preferred local translation model path.
 
-    Preference order:
+    Searches `gguf_dir` first, then each of `extra_dirs` (used for model folders
+    an earlier app layout left behind — see `_legacy_gguf_dirs`). Preference
+    order, per folder:
         1. gguf/Hy-MT2-1.8B-Q8_0.gguf
-        2. Any single unambiguous Hy-MT2 GGUF in the directory.
+        2. Any single unambiguous Hy-MT2 GGUF in the directory
 
-    Returns the chosen path or an empty string if none is found.
+    Only files that pass the GGUF integrity check are considered, so an
+    interrupted download (a file that exists but is cut short) is never
+    returned as a usable model. Returns the chosen path or an empty string if
+    none is found.
     """
     import glob
 
-    candidate = os.path.join(gguf_dir, _LOCAL_MODEL)
-    if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
-        return candidate
+    for directory in (gguf_dir, *extra_dirs):
+        candidate = os.path.join(directory, _LOCAL_MODEL)
+        if gguf_check.is_usable_gguf(candidate):
+            return candidate
 
-    # Any Hy-MT2 GGUF, preferring Q8_0 files.
-    hy_mt2_files = glob.glob(os.path.join(gguf_dir, "Hy-MT2*.gguf"))
-    if len(hy_mt2_files) == 1:
-        return hy_mt2_files[0]
-    if len(hy_mt2_files) > 1:
-        q8_files = [f for f in hy_mt2_files if "q8" in os.path.basename(f).lower()]
-        if q8_files:
-            return sorted(q8_files)[0]
-        return sorted(hy_mt2_files)[0]
+    for directory in (gguf_dir, *extra_dirs):
+        # Any Hy-MT2 GGUF, preferring Q8_0 files.
+        hy_mt2_files = [
+            path
+            for path in glob.glob(os.path.join(directory, "Hy-MT2*.gguf"))
+            if gguf_check.is_usable_gguf(path)
+        ]
+        if len(hy_mt2_files) == 1:
+            return hy_mt2_files[0]
+        if len(hy_mt2_files) > 1:
+            q8_files = [f for f in hy_mt2_files if "q8" in os.path.basename(f).lower()]
+            if q8_files:
+                return sorted(q8_files)[0]
+            return sorted(hy_mt2_files)[0]
     return ""
 
 
@@ -101,6 +115,96 @@ _LOG_TRUNCATION_NOTICE = "[warn] earlier log lines trimmed; only the most recent
 PIPELINE_MODE_YOUTUBE_CLOUD = "youtube_cloud"
 PIPELINE_MODE_LOCAL_CLOUD = "local_cloud"
 PIPELINE_MODE_OFFLINE = "offline"
+
+# Readiness row states (UI review 2.1). Five facts, five distinct treatments:
+#   ok        - pass / ready / verified
+#   todo      - warning / attention / blocking
+#   na        - not applicable to the current mode (a fact, not a problem)
+#   unchecked - not yet evaluated (a different fact from `na`)
+# `na` and `unchecked` used to share one grey dash, which is why the readiness
+# score's denominator did not match the visible rows.
+READINESS_OK = "ok"
+READINESS_TODO = "todo"
+READINESS_NA = "na"
+READINESS_UNCHECKED = "unchecked"
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_local_host(url: str | None) -> bool:
+    """True if `url` points at this machine (a local OpenAI-compatible server).
+
+    Mirrors ``src.config._is_local``: a local endpoint accepts any placeholder
+    key, so "no API key" is not an error when the base URL is local.
+    """
+    if not url:
+        return False
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        return False
+    return host in _LOCAL_HOSTS or host.endswith(".localhost")
+
+
+def _setting_provenance(own: str | None, env_name: str) -> tuple[str, str]:
+    """(effective value, provenance) for one setting that can inherit.
+
+    UI review 1.4: a field that can inherit must show what is *in effect* with
+    the source as secondary text. A placeholder such as "from .env when blank"
+    disappears on focus, which makes "unset" and "intentionally inheriting"
+    look identical.
+    """
+    own = (own or "").strip()
+    if own:
+        return own, "set here"
+    inherited = (os.environ.get(env_name) or "").strip()
+    if inherited:
+        return inherited, "inherited from .env"
+    return "", ""
+
+# Model file states. A model is only "ready" once its GGUF header has been
+# parsed and the file is provably complete; a file that exists but is cut short
+# (an interrupted download) is "corrupt", which is a different, actionable
+# state — the UI offers a re-download instead of a green tick.
+MODEL_STATE_READY = "ready"
+MODEL_STATE_MISSING = "missing"
+MODEL_STATE_CORRUPT = "corrupt"
+
+
+def _model_status(path: str | None) -> tuple[str, str]:
+    """Classify one GGUF path as ready / missing / corrupt (plus the reason)."""
+    if not path or not os.path.exists(path):
+        return MODEL_STATE_MISSING, ""
+    ok, reason = gguf_check.inspect_gguf(path)
+    if ok:
+        return MODEL_STATE_READY, ""
+    return MODEL_STATE_CORRUPT, reason
+
+
+def _resolve_model_status(
+    selected: str | None, *fallbacks: str
+) -> tuple[str, str, str]:
+    """Pick the best model path from a user selection plus fallbacks.
+
+    Returns ``(state, path, reason)``. A corrupt *selected* path is reported as
+    corrupt only when no usable fallback exists — otherwise the fallback wins
+    and the run proceeds, which is what a user who already has a good copy in
+    the models folder expects.
+    """
+    selected = (selected or "").strip()
+    state, reason = _model_status(selected)
+    if state == MODEL_STATE_READY:
+        return MODEL_STATE_READY, selected, ""
+
+    for candidate in fallbacks:
+        fallback_state, _ = _model_status(candidate)
+        if fallback_state == MODEL_STATE_READY:
+            return MODEL_STATE_READY, candidate, ""
+
+    if state == MODEL_STATE_CORRUPT:
+        return MODEL_STATE_CORRUPT, selected, reason
+    return MODEL_STATE_MISSING, "", ""
+
 
 CONTENT_PRESETS = ("auto", "drama", "anime", "music", "documentary", "variety", "lecture")
 ASR_PREPROCESS_PROFILES = ("auto", "none", "basic", "loudnorm", "denoise")
@@ -159,7 +263,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern, str, str], ...] = tuple(
             r"(video unavailable|private video|video has been removed|"
             r"unable to (?:download|extract|fetch)[^\n]{0,40}"
             r"(?:subtitle|transcript|caption)|"
-            r"no (?:subtitles|transcript|caption)|"
+            r"no (?:subtitles|transcript|captions)\b|"
             r"subtitles? (?:are )?disabled|sign in to confirm|"
             r"not a valid url|http error 40[34])",
             "No subtitles could be fetched for this source.",
@@ -183,7 +287,8 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern, str, str], ...] = tuple(
         (
             "MODEL_DOWNLOAD",
             r"(failed to download|download failed|error downloading|"
-            r"could not download)[^\n]{0,60}(gguf|model)",
+            r"could not download|did not download completely)"
+            r"[^\n]{0,80}(?:gguf|model|byte|space)?",
             "A model download failed.",
             REMEDY_DOWNLOAD_MODEL,
         ),
@@ -193,6 +298,23 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern, str, str], ...] = tuple(
             r"error loading model|gguf[^\n]{0,30}(?:invalid|corrupt)|"
             r"llama[_-]?server[^\n]{0,40}(?:failed|exited))",
             "The local model could not be loaded.",
+            REMEDY_DOWNLOAD_MODEL,
+        ),
+        (
+            # Must precede SOURCE_UNAVAILABLE: "produced no transcription" used
+            # to be read as "no transcript was available for this video", which
+            # sent the user to check their source file instead of the model.
+            "ASR_MODEL",
+            r"(no transcription|transcri\w+[^\n]{0,40}(?:produced nothing|empty)|"
+            r"funasr[^\n]{0,60}(?:not found|no transcription|failed to load)|"
+            # Anchored on the filename: a bare "asr"/"sensevoice" followed by
+            # "incomplete" also matches "--asr-model C:\…\sensevoice-small-q8.gguf",
+            # which is a *path*, not a diagnosis.
+            r"(?:sensevoice|fsmn[-_ ]?vad)[-_.\w]*\.gguf[^\n]{0,20}"
+            r"(?:not found|missing|corrupt|incomplete|unreadable)|"
+            r"failed to read tensor data|load gguf failed|"
+            r"file is incomplete[^\n]{0,60}gguf)",
+            "The local transcription model could not be used.",
             REMEDY_DOWNLOAD_MODEL,
         ),
         (
@@ -221,8 +343,15 @@ def _classify_failure(log_text: str) -> tuple[str, str, str, str]:
 
     Scans newest-first: the specific cause (traceback tail, yt-dlp message)
     almost always appears after the generic preamble.
+
+    "[warn] …" lines are advisory — they report something the app already
+    recovered from, e.g. "Ignoring --asr-model <path>: file is incomplete.
+    Falling back to the models folder." The run may still succeed, so those
+    lines never drive the classification; blaming a model the run did not use
+    is exactly the bug this avoids.
     """
-    lines = [ln.strip() for ln in (log_text or "").splitlines() if ln.strip()]
+    raw_lines = [ln.strip() for ln in (log_text or "").splitlines() if ln.strip()]
+    lines = [ln for ln in raw_lines if not ln.lower().startswith("[warn]")]
     tail = lines[-_FAILURE_TAIL_LINES:]
 
     for line in reversed(tail):
@@ -243,6 +372,9 @@ def _classify_failure(log_text: str) -> tuple[str, str, str, str]:
 
     if tail:
         return "UNKNOWN", "The run failed.", tail[-1][:400], REMEDY_LOG
+    if raw_lines:
+        # Nothing but advisory lines: still show the user something concrete.
+        return "UNKNOWN", "The run failed.", raw_lines[-1][:400], REMEDY_LOG
     return (
         "UNKNOWN",
         "The run failed.",
@@ -262,20 +394,193 @@ class _YouTubeDownloadSignal(QObject):
     done = Signal(str)
 
 
+_APP_DIR_NAME = "TranslationAgent"
+
+
+def _is_writable_dir(path: str) -> bool:
+    """True when a file can actually be created in `path`.
+
+    A frozen app is routinely installed under ``C:\\Program Files``, where the
+    folder next to the .exe is read-only for a standard user. Writing the
+    models folder, the result cache or ``debug.log`` there then fails, and the
+    app looks broken on a client machine — so every location is probed before
+    it is used rather than assumed to be writable.
+    """
+    if not os.path.isdir(path):
+        return False
+    probe = os.path.join(path, f".write-probe-{os.getpid()}")
+    try:
+        with open(probe, "w", encoding="utf-8"):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+_APP_DATA_CACHE: str | None = None
+
+
+def _app_data_dir() -> str:
+    """Per-user writable folder, used when the app folder is read-only."""
+    global _APP_DATA_CACHE
+    if _APP_DATA_CACHE:
+        return _APP_DATA_CACHE
+    if sys.platform.startswith("win"):
+        root = (
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or os.path.expanduser("~")
+        )
+    elif sys.platform == "darwin":
+        root = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "share"
+        )
+    path = os.path.join(root, _APP_DIR_NAME)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        path = os.path.expanduser("~")
+    _APP_DATA_CACHE = path
+    return path
+
+
 def _gguf_dir() -> str:
-    """Where to place downloaded GGUF models (next to the app and importable)."""
+    """Where downloaded GGUF models go: next to the app when that is writable.
+
+    Models living in the same folder as the executable is the point of the
+    onedir bundle: a client can drop ``TranslationAgent.exe``, ``_internal``
+    and the ``.gguf`` files into one folder and run it. If the app folder is
+    read-only (a Program Files install), fall back to the per-user folder so
+    downloads still land somewhere usable instead of failing.
+    """
     base = _base_dir()
-    path = os.path.join(base, "gguf")
-    os.makedirs(path, exist_ok=True)
+    if _is_writable_dir(base):
+        path = os.path.join(base, "gguf")
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError:
+            pass
+    path = os.path.join(_app_data_dir(), "gguf")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return _app_data_dir()
+    return path
+
+
+def _legacy_gguf_dirs() -> list[str]:
+    """Model folders an earlier app layout left behind, best-first.
+
+    The bundle used to be written straight into `dist/`, so `_base_dir()` — and
+    with it the models folder — was `dist/`. It is now written into
+    `dist/TranslationAgent/`, which moved the models folder to
+    `dist/TranslationAgent/gguf/` and orphaned models the user had already
+    downloaded into `dist/gguf/`.
+
+    That is the "but the models are already downloaded" report: the app stopped
+    looking where they were, downloaded them again, and on a full disk the
+    second download was cut short. Returns [] for a source run, whose models
+    folder is already the repo's `gguf/`.
+    """
+    if not getattr(sys, "frozen", False):
+        return []
+    current = os.path.abspath(_gguf_dir())
+    sibling = os.path.join(os.path.dirname(_base_dir()), "gguf")
+    if os.path.isdir(sibling) and os.path.abspath(sibling) != current:
+        return [sibling]
+    return []
+
+
+def _model_search_dirs() -> list[str]:
+    """Every folder searched for an already-present model, best-first.
+
+    Order matters. The folder the executable sits in comes first, because
+    "put the .gguf files next to the .exe" is the layout a client machine gets
+    handed; then the ``gguf``/``models`` subfolders beside it (what the app
+    downloads into), then the per-user fallback folder, then whatever earlier
+    layouts left behind so an existing install keeps working after an upgrade.
+    """
+    base = os.path.abspath(_base_dir())
+    candidates = [
+        base,
+        os.path.join(base, "gguf"),
+        os.path.join(base, "models"),
+        os.path.join(_app_data_dir(), "gguf"),
+        *_legacy_gguf_dirs(),
+    ]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for directory in candidates:
+        key = os.path.normcase(os.path.abspath(directory))
+        if key not in seen:
+            seen.add(key)
+            ordered.append(directory)
+    return ordered
+
+
+def _find_model_file(filename: str) -> str:
+    """A usable `filename` from any search folder ("" when none is usable)."""
+    for directory in _model_search_dirs():
+        candidate = os.path.join(directory, filename)
+        if gguf_check.is_usable_gguf(candidate):
+            return candidate
+    return ""
+
+
+def _find_local_model() -> str:
+    """A usable local translation model from any search folder."""
+    return resolve_local_model_path(*_model_search_dirs())
+
+
+def _cache_dir() -> str:
+    """Writable folder for run artefacts (falls back when the app folder is not)."""
+    base = _base_dir()
+    if _is_writable_dir(base):
+        path = os.path.join(base, "cache")
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError:
+            pass
+    path = os.path.join(_app_data_dir(), "cache")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return _app_data_dir()
     return path
 
 
 def _result_json_path() -> str:
     """Stable path for the CLI's --result-json output (GUI review data)."""
-    base = _base_dir()
-    cache = os.path.join(base, "cache")
-    os.makedirs(cache, exist_ok=True)
-    return os.path.join(cache, "last_result.json")
+    return os.path.join(_cache_dir(), "last_result.json")
+
+
+def _run_result_dir() -> str:
+    """Per-run copies of the result JSON, so the Log screen can reload an old run.
+
+    The CLI writes one fixed file (`last_result.json`) and overwrites it every
+    run, so Review/Quality could only ever describe the newest run. A run
+    history whose entries cannot be opened is a list of dead rows, so each
+    successful run's result is copied here and named by the entry that owns it.
+    """
+    path = os.path.join(_cache_dir(), "run_results")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return ""
+    return path
+
+
+def _remove_file(path: str) -> None:
+    """Best-effort delete; used to clean up failed/partial downloads."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _format_bytes(size: int | float) -> str:
@@ -311,7 +616,18 @@ def _format_clock_ms(ms: float) -> str:
 
 
 class _ModelDownloadWorker(QRunnable):
-    """Streams GGUF model files into ./gguf, reporting progress per chunk."""
+    """Streams GGUF model files into ./gguf, reporting progress per chunk.
+
+    Two properties matter more than speed here:
+
+    * **A partial file is never mistaken for a complete one.** Downloads land
+      in ``<name>.part`` and are renamed only after the whole file has been
+      received *and* the GGUF header parses. A dropped connection or a full
+      disk therefore leaves no file that later looks usable.
+    * **A damaged file already on disk is repaired.** If the destination exists
+      but fails the integrity check, it is re-downloaded instead of being
+      reported as "already present".
+    """
 
     def __init__(self, urls: tuple = _MODEL_URLS) -> None:
         super().__init__()
@@ -322,15 +638,21 @@ class _ModelDownloadWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         dest_dir = _gguf_dir()
-        try:
-            for filename, url in self.urls:
-                dest = os.path.join(dest_dir, filename)
-                if os.path.exists(dest) and os.path.getsize(dest) > 0:
-                    self.signals.progress.emit(f"[ok] already present: {filename}\n")
-                    self.downloaded.append(dest)
-                    continue
-                self.signals.progress.emit(f"Downloading {filename}…\n")
-                with urllib.request.urlopen(url) as resp, open(dest, "wb") as out:
+        for filename, url in self.urls:
+            dest = os.path.join(dest_dir, filename)
+            if gguf_check.is_usable_gguf(dest):
+                self.signals.progress.emit(f"[ok] already present: {filename}\n")
+                self.downloaded.append(dest)
+                continue
+            if os.path.exists(dest):
+                self.signals.progress.emit(
+                    f"[warn] {filename} is incomplete or unreadable; "
+                    f"downloading it again.\n"
+                )
+            self.signals.progress.emit(f"Downloading {filename}…\n")
+            partial = dest + ".part"
+            try:
+                with urllib.request.urlopen(url) as resp, open(partial, "wb") as out:
                     total = resp.length or 0
                     got = 0
                     while True:
@@ -342,10 +664,29 @@ class _ModelDownloadWorker(QRunnable):
                         if total:
                             pct = got * 100 // total
                             self.signals.progress.emit(f"  {filename}: {pct}%\n")
-                self.downloaded.append(dest)
-                self.signals.progress.emit(f"[ok] saved: {dest}\n")
-        except Exception as exc:  # noqa: BLE001
-            self.signals.progress.emit(f"[error] download failed: {exc}\n")
+            except Exception as exc:  # noqa: BLE001
+                self.signals.progress.emit(f"[error] download failed: {exc}\n")
+                _remove_file(partial)
+                continue
+
+            ok, reason = gguf_check.inspect_gguf(partial)
+            if not ok:
+                self.signals.progress.emit(
+                    f"[error] {filename} did not download completely ({reason}). "
+                    f"Check the free disk space and try again.\n"
+                )
+                _remove_file(partial)
+                continue
+            try:
+                os.replace(partial, dest)
+            except OSError as exc:
+                self.signals.progress.emit(
+                    f"[error] could not save {filename}: {exc}\n"
+                )
+                _remove_file(partial)
+                continue
+            self.downloaded.append(dest)
+            self.signals.progress.emit(f"[ok] saved: {dest}\n")
         self.signals.done.emit("done")
 
 
@@ -486,9 +827,15 @@ def setup_logging(base_dir: str) -> logging.Logger:
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
     path = os.path.join(base_dir, "debug.log")
-    file_handler = logging.handlers.RotatingFileHandler(
-        path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
-    )
+    if not _is_writable_dir(base_dir):
+        # Read-only install (Program Files): keep logging, just not there.
+        path = os.path.join(_app_data_dir(), "debug.log")
+    try:
+        file_handler = logging.handlers.RotatingFileHandler(
+            path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+        )
+    except OSError:
+        return logger
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
     )
@@ -530,6 +877,14 @@ class AppBridge(QObject):
     accentChanged = Signal()
     cueDataChanged = Signal()
     runHistoryChanged = Signal()
+    # Autosave (UI review 3.4). The persistent "Save" button is gone, so the UI
+    # needs a dirty flag to mirror and a transient signal to fire the toast on.
+    dirtyChanged = Signal()
+    savedToast = Signal()
+    # The composed top-bar status line depends on form state, run state and the
+    # dirty flag, so it gets its own signal rather than piggy-backing on one.
+    globalStatusChanged = Signal()
+    shortcutsChanged = Signal()
 
     # Fields persisted across runs, as (attr, QSettings key, default). Bumped
     # whenever a new stored preference is introduced; secrets like the API key
@@ -574,6 +929,10 @@ class AppBridge(QObject):
         ("_accent_name", "ui/accent", "iris"),
         # Persisted run history for the Log screen (JSON-encoded list).
         ("_run_history_json", "run/history", "[]"),
+        # Keyboard shortcut overrides (JSON object: action id -> sequence).
+        # Only user-changed combos are stored; everything else falls back to
+        # `_SHORTCUT_DEFAULTS`.
+        ("_shortcuts_json", "ui/shortcuts", "{}"),
         # Rolling average wall time per cue, used to project an ETA on later
         # runs (UX review S-07: wait-time uncertainty).
         ("_history_ms_per_cue", "run/historyMsPerCue", "0"),
@@ -589,6 +948,17 @@ class AppBridge(QObject):
         self.logger = logging.getLogger("translation_agent")
         self._settings = QSettings()
 
+        # Autosave (UI review 3.4). Two simultaneous save affordances — a
+        # "Saved" pill next to an enabled "Save" button — encoded opposite
+        # facts on every Settings frame. There is now one truth: a dirty flag
+        # plus a debounce timer that commits on its own.
+        self._dirty = False
+        self._loading = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self._commit_pending)
+
         self._pipeline_mode = PIPELINE_MODE_YOUTUBE_CLOUD
         self._mode = "youtube"
         self._backend = "cloud"
@@ -596,6 +966,10 @@ class AppBridge(QObject):
         self._file_path = ""
         self._source_lang = ""
         self._out_path = ""
+        # True while the output path is derived from the input file rather than
+        # typed by the user. Not persisted: every launch starts on auto so the
+        # SRT lands next to whichever video is loaded.
+        self._out_path_auto = True
         self._batch = "8"
         self._api_key = ""
         self._base_url = ""
@@ -779,48 +1153,73 @@ class AppBridge(QObject):
     }
 
     def _load_persisted(self) -> None:
-        for attr, key, default in self._PERSISTED:
-            value = self._settings.value(key, default)
-            if attr in self._BOOL_FIELDS:
-                setattr(self, attr, str(value).lower() in ("1", "true", "yes"))
-            elif attr in self._INT_FIELDS:
-                try:
-                    setattr(self, attr, int(value))
-                except (TypeError, ValueError):
-                    setattr(self, attr, default)
-            elif isinstance(value, str):
-                setattr(self, attr, value)
-        # Keep source mode and backend in lock-step with the saved pipeline flow.
-        # A previous build used different IDs; migrate saved values before
-        # deriving the source/backend fields that the run builder consumes.
-        legacy_modes = {
-            "youtube": PIPELINE_MODE_YOUTUBE_CLOUD,
-            "local_hybrid": PIPELINE_MODE_LOCAL_CLOUD,
-            "local_offline": PIPELINE_MODE_OFFLINE,
-        }
-        self._pipeline_mode = legacy_modes.get(
-            self._pipeline_mode, self._pipeline_mode
-        )
-        self._apply_pipeline_mode(self._pipeline_mode)
-        # Recompute every derived binding (e.g. `localModelReady`, `asrModelReady`,
-        # `backend`) against the just-loaded persisted state. Without this a model
-        # the user previously selected would not be reflected until some unrelated
-        # field changed, wrongly showing "Download model & Run" at launch.
-        self._notify_form_changed()
+        # Loading stored values must not look like a user edit, or every launch
+        # would start dirty and immediately rewrite the store.
+        self._loading = True
+        try:
+            for attr, key, default in self._PERSISTED:
+                value = self._settings.value(key, default)
+                if attr in self._BOOL_FIELDS:
+                    setattr(self, attr, str(value).lower() in ("1", "true", "yes"))
+                elif attr in self._INT_FIELDS:
+                    try:
+                        setattr(self, attr, int(value))
+                    except (TypeError, ValueError):
+                        setattr(self, attr, default)
+                elif isinstance(value, str):
+                    setattr(self, attr, value)
+            # Keep source mode and backend in lock-step with the saved pipeline
+            # flow. A previous build used different IDs; migrate saved values
+            # before deriving the source/backend fields the run builder consumes.
+            legacy_modes = {
+                "youtube": PIPELINE_MODE_YOUTUBE_CLOUD,
+                "local_hybrid": PIPELINE_MODE_LOCAL_CLOUD,
+                "local_offline": PIPELINE_MODE_OFFLINE,
+            }
+            self._pipeline_mode = legacy_modes.get(
+                self._pipeline_mode, self._pipeline_mode
+            )
+            self._apply_pipeline_mode(self._pipeline_mode)
+            # Recompute every derived binding (e.g. `localModelReady`,
+            # `asrModelReady`, `backend`) against the just-loaded persisted
+            # state. Without this a model the user previously selected would not
+            # be reflected until some unrelated field changed.
+            self._notify_form_changed()
+        finally:
+            self._loading = False
 
     def _persist_fields(self) -> None:
         for attr, key, default in self._PERSISTED:
             self._settings.setValue(key, getattr(self, attr, default))
         self._settings.sync()
 
+    def _set_dirty(self, value: bool) -> None:
+        if self._dirty != value:
+            self._dirty = value
+            self.dirtyChanged.emit()
+            self.globalStatusChanged.emit()
+
+    def _commit_pending(self) -> None:
+        """Debounce target: write the store and tell the UI to show `Saved ✓`."""
+        if not self._dirty:
+            return
+        self._persist_fields()
+        self._set_dirty(False)
+        self.savedToast.emit()
+
     def _notify_form_changed(self) -> None:
         """Emit formChanged plus every derived signal that depends on it.
 
         Readiness rows are derived from form state, so they must be recomputed
-        whenever any form field changes.
+        whenever any form field changes. A genuine change also marks the store
+        dirty and restarts the autosave debounce.
         """
         self.formChanged.emit()
         self.readinessChanged.emit()
+        self.globalStatusChanged.emit()
+        if not self._loading:
+            self._set_dirty(True)
+            self._save_timer.start()
 
     def _set_field(self, attr: str, value) -> None:
         if getattr(self, attr) != value:
@@ -947,6 +1346,7 @@ class AppBridge(QObject):
         if self._status_state != state:
             self._status_state = state
             self.statusStateChanged.emit()
+            self.globalStatusChanged.emit()
 
     def _set_running(self, value: bool) -> None:
         if self._is_running != value:
@@ -991,8 +1391,47 @@ class AppBridge(QObject):
                 ("--asr-vad-model", self.localPath(self._asr_vad_model)),
             ]:
                 value = value.strip()
-                if value:
-                    argv += [flag, value]
+                if flag in ("--asr-model", "--asr-vad-model"):
+                    filename = (
+                        "fsmn-vad.gguf"
+                        if flag == "--asr-vad-model"
+                        else "sensevoice-small-q8.gguf"
+                    )
+                    if value and gguf_check.is_usable_gguf(value):
+                        argv += [flag, value]
+                        continue
+                    # Resolve the model here and pass it explicitly. The CLI's
+                    # own fallback is relative to the working directory, which
+                    # is not the app folder for a frozen build — so leaving the
+                    # flag out would make models the user already has invisible.
+                    fallback = _find_model_file(filename)
+                    if value:
+                        # Never hand the CLI a model that cannot be loaded: it
+                        # would burn minutes of preprocessing and then fail with
+                        # an opaque ASR error.
+                        _ok, reason = gguf_check.inspect_gguf(value)
+                        self._append_log(
+                            f"[warn] Ignoring {flag} {value}: {reason}. "
+                            + (
+                                f"Using {fallback} instead.\n"
+                                if fallback
+                                else f"No usable {filename} was found in the "
+                                f"models folder.\n"
+                            )
+                        )
+                    if fallback:
+                        argv += [flag, fallback]
+                    # With no usable model the flag is left out entirely, so the
+                    # CLI reports the missing model itself.
+                    continue
+                if not value:
+                    continue
+                if not os.path.exists(value):
+                    self._append_log(
+                        f"[warn] Ignoring {flag} {value}: file not found.\n"
+                    )
+                    continue
+                argv += [flag, value]
             argv += ["--asr-lang", (self._asr_language or "auto").strip() or "auto"]
             source_lang = self._source_lang.strip()
             if source_lang:
@@ -1069,20 +1508,35 @@ class AppBridge(QObject):
                 (self._model_name or "Hy-MT2-1.8B-Q8_0").strip() or "Hy-MT2-1.8B-Q8_0",
             ]
             local_model = self._local_model.strip()
-            if not local_model:
+            if local_model:
+                ok, reason = gguf_check.inspect_gguf(local_model)
+                if not ok:
+                    # The selected file is unusable (typically an interrupted
+                    # download). Prefer a good copy in the models folder over
+                    # failing the run on a file the user cannot see is broken.
+                    fallback = _find_local_model()
+                    self._append_log(
+                        f"[warn] Local model {local_model} is unusable: {reason}. "
+                        + (
+                            f"Using {fallback} instead.\n"
+                            if fallback
+                            else "No usable model was found in the models folder.\n"
+                        )
+                    )
+                    local_model = fallback
+            else:
                 # Self-contained desktop app: auto-pick a bundled translation
                 # model if one is present; otherwise fail fast with clear
                 # guidance instead of silently hanging against an empty port.
-                candidate = resolve_local_model_path(_gguf_dir())
-                if candidate and os.path.exists(candidate):
-                    local_model = candidate
+                local_model = _find_local_model()
             if local_model:
                 argv += ["--local-model", local_model]
             else:
                 raise ValueError(
-                    "No local translation model found. Download it via "
-                    "Settings → Download models (fetches Hy-MT2-1.8B-Q8_0.gguf) "
-                    "or Browse to select a GGUF file."
+                    "No usable local translation model found. Download it via "
+                    "Settings → Models & storage (fetches Hy-MT2-1.8B-Q8_0.gguf) "
+                    "or Browse to select a GGUF file. If a model file is already "
+                    "there, it is incomplete — re-download it."
                 )
             local_threads = int(self._local_threads or 0)
             if local_threads > 0:
@@ -1150,6 +1604,81 @@ class AppBridge(QObject):
             self._mode = "file"
             self._backend = "local"
 
+    # --- Two-axis source x engine (UI review 6.1) -------------------------
+    #
+    # The old control flattened two orthogonal axes into three cells
+    # (`YouTube Cloud` / `Local Cloud` / `Offline`), which produced the
+    # "Local Cloud" oxymoron and hid the fourth combination entirely. Source and
+    # engine are now independent, and the matrix is honest: the combination that
+    # is genuinely unsupported says so instead of being silently impossible.
+    #
+    # `pipelineMode` stays as the derived 3-value id the run builder consumes.
+
+    _RUN_SOURCES = ("youtube", "localfile")
+    _RUN_ENGINES = ("cloud", "local")
+
+    @Property(str, notify=pipelineModeChanged)
+    def runSource(self) -> str:
+        return "youtube" if self._mode == "youtube" else "localfile"
+
+    @Property(str, notify=pipelineModeChanged)
+    def runEngine(self) -> str:
+        return "local" if self._backend == "local" else "cloud"
+
+    @Property(str, notify=pipelineModeChanged)
+    def engineLocalDisabledReason(self) -> str:
+        """Why the local engine is unavailable for the current source.
+
+        A combination the product cannot run must be *visibly disabled with a
+        stated reason*, never silently impossible.
+        """
+        # The test is on the SOURCE axis, not on the current pair. Testing the
+        # pair made this unreachable: `pipelineMode` can only ever hold one of
+        # the three supported combinations, so `youtube + local` is never the
+        # current state and the reason never rendered. What the UI needs to know
+        # is "can the local engine be *selected* right now", and that depends on
+        # the source alone.
+        if self.runSource == "youtube":
+            return ("A downloaded video would have to be transcribed first, which the "
+                    "YouTube path does not do. Save the video and switch the source "
+                    "to a local file to use the local engine.")
+        return ""
+
+    @Property(str, notify=pipelineModeChanged)
+    def sourceEngineSummary(self) -> str:
+        """One-line description of the active pair, for the selectors' caption."""
+        source = "YouTube URL" if self.runSource == "youtube" else "Local media file"
+        engine = "Local model" if self.runEngine == "local" else "Cloud LLM"
+        return source + " \u2192 " + engine
+
+    @Slot(str, str, result=str)
+    def setSourceEngine(self, source: str, engine: str) -> str:
+        """Set both axes at once. Returns "" on success, or a reason on refusal."""
+        source = (source or "").strip().lower()
+        engine = (engine or "").strip().lower()
+        if source not in self._RUN_SOURCES:
+            return "Unknown source."
+        if engine not in self._RUN_ENGINES:
+            return "Unknown engine."
+        if source == "youtube" and engine == "local":
+            return ("YouTube + local model is not supported: the video would have to "
+                    "be transcribed first. Use a local file, or the cloud engine.")
+        if source == "youtube":
+            self.pipelineMode = PIPELINE_MODE_YOUTUBE_CLOUD
+        elif engine == "local":
+            self.pipelineMode = PIPELINE_MODE_OFFLINE
+        else:
+            self.pipelineMode = PIPELINE_MODE_LOCAL_CLOUD
+        return ""
+
+    @Slot(str, result=str)
+    def setRunSource(self, source: str) -> str:
+        return self.setSourceEngine(source, self.runEngine)
+
+    @Slot(str, result=str)
+    def setRunEngine(self, engine: str) -> str:
+        return self.setSourceEngine(self.runSource, engine)
+
     @Property(str, notify=formChanged)
     def backend(self) -> str:
         return self._backend
@@ -1215,7 +1744,10 @@ class AppBridge(QObject):
 
     @filePath.setter
     def filePath(self, value: str) -> None:
+        changed = self._file_path != value
         self._set_field("_file_path", value)
+        if changed:
+            self._sync_auto_out_path()
 
     @Property(str, notify=formChanged)
     def sourceLang(self) -> str:
@@ -1231,7 +1763,67 @@ class AppBridge(QObject):
 
     @outPath.setter
     def outPath(self, value: str) -> None:
+        """Set the output path explicitly; a blank value returns to "auto"."""
+        value = value or ""
+        self._out_path_auto = not value.strip()
         self._set_field("_out_path", value)
+        if self._out_path_auto:
+            # Clearing the field means "put it back next to the video", not
+            # "write nothing" — otherwise the run falls back to the process
+            # working directory, which is the bug this whole path exists to fix.
+            self._sync_auto_out_path(force=True)
+
+    @Property(bool, notify=formChanged)
+    def outPathAuto(self) -> bool:
+        """True while the output path is still derived from the input file."""
+        return self._out_path_auto
+
+    @Property(str, notify=formChanged)
+    def outPathHint(self) -> str:
+        """One line explaining where the subtitles will land."""
+        if not self._out_path_auto and self._out_path.strip():
+            return ""
+        if (self._file_path or "").strip():
+            return "Saved next to the video, with the same name."
+        if self._pipeline_mode == PIPELINE_MODE_YOUTUBE_CLOUD:
+            return "Saved next to the downloaded video, named after the title."
+        return "Pick a video, or type a path."
+
+    @Slot()
+    def useAutoOutPath(self) -> None:
+        """Forget the manual path and go back to "next to the input file"."""
+        self._out_path_auto = True
+        self._sync_auto_out_path(force=True)
+
+    def _sync_auto_out_path(self, force: bool = False) -> None:
+        """Keep the output path glued to the input while it is on auto.
+
+        Picking ``C:\\clips\\talk.mp4`` should fill in ``C:\\clips\\talk.srt``
+        without the user typing anything, and it must follow a later change of
+        the input file or of the output format. A YouTube run has no local file
+        yet, so it uses the download folder plus the video title — that puts the
+        subtitle beside the video the app just downloaded. Once the user edits
+        the field themselves, ``_out_path_auto`` is False and this stops
+        touching it.
+        """
+        if not self._out_path_auto and not force:
+            return
+        derived = ""
+        source = (self._file_path or "").strip()
+        if source:
+            derived = translate.default_output_path(
+                source, "", self._output_format or "srt"
+            )
+        else:
+            title = (self._youtube_title or "").strip()
+            if title and self._pipeline_mode == PIPELINE_MODE_YOUTUBE_CLOUD:
+                ext = "." + (self._output_format or "srt").strip().lstrip(".")
+                derived = os.path.join(
+                    self._youtube_out_dir(), srt_io.sanitize_filename(title) + ext
+                )
+        if self._out_path != derived:
+            self._out_path = derived
+            self._notify_form_changed()
 
     @Property(str, notify=formChanged)
     def batch(self) -> str:
@@ -1264,6 +1856,38 @@ class AppBridge(QObject):
     @model.setter
     def model(self, value: str) -> None:
         self._set_field("_model", value)
+
+    # --- Effective cloud credentials + provenance (UI review 1.4, 5.7) -----
+    #
+    # The cloud fields can each inherit from `.env`. The UI shows the value that
+    # is actually in effect with the source as secondary text, instead of a
+    # placeholder that vanishes on focus.
+
+    @Property(str, notify=formChanged)
+    def effectiveApiKeyText(self) -> str:
+        """Masked key + provenance. Never renders the secret itself."""
+        value, source = _setting_provenance(self._api_key, "OPENAI_API_KEY")
+        if value:
+            return "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022  \u00b7  " + source
+        base = (self._base_url or "").strip() or os.environ.get("OPENAI_BASE_URL", "")
+        if _is_local_host(base):
+            return "not required for a local endpoint"
+        return "not set \u2014 the run will ask for one"
+
+    @Property(str, notify=formChanged)
+    def effectiveBaseUrlText(self) -> str:
+        value, source = _setting_provenance(self._base_url, "OPENAI_BASE_URL")
+        return f"{value}  \u00b7  {source}" if value else "provider default (api.openai.com)"
+
+    @Property(str, notify=formChanged)
+    def effectiveModelText(self) -> str:
+        value, source = _setting_provenance(self._model, "OPENAI_MODEL")
+        return f"{value}  \u00b7  {source}" if value else "not set \u2014 the run will ask for one"
+
+    @Property(bool, notify=formChanged)
+    def effectiveModelInherited(self) -> bool:
+        """True when the model comes from somewhere other than this field."""
+        return not (self._model or "").strip()
 
     @Property(str, notify=formChanged)
     def host(self) -> str:
@@ -1299,21 +1923,66 @@ class AppBridge(QObject):
 
     @Property(bool, notify=formChanged)
     def localModelReady(self) -> bool:
-        """True when a usable translation GGUF is available.
+        """True when a *complete* translation GGUF is available.
 
-        A model counts as ready if either:
-          1. the user has selected/persisted a valid path (`_local_model` that
-             exists on disk — whatever they browsed to, wherever it lives), or
-          2. an auto-detected Hy-MT2 GGUF is present in the app's gguf folder.
+        A file that merely exists is not enough: an interrupted download leaves
+        a partial file behind, and reporting that as ready is what made the
+        offline flow fail with an opaque ASR/server error. Use
+        :attr:`localModelState` to tell "missing" apart from "corrupt".
+        """
+        return self.localModelState == MODEL_STATE_READY
+
+    @Property(str, notify=formChanged)
+    def localModelState(self) -> str:
+        """``ready`` / ``missing`` / ``corrupt`` for the local translation model."""
+        try:
+            state, _path, _reason = _resolve_model_status(
+                self._local_model, _find_local_model()
+            )
+            return state
+        except Exception:  # noqa: BLE001 - never break the UI on a stat error
+            return MODEL_STATE_MISSING
+
+    @Property(str, notify=formChanged)
+    def localModelProblem(self) -> str:
+        """Why the selected local translation model is unusable ("" when fine)."""
+        try:
+            state, path, reason = _resolve_model_status(
+                self._local_model, _find_local_model()
+            )
+            if state == MODEL_STATE_CORRUPT:
+                return f"{os.path.basename(path)}: {reason}"
+        except Exception:  # noqa: BLE001
+            return ""
+        return ""
+
+    @Property(bool, notify=formChanged)
+    def localModelCorrupt(self) -> bool:
+        """True when a model file exists but is incomplete/unreadable."""
+        return self.localModelState == MODEL_STATE_CORRUPT
+
+    @Property(str, notify=formChanged)
+    def localModelSelectionProblem(self) -> str:
+        """Why the *selected* model path is unusable, even if a fallback exists.
+
+        ``localModelState`` reports the model a run would actually use, so a
+        corrupt selection is masked by a good copy in the models folder. The
+        Settings field still shows the user's own path, so it needs its own
+        explanation rather than silently appearing to work.
         """
         try:
-            selected = (self._local_model or "").strip()
-            if selected and os.path.exists(selected):
-                return True
-            path = resolve_local_model_path(_gguf_dir())
-            return bool(path) and os.path.exists(path)
-        except Exception:  # noqa: BLE001
-            return False
+            state, reason = _model_status(self._local_model)
+        except Exception:  # noqa: BLE001 - never break the UI on a stat error
+            logging.getLogger("translation_agent").debug(
+                "localModelSelectionProblem failed", exc_info=True
+            )
+            return ""
+        if state == MODEL_STATE_CORRUPT:
+            return (
+                f"This file is incomplete ({reason}). Re-download it, or "
+                f"clear the field to use the models folder."
+            )
+        return ""
 
     @Property(bool, notify=localModelDownloadPendingChanged)
     def localModelDownloadPending(self) -> bool:
@@ -1405,16 +2074,77 @@ class AppBridge(QObject):
 
     @Property(bool, notify=formChanged)
     def asrModelReady(self) -> bool:
-        """True when the SenseVoice ASR GGUF is available."""
+        """True when both the SenseVoice and VAD GGUFs are present and complete.
+
+        Both are required for local transcription; checking only for the
+        SenseVoice file let a machine with a missing or truncated VAD model
+        report "ASR ready" and then fail mid-run.
+        """
+        return self.asrModelState == MODEL_STATE_READY
+
+    @Property(str, notify=formChanged)
+    def asrModelState(self) -> str:
+        """``ready`` / ``missing`` / ``corrupt`` for the local ASR models."""
         try:
-            gguf = _gguf_dir()
-            default_sensevoice = os.path.join(gguf, "sensevoice-small-q8.gguf")
-            selected = (self._asr_model or "").strip()
-            if selected and os.path.exists(selected):
-                return True
-            return os.path.exists(default_sensevoice)
+            sense_state, _, _ = _resolve_model_status(
+                self._asr_model, _find_model_file("sensevoice-small-q8.gguf")
+            )
+            vad_state, _, _ = _resolve_model_status(
+                self._asr_vad_model, _find_model_file("fsmn-vad.gguf")
+            )
+            if MODEL_STATE_CORRUPT in (sense_state, vad_state):
+                return MODEL_STATE_CORRUPT
+            if MODEL_STATE_MISSING in (sense_state, vad_state):
+                return MODEL_STATE_MISSING
+            return MODEL_STATE_READY
         except Exception:  # noqa: BLE001
-            return False
+            return MODEL_STATE_MISSING
+
+    @Property(str, notify=formChanged)
+    def asrModelProblem(self) -> str:
+        """Why the ASR models are unusable ("" when they are fine)."""
+        try:
+            for label, selected, fallback in (
+                ("SenseVoice", self._asr_model,
+                 _find_model_file("sensevoice-small-q8.gguf")),
+                ("VAD", self._asr_vad_model, _find_model_file("fsmn-vad.gguf")),
+            ):
+                state, path, reason = _resolve_model_status(selected, fallback)
+                if state == MODEL_STATE_CORRUPT:
+                    return f"{label} model {os.path.basename(path)}: {reason}"
+        except Exception:  # noqa: BLE001
+            return ""
+        return ""
+
+    @Property(bool, notify=formChanged)
+    def asrModelCorrupt(self) -> bool:
+        """True when an ASR model file exists but is incomplete/unreadable."""
+        return self.asrModelState == MODEL_STATE_CORRUPT
+
+    @Property(str, notify=formChanged)
+    def asrModelSelectionProblem(self) -> str:
+        """Why a *selected* ASR/VAD model path is unusable ("" when it is fine).
+
+        Unlike :attr:`asrModelProblem` this ignores the models-folder fallback,
+        so the Settings fields can flag the user's own path.
+        """
+        try:
+            for label, selected in (
+                ("SenseVoice model", self._asr_model),
+                ("VAD model", self._asr_vad_model),
+            ):
+                state, reason = _model_status(selected)
+                if state == MODEL_STATE_CORRUPT:
+                    return (
+                        f"{label} is incomplete ({reason}). Re-download it, or "
+                        f"clear the field to use the models folder."
+                    )
+        except Exception:  # noqa: BLE001 - never break the UI on a stat error
+            logging.getLogger("translation_agent").debug(
+                "asrModelSelectionProblem failed", exc_info=True
+            )
+            return ""
+        return ""
 
     @Property(str, notify=formChanged)
     def asrThreads(self) -> str:
@@ -1574,6 +2304,9 @@ class AppBridge(QObject):
         if value not in ("srt", "ass"):
             value = "srt"
         self._set_field("_output_format", value)
+        # Switching srt <-> ass must also move an auto-derived output path, or
+        # the field would still say .srt while the run writes .ass.
+        self._sync_auto_out_path()
 
     @Property(str, notify=statusMessageChanged)
     def statusMessage(self) -> str:
@@ -1582,6 +2315,63 @@ class AppBridge(QObject):
     @Property(str, notify=statusStateChanged)
     def statusState(self) -> str:
         return self._status_state
+
+    # --- Global status strip (UI review 3.1) ------------------------------
+    #
+    # One derived, read-only line for the top bar, composed from the store:
+    #   "● Ready · YouTube → Cloud LLM · English out · Saved"
+    # It replaces the scattered `Ready` / `Strict gate off` / `No report yet`
+    # pills, so there is a single honest mirror instead of several that could
+    # disagree. Derived in Python so it is testable.
+
+    @Property(str, notify=globalStatusChanged)
+    def globalStatusText(self) -> str:
+        return "  \u00b7  ".join(self._global_status_parts())
+
+    @Property(str, notify=globalStatusChanged)
+    def globalStatusTone(self) -> str:
+        """One of ok / warn / err / acc / mute, for the strip's leading dot."""
+        if self._status_state == "failed":
+            return "err"
+        if self._status_state in ("running", "validating"):
+            return "acc"
+        if self._status_state == "cancelled":
+            return "warn"
+        if self._status_state == "done":
+            return "ok"
+        actionable = self.readinessActionableCount
+        ready = self.readinessReadyCount
+        if actionable and ready < actionable:
+            return "warn"
+        return "ok" if actionable else "mute"
+
+    def _global_status_parts(self) -> list[str]:
+        """The composed segments, in reading order."""
+        state = self._status_state
+        if state == "running" or state == "validating":
+            head = "Running"
+        elif state == "done":
+            head = "Done"
+        elif state == "failed":
+            head = "Failed"
+        elif state == "cancelled":
+            head = "Cancelled"
+        else:
+            actionable = self.readinessActionableCount
+            ready = self.readinessReadyCount
+            head = "Ready" if (actionable and ready == actionable) else "Not ready"
+
+        if self._pipeline_mode == PIPELINE_MODE_YOUTUBE_CLOUD:
+            flow = "YouTube \u2192 Cloud LLM"
+        elif self._pipeline_mode == PIPELINE_MODE_LOCAL_CLOUD:
+            flow = "Local file \u2192 Local ASR \u2192 Cloud LLM"
+        else:
+            flow = "Local file \u2192 Local ASR \u2192 Local LLM"
+
+        parts = [head, flow, "English out"]
+        if self._dirty:
+            parts.append("Unsaved changes")
+        return parts
 
     @Property(str, notify=logTextChanged)
     def logText(self) -> str:
@@ -1659,6 +2449,77 @@ class AppBridge(QObject):
         if not self._is_running:
             return int(self._stage_elapsed_sec)
         return int(time.time() - self._stage_started_at)
+
+    # --- Stage strip (UI review 6.2, 6.6) ---------------------------------
+    #
+    # The middle column used to be called `PIPELINE` while being a form, so the
+    # name over-promised a flow that did not exist. The column is now
+    # `Processing`, and this is the strip that actually honours the name: five
+    # canonical stages, idle-grey normally, lighting per stage during a run,
+    # and halting on the failing stage when a run fails.
+
+    _CANONICAL_STAGES = (
+        ("source", "Source"),
+        ("transcribe", "Transcribe"),
+        ("translate", "Translate"),
+        ("gate", "Gate"),
+        ("write", "Write"),
+    )
+
+    # Worker stage id -> canonical stage id.
+    _STAGE_ALIASES = {
+        "fetch": "source",
+        "asr": "transcribe",
+        "translate": "translate",
+        "write": "write",
+        "gate": "gate",
+    }
+
+    @Property("QVariantList", notify=stageChanged)
+    def pipelineStages(self) -> list:
+        """Canonical stages with a per-stage state for the Run strip.
+
+        States: ``pending`` | ``active`` | ``done`` | ``failed`` | ``skipped``.
+        ``skipped`` is a fact about the mode, not a problem: YouTube mode never
+        runs the transcribe stage, and the gate is skipped when it is off.
+        """
+        visited: list[str] = []
+        for entry in self._stage_sequence:
+            canonical = self._STAGE_ALIASES.get(entry.get("name", ""), "")
+            if canonical and canonical not in visited:
+                visited.append(canonical)
+        current = self._STAGE_ALIASES.get(self._progress_stage, "")
+        failed = self._status_state == "failed"
+
+        rows = []
+        for stage_id, label in self._CANONICAL_STAGES:
+            if stage_id == "transcribe" and self._pipeline_mode == PIPELINE_MODE_YOUTUBE_CLOUD:
+                state = "skipped"
+            elif stage_id == "gate" and not self._strict_quality:
+                state = "skipped"
+            elif failed and stage_id == current:
+                state = "failed"
+            elif self._is_running and stage_id == current:
+                state = "active"
+            elif stage_id in visited:
+                # Everything visited before the current stage is finished.
+                state = "done" if stage_id != current or not self._is_running else "active"
+            else:
+                state = "pending"
+            rows.append({"id": stage_id, "label": label, "state": state})
+        return rows
+
+    @Property(int, notify=stageChanged)
+    def pipelineStageIndex(self) -> int:
+        """Index of the active (or halted) stage, or -1 when idle."""
+        for i, row in enumerate(self.pipelineStages):
+            if row["state"] in ("active", "failed"):
+                return i
+        return -1
+
+    @Property(int, notify=stageChanged)
+    def pipelineStageTotal(self) -> int:
+        return len(self._CANONICAL_STAGES)
 
     @Property(int, notify=progressChanged)
     def estimatedRemainingSec(self) -> int:
@@ -1863,33 +2724,61 @@ class AppBridge(QObject):
         return -1
 
     # --- Pre-run readiness checklist (UX review S-03) ----------------------
+    def _effective_out_path(self) -> str:
+        """The path a run will actually write to ("" when not yet knowable).
+
+        Mirrors the derivation in :func:`translate.default_output_path`, so the
+        readiness checklist and the Output field agree with what the run does.
+        """
+        path = (self._out_path or "").strip()
+        if path:
+            return path
+        source = (self._file_path or "").strip()
+        if source:
+            try:
+                return translate.default_output_path(
+                    source, "", self._output_format or "srt"
+                )
+            except Exception:  # noqa: BLE001 - a hint is never worth a crash
+                return ""
+        return ""
+
     def _output_readiness_row(self) -> dict:
         """Real check instead of the old hardcoded `return true`.
 
-        Blank output path is genuinely "nothing to check" (the name is derived
-        from the title), so it reports `n/a` rather than a green tick — a row
-        that can never fail teaches users to ignore the whole checklist.
+        With no input and no path there is genuinely nothing to check yet, so
+        the row reports `unchecked` — *not* `na`. The two used to share one
+        grey dash, which made the readiness score's denominator disagree with
+        the rows on screen (UI review 2.1, 6.4). `na` means "this mode never
+        uses it"; `unchecked` means "not evaluated yet".
         """
         path = (self._out_path or "").strip()
+        derived = self._out_path_auto
+        if not path:
+            path = self._effective_out_path()
         if not path:
             return {
                 "id": "output",
                 "label": "Output folder writable",
-                "state": "n/a",
-                "hint": "Auto-named from the title",
+                "state": READINESS_UNCHECKED,
+                "actionable": True,
+                "hint": "Pick a video to see the output path",
             }
         directory = os.path.dirname(os.path.abspath(path)) or "."
+        hint = "Next to the video" if derived else ""
         if os.path.isdir(directory) and os.access(directory, os.W_OK):
             return {
                 "id": "output",
                 "label": "Output folder writable",
-                "state": "ok",
-                "hint": "",
+                "state": READINESS_OK,
+                "actionable": True,
+                "hint": hint,
             }
         return {
             "id": "output",
             "label": "Output folder writable",
-            "state": "todo",
+            "state": READINESS_TODO,
+            "actionable": True,
             "hint": "Cannot write to " + directory,
         }
 
@@ -1899,8 +2788,14 @@ class AppBridge(QObject):
 
     @Property(list, notify=readinessChanged)
     def readinessRows(self) -> list:
-        """Pre-run checklist rows as {id,label,state,hint} with state in
-        ``ok`` / ``todo`` / ``n/a``.
+        """Pre-run checklist rows as {id,label,state,actionable,hint}.
+
+        ``state`` is one of ``ok`` / ``todo`` / ``na`` / ``unchecked`` (see the
+        READINESS_* constants). ``na`` and ``unchecked`` are deliberately
+        distinct facts with distinct glyphs — collapsing them into one grey
+        dash is what made the score's denominator disagree with the visible
+        rows. ``actionable`` is True for every row that is a real check, so the
+        UI badge can read "2 of 3 actionable · 1 n/a".
 
         Computed in Python (not QML) so every row is testable and none can be
         silently hardcoded to green.
@@ -1917,25 +2812,28 @@ class AppBridge(QObject):
         rows.append({
             "id": "source",
             "label": "Source selected",
-            "state": "ok" if source_ok else "todo",
+            "state": READINESS_OK if source_ok else READINESS_TODO,
+            "actionable": True,
             "hint": "" if source_ok else source_hint,
         })
 
         if mode == PIPELINE_MODE_YOUTUBE_CLOUD:
-            # Previously this row showed a green tick AND told the user to
-            # download an ASR model they do not need.
+            # Not "not checked" — this mode genuinely never runs the ASR stage,
+            # so the row is `na` and does not count toward the denominator.
             rows.append({
                 "id": "asr",
                 "label": "ASR model available",
-                "state": "n/a",
-                "hint": "Not needed for YouTube mode",
+                "state": READINESS_NA,
+                "actionable": False,
+                "hint": "Not used in YouTube mode",
             })
         else:
             asr_ok = bool(self.asrModelReady)
             rows.append({
                 "id": "asr",
                 "label": "ASR model available",
-                "state": "ok" if asr_ok else "todo",
+                "state": READINESS_OK if asr_ok else READINESS_TODO,
+                "actionable": True,
                 "hint": "" if asr_ok
                         else "Download the SenseVoice model for local transcription",
             })
@@ -1945,24 +2843,62 @@ class AppBridge(QObject):
             rows.append({
                 "id": "backend",
                 "label": "Translation backend ready",
-                "state": "ok" if backend_ok else "todo",
+                "state": READINESS_OK if backend_ok else READINESS_TODO,
+                "actionable": True,
                 "hint": "" if backend_ok
                         else "Download or select a local translation model",
             })
         else:
             has_key = bool((self._api_key or "").strip()) or bool(
                 os.environ.get("OPENAI_API_KEY")
+            ) or _is_local_host(
+                (self._base_url or "").strip() or os.environ.get("OPENAI_BASE_URL", "")
             )
             rows.append({
                 "id": "backend",
                 "label": "Translation backend ready",
-                "state": "ok" if has_key else "todo",
+                "state": READINESS_OK if has_key else READINESS_TODO,
+                "actionable": True,
                 "hint": "" if has_key
-                        else "Set an API key in Advanced, or define OPENAI_API_KEY",
+                        else "Set an API key in Settings, or define OPENAI_API_KEY",
             })
 
         rows.append(self._output_readiness_row())
         return rows
+
+    @Property(int, notify=readinessChanged)
+    def readinessActionableCount(self) -> int:
+        """How many rows are real checks (the badge denominator)."""
+        return sum(1 for r in self.readinessRows if r.get("actionable"))
+
+    @Property(int, notify=readinessChanged)
+    def readinessReadyCount(self) -> int:
+        """How many actionable rows are satisfied (the badge numerator)."""
+        return sum(
+            1 for r in self.readinessRows
+            if r.get("actionable") and r.get("state") == READINESS_OK
+        )
+
+    @Property(int, notify=readinessChanged)
+    def readinessNotApplicableCount(self) -> int:
+        return sum(1 for r in self.readinessRows if r.get("state") == READINESS_NA)
+
+    @Property(str, notify=readinessChanged)
+    def runBlockedReason(self) -> str:
+        """Why Run is disabled, or "" when it is ready.
+
+        The primary action must never redefine itself to work around a
+        precondition (UI review 3.3). It stays `Run`, goes disabled, and shows
+        this string — derived from the same readiness rows the checklist
+        renders, so the two can never disagree.
+        """
+        if self._is_running:
+            return ""
+        for row in self.readinessRows:
+            if row.get("actionable") and row.get("state") == READINESS_TODO:
+                hint = (row.get("hint") or "").strip()
+                return hint or row.get("label", "")
+        return ""
 
     @Property(QObject, constant=True)
     def cueModel(self) -> CueResultModel:
@@ -2334,6 +3270,9 @@ class AppBridge(QObject):
             return
 
         self._youtube_title = info.get("title") or ""
+        # The title names the subtitle file, so the auto output path can only be
+        # resolved once the video has been inspected.
+        self._sync_auto_out_path()
         # JSON object keys are always strings, so the heights arrived as "1080"
         # etc. Restore int keys so resolve_video_option() can still match the
         # combined (single-file) formats shown to the user in the UI.
@@ -2576,6 +3515,42 @@ class AppBridge(QObject):
         self._youtube_sub_status = self._youtube_sub_status[-8000:]
         self.youtubeDownloadChanged.emit()
 
+    @Slot(str, result=str)
+    def folderUrl(self, path: str) -> str:
+        """``file://`` URL of the folder holding `path`, for a QML file dialog.
+
+        A picker that always opens at the app folder makes a client re-navigate
+        to their videos every single time; this lets the dialogs start where
+        the user already is.
+        """
+        target = (path or "").strip()
+        if not target:
+            return ""
+        folder = target if os.path.isdir(target) else os.path.dirname(os.path.abspath(target))
+        if not os.path.isdir(folder):
+            return ""
+        return QUrl.fromLocalFile(folder).toString()
+
+    @Slot(str, result=str)
+    def fileUrl(self, path: str) -> str:
+        """``file://`` URL for `path` itself ("" when the path is empty)."""
+        target = (path or "").strip()
+        if not target:
+            return ""
+        return QUrl.fromLocalFile(os.path.abspath(target)).toString()
+
+    @Property(str, notify=formChanged)
+    def lastInputDir(self) -> str:
+        """Folder the file pickers should open in ("" = let the OS choose)."""
+        for candidate in (self._file_path, self._out_path, self._youtube_download_dir):
+            path = (candidate or "").strip()
+            if not path:
+                continue
+            folder = path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
+            if os.path.isdir(folder):
+                return folder
+        return ""
+
     @Slot(str)
     def openFolderForPath(self, path: str) -> None:
         target = (path or "").strip()
@@ -2616,17 +3591,26 @@ class AppBridge(QObject):
         worker = self.sender()
         downloaded = getattr(worker, "downloaded", []) if worker else []
         gguf = _gguf_dir()
-        if not self._asr_model.strip():
+        # Only latch a path that actually validates. Latching on bare existence
+        # is what let an interrupted download become the permanently "ready"
+        # ASR model, with no way for the user to notice or fix it.
+        if not self._asr_model.strip() or _model_status(self._asr_model)[0] == MODEL_STATE_CORRUPT:
             candidate = os.path.join(gguf, "sensevoice-small-q8.gguf")
-            if candidate in downloaded or os.path.exists(candidate):
+            if candidate in downloaded and gguf_check.is_usable_gguf(candidate):
                 self._set_field("_asr_model", candidate)
-        if not self._asr_vad_model.strip():
+        if not self._asr_vad_model.strip() or _model_status(self._asr_vad_model)[0] == MODEL_STATE_CORRUPT:
             candidate = os.path.join(gguf, "fsmn-vad.gguf")
-            if candidate in downloaded or os.path.exists(candidate):
+            if candidate in downloaded and gguf_check.is_usable_gguf(candidate):
                 self._set_field("_asr_vad_model", candidate)
         self._persist_fields()
         self.modelDownloadChanged.emit()
-        self._set_status("ASR model ready.")
+        if self.asrModelReady:
+            self._set_status("ASR model ready.")
+        else:
+            self._set_status(
+                "ASR models are still unavailable. See the log for the download "
+                "error (a full disk is the usual cause)."
+            )
 
     @Slot()
     def downloadLocalModel(self) -> None:
@@ -2652,11 +3636,13 @@ class AppBridge(QObject):
         self._local_model_download_pending = False
         worker = self.sender()
         downloaded = getattr(worker, "downloaded", []) if worker else []
-        if not self._local_model.strip():
-            candidate = resolve_local_model_path(_gguf_dir())
-            if candidate and (
-                candidate in downloaded or os.path.exists(candidate)
-            ):
+        selected_state, _ = _model_status(self._local_model)
+        if not self._local_model.strip() or selected_state == MODEL_STATE_CORRUPT:
+            # Nothing selected, or the selection points at a file that cannot be
+            # loaded (an interrupted download). Either way the freshly verified
+            # download is what the user wants to use.
+            candidate = _find_local_model()
+            if candidate and candidate in downloaded:
                 self._set_field("_local_model", candidate)
                 print(
                     f"[local] Using Hy-MT2 model: {os.path.relpath(candidate)}",
@@ -2664,11 +3650,19 @@ class AppBridge(QObject):
                 )
         self._persist_fields()
         self.modelDownloadChanged.emit()
-        self._set_status("Local translation model ready.")
+        if self.localModelReady:
+            self._set_status("Local translation model ready.")
+        else:
+            self._set_status(
+                "The local translation model is still unavailable. See the log "
+                "for the download error (a full disk is the usual cause)."
+            )
         self.localModelDownloadPendingChanged.emit()
 
-        # If a run was waiting on this download, kick it off now.
-        if was_pending:
+        # If a run was waiting on this download, kick it off now — but only when
+        # the model really is usable, otherwise the run would fail immediately
+        # with the same error the user is already looking at.
+        if was_pending and self.localModelReady:
             self.runTranslation()
 
     @Slot()
@@ -2691,7 +3685,14 @@ class AppBridge(QObject):
 
     @Slot(result=str)
     def copySummaryText(self) -> str:
-        """Human-readable summary of the last result for bug reports."""
+        """Human-readable diagnostics for bug reports.
+
+        This is the single home for raw internals: absolute paths, the registry
+        store, Python/Qt versions and the frozen flag. They used to be splashed
+        across the About/Environment card inline, which is developer telemetry,
+        not configuration (UI review 5.6). The card now shows one-line
+        summaries and this button carries the full strings.
+        """
         q = self._quality_summary
         lines = [
             f"Output: {self._resolved_out_path or '-'}",
@@ -2700,12 +3701,32 @@ class AppBridge(QObject):
             f"Errors: {self.qualityErrors}  Warnings: {self.qualityWarnings}",
             f"Avg CPS: {self.qualityAverageCps}  Max line chars: {self.qualityMaxLineChars}",
             f"Strict quality: {self._result_strict_state}",
+            "",
+            "Environment:",
         ]
+        lines.extend(f"  {row['k']}: {row['v']}" for row in self.environmentRows)
         text = "\n".join(lines)
         from PySide6.QtGui import QGuiApplication
 
         QGuiApplication.clipboard().setText(text)
         return text
+
+    @Slot(result=str)
+    def copyToDiagnostics(self) -> str:
+        """`Copy diagnostics` — the single home for raw internals (UI review 5.6).
+
+        The About card shows a one-line summary; everything a bug report needs
+        (install path, models path, result JSON path, settings store, versions)
+        comes out of here, and nowhere else.
+        """
+        text = self.copySummaryText()
+        self._set_status("Diagnostics copied to the clipboard.")
+        return text
+
+    @Slot(str)
+    def setStatusMessage(self, text: str) -> None:
+        """Let QML surface a refusal (e.g. a shortcut conflict) in the status bar."""
+        self._set_status(text)
 
     @Slot(str, result=str)
     def localPath(self, url_or_path: str) -> str:
@@ -2728,18 +3749,23 @@ class AppBridge(QObject):
             config = self._build_run_config()
         except ValueError as exc:
             msg = str(exc)
-            # Auto-trigger model download when the only blocker is a missing
-            # local translation GGUF, so the user does not have to configure
-            # anything manually.
+            # Auto-trigger model download when the only blocker is a missing (or
+            # unusable) local translation GGUF, so the user does not have to
+            # configure anything manually.
             if (
                 self._backend == "local"
-                and "No local translation model found" in msg
+                and "No usable local translation model found" in msg
                 and not self._local_model_downloading
                 and not self._local_model_download_pending
             ):
                 self._local_model_download_pending = True
                 self.localModelDownloadPendingChanged.emit()
-                self._set_status("Downloading local translation model…")
+                self._set_status(
+                    "Downloading local translation model…"
+                    if not self.localModelCorrupt
+                    else "The local translation model file is incomplete — "
+                         "downloading it again…"
+                )
                 self._set_status_state(STATUS_RUNNING)
                 worker = _ModelDownloadWorker(_LOCAL_MODEL_URLS)
                 worker.signals.progress.connect(self._append_log)
@@ -2901,8 +3927,20 @@ class AppBridge(QObject):
 
         source = self._url or self._file_path or ""
         title = os.path.basename(source) if source else "Untitled run"
-        if source.startswith(("http://", "https://")):
+        is_youtube = source.startswith(("http://", "https://"))
+        if is_youtube:
             title = self._youtube_title or source
+
+        # The two axes the Run screen exposes, spelled out. `modeCode` alone
+        # ("YT" / "LC" / "OFF") is a legend the user has to be taught; the
+        # history row states the source and the engine in words (§2.2: never
+        # ship an abbreviation a reader cannot resolve).
+        source_label = "YouTube URL" if is_youtube else "Local media file"
+        engine_label = {
+            PIPELINE_MODE_YOUTUBE_CLOUD: "Cloud LLM",
+            PIPELINE_MODE_LOCAL_CLOUD: "Local ASR + Cloud LLM",
+            PIPELINE_MODE_OFFLINE: "Local model",
+        }.get(self._pipeline_mode, self._pipeline_mode)
 
         entry = {
             "title": title,
@@ -2912,6 +3950,8 @@ class AppBridge(QObject):
                 else "LC"
             ),
             "mode": self._pipeline_mode,
+            "sourceLabel": source_label,
+            "engineLabel": engine_label,
             "started": self._run_started_clock or time.strftime("%H:%M:%S"),
             "duration": _format_seconds(self._stage_elapsed_sec),
             "status": status,
@@ -2934,11 +3974,16 @@ class AppBridge(QObject):
             "warnings": int(self._quality_summary.get("warning_count", 0)),
             "strict": self._result_strict_state,
             "elapsedSec": int(self._stage_elapsed_sec),
+            # Only a successful run leaves a result to reload. A failed or
+            # cancelled run gets no key at all, so the Log row can say why it
+            # cannot be opened instead of silently doing nothing.
+            "resultJson": self._archive_result_json() if rc == 0 else "",
         }
 
         history = self._history_entries()
         history.insert(0, entry)
         del history[20:]
+        self._prune_run_results(history)
         self._run_history_json = json.dumps(history, ensure_ascii=False)
         self._selected_run_index = 0
         self._persist_fields()
@@ -2951,6 +3996,56 @@ class AppBridge(QObject):
             return []
         return data if isinstance(data, list) else []
 
+    def _archive_result_json(self) -> str:
+        """Copy the run's result JSON aside and return its filename, or "".
+
+        Returns the *basename* only: the cache folder moves with the app, and an
+        absolute path stored in a persisted entry would rot the moment the
+        bundle is moved (the same failure that orphaned the downloaded models).
+        """
+        source = _result_json_path()
+        if not os.path.isfile(source):
+            return ""
+        directory = _run_result_dir()
+        if not directory:
+            return ""
+        stamp = int(time.time() * 1000)
+        name = f"{stamp}.json"
+        # Two runs can finish inside the same millisecond; a shared filename
+        # would make the older entry unreadable the moment the newer one lands.
+        suffix = 0
+        while os.path.exists(os.path.join(directory, name)):
+            suffix += 1
+            name = f"{stamp}-{suffix}.json"
+        try:
+            shutil.copyfile(source, os.path.join(directory, name))
+        except OSError as exc:
+            self.logger.warning("could not archive the result JSON: %s", exc)
+            return ""
+        return name
+
+    def _prune_run_results(self, history: list) -> None:
+        """Delete archived results no surviving history entry points at."""
+        directory = _run_result_dir()
+        if not directory:
+            return
+        keep = {
+            str(entry.get("resultJson"))
+            for entry in history
+            if entry.get("resultJson")
+        }
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+        for name in names:
+            if name in keep or not name.endswith(".json"):
+                continue
+            try:
+                os.remove(os.path.join(directory, name))
+            except OSError:
+                pass
+
     def _reset_result_state(self) -> None:
         self._result_ready = False
         self._result_strict_state = "pass" if self._strict_quality else "off"
@@ -2959,9 +4054,14 @@ class AppBridge(QObject):
         self.quality_issues_model.clear()
         self.resultReadyChanged.emit()
 
-    def _load_result_json(self) -> bool:
-        """Load cache/last_result.json into the Review/Quality models."""
-        path = _result_json_path()
+    def _load_result_json(self, path: str | None = None) -> bool:
+        """Load a result JSON into the Review/Quality models.
+
+        Defaults to the CLI's fixed `last_result.json`. The Log screen passes a
+        per-run archive instead, which is the only way an older history entry
+        can be opened at all.
+        """
+        path = path or _result_json_path()
         try:
             with open(path, encoding="utf-8") as f:
                 result = json.load(f)
@@ -3055,6 +4155,16 @@ class AppBridge(QObject):
     @Slot()
     def recheckQuality(self) -> None:
         """Re-run quality checks on the edited cues without re-translating (S-01)."""
+        self._refresh_quality_from_cues(announce=True)
+
+    def _refresh_quality_from_cues(self, *, announce: bool) -> None:
+        """Re-run the quality checks against the *edited* cues.
+
+        Shared by the explicit `Re-check` action and by the Review inspector,
+        which calls it after every committed edit. Keeping one implementation
+        means the live per-cue flags and the explicit re-check can never
+        disagree.
+        """
         if not self._result_ready:
             return
         cues = self._cues_for_save()
@@ -3068,8 +4178,46 @@ class AppBridge(QObject):
         summary["max_line_chars"] = max_line
         self._quality_summary = summary
         self.quality_issues_model.load_from_report(summary)
+        self._sync_cue_tags(summary)
+        # The gate verdict is a function of the cues, so it has to move with
+        # them. Editing a leaked tag away turns FAIL into PASS without a re-run
+        # (T-5.7).
+        if self._strict_quality:
+            self._result_strict_state = "fail" if report.error_count else "pass"
         self.resultReadyChanged.emit()
-        self._set_status("Re-checked the edited subtitles.")
+        if announce:
+            self._set_status("Re-checked the edited subtitles.")
+
+    def _sync_cue_tags(self, summary: dict) -> None:
+        """Push the report's per-cue tags back into the Review rows."""
+        tags_by_index: dict[int, list[str]] = {}
+        for entry in summary.get("issues", []):
+            ci = int(entry.get("cue_index", 0))
+            tags_by_index.setdefault(ci, []).extend(entry.get("issues", []))
+        self.cue_model.set_tags(tags_by_index)
+
+    @Slot(str, bool, result=int)
+    def countCueMatches(self, find: str, use_regex: bool) -> int:
+        """How many replacements `replaceInCues` would make, without making them.
+
+        Backs the Review "Find & replace" card's live count and its disabled
+        `Replace all` (UI review 5.5). An action that silently does nothing is
+        worse than one that is visibly unavailable, and a regex that does not
+        compile is the common case.
+        """
+        if not find:
+            return 0
+        import re as _re
+
+        try:
+            rx = _re.compile(find) if use_regex else None
+        except _re.error:
+            return 0
+        total = 0
+        for i in range(self.cue_model.count):
+            text = self.cue_model.get_cue(i).get("text", "") or ""
+            total += len(rx.findall(text)) if rx is not None else text.count(find)
+        return total
 
     @Slot(str, str, bool, result=int)
     def replaceInCues(self, find: str, replace: str, use_regex: bool) -> int:
@@ -3121,12 +4269,28 @@ class AppBridge(QObject):
         """Jump from a Quality issue to the matching cue in the Review tab."""
         self.cue_proxy.filterMode = "all"
         self.cue_proxy.searchText = ""
+        # A timeline range left over from an earlier drag would hide the cue we
+        # are being asked to reveal.
+        self.cue_proxy.clearCueRange()
         self._focus_cue_index = max(0, int(cue_number) - 1)
         self.focusCueIndexChanged.emit()
         self.requestTab.emit(1)
 
+    @Slot(int)
+    def revealIssueForCue(self, cue_number: int) -> None:
+        """Jump from a cue's quality flags to its row in the Quality issue list."""
+        self.quality_issues_model.focus_cue(max(1, int(cue_number)))
+        self.requestTab.emit(2)
+
+    @Slot(str)
     def saveWindowState(self, geometry: str) -> None:
-        """Persist window geometry: 'x,y,width,height'."""
+        """Persist window geometry: 'x,y,width,height'.
+
+        ``@Slot`` is load-bearing: ``Main.qml`` calls this from ``onClosing``,
+        and QML can only invoke slots / invokable methods. Without the
+        decorator the call was silently dropped and the window geometry never
+        persisted.
+        """
         parts = (geometry or "").split(",")
         if len(parts) != 4:
             return
@@ -3175,11 +4339,139 @@ class AppBridge(QObject):
             self.accentChanged.emit()
             self._persist_fields()
 
+    # --- Keyboard shortcuts (UI review 5.5) -------------------------------
+    #
+    # The shortcut list used to be read-only, mirrored in three places and
+    # mis-filed under Settings — decoration, not configuration. It is now a
+    # real remap surface: `shortcutMap` drives Main.qml's `Shortcut.sequence`
+    # bindings, `setShortcut` records a new combo, and conflicts are reported
+    # rather than silently allowed.
+
+    # (action id, human label, default sequence). Order is display order.
+    _SHORTCUT_DEFAULTS = (
+        ("run", "Run a translation", "Ctrl+Return"),
+        ("cancel", "Cancel the run", "Ctrl+."),
+        ("palette", "Command palette", "Ctrl+K"),
+        ("save", "Save edited subtitles", "Ctrl+S"),
+        ("search", "Search cues", "Ctrl+F"),
+        ("goto_run", "Go to Run", "Ctrl+1"),
+        ("goto_review", "Go to Review", "Ctrl+2"),
+        ("goto_quality", "Go to Quality", "Ctrl+3"),
+        ("goto_log", "Go to Log", "Ctrl+L"),
+        ("goto_settings", "Go to Settings", "Ctrl+,"),
+        ("cue_next", "Next / previous cue", "\u2191 \u2193"),
+    )
+
+    def _default_shortcuts(self) -> dict[str, str]:
+        return {action: seq for action, _label, seq in self._SHORTCUT_DEFAULTS}
+
+    def _loaded_shortcuts(self) -> dict[str, str]:
+        """Stored overrides merged over the defaults, unknown ids dropped."""
+        merged = self._default_shortcuts()
+        try:
+            stored = json.loads(self._shortcuts_json or "{}")
+        except (TypeError, ValueError):
+            return merged
+        if not isinstance(stored, dict):
+            return merged
+        for action, seq in stored.items():
+            if action in merged and isinstance(seq, str) and seq.strip():
+                merged[action] = seq.strip()
+        return merged
+
+    @Property("QVariantMap", notify=shortcutsChanged)
+    def shortcutMap(self) -> dict:
+        """action id -> sequence. This is what Main.qml binds its Shortcuts to."""
+        return self._loaded_shortcuts()
+
+    @Property("QVariantList", notify=shortcutsChanged)
+    def shortcutRows(self) -> list:
+        """Display rows: label, current sequence, default, conflict flag."""
+        current = self._loaded_shortcuts()
+        defaults = self._default_shortcuts()
+        # Count each sequence so a duplicate can be flagged on both rows.
+        seen: dict[str, int] = {}
+        for seq in current.values():
+            seen[seq] = seen.get(seq, 0) + 1
+        rows = []
+        for action, label, default in self._SHORTCUT_DEFAULTS:
+            seq = current[action]
+            rows.append({
+                "action": action,
+                "label": label,
+                "sequence": seq,
+                "default": default,
+                "isDefault": seq == default,
+                "conflict": seen.get(seq, 0) > 1,
+            })
+        return rows
+
+    @Slot(str, result=str)
+    def shortcutFor(self, action: str) -> str:
+        return self._loaded_shortcuts().get(action, "")
+
+    @Slot(str, str, result=str)
+    def setShortcut(self, action: str, sequence: str) -> str:
+        """Record a new combo. Returns "" on success, or a reason on refusal."""
+        sequence = (sequence or "").strip()
+        if action not in self._default_shortcuts():
+            return "Unknown shortcut."
+        if sequence == "":
+            return "Press a key combination first."
+        try:
+            current = json.loads(self._shortcuts_json or "{}")
+        except (TypeError, ValueError):
+            current = {}
+        if not isinstance(current, dict):
+            current = {}
+        current[action] = sequence
+        self._shortcuts_json = json.dumps(current, sort_keys=True)
+        self.shortcutsChanged.emit()
+        self._notify_form_changed()
+        return ""
+
+    @Slot(str)
+    def resetShortcut(self, action: str) -> None:
+        try:
+            current = json.loads(self._shortcuts_json or "{}")
+        except (TypeError, ValueError):
+            current = {}
+        if isinstance(current, dict) and action in current:
+            current.pop(action)
+            self._shortcuts_json = json.dumps(current, sort_keys=True)
+            self.shortcutsChanged.emit()
+            self._notify_form_changed()
+
+    @Slot()
+    def resetAllShortcuts(self) -> None:
+        self._shortcuts_json = "{}"
+        self.shortcutsChanged.emit()
+        self._notify_form_changed()
+
     @Slot()
     def saveSettings(self) -> None:
-        """Re-persist every stored preference (the Settings page's Save)."""
+        """Flush the store immediately.
+
+        No longer a visible button (autosave owns the normal path); kept as a
+        slot for the command palette and for the ``onClosing`` flush.
+        """
+        self._save_timer.stop()
         self._persist_fields()
+        self._set_dirty(False)
         self._set_status("Settings saved.")
+
+    @Property(bool, notify=dirtyChanged)
+    def dirty(self) -> bool:
+        """True while an edit is waiting for the autosave debounce.
+
+        One truth for the save lifecycle: the top-bar strip mirrors this, and
+        there is no second "Save" affordance to contradict it (UI review 3.4).
+        """
+        return self._dirty
+
+    @Property(str, notify=dirtyChanged)
+    def saveStateText(self) -> str:
+        return "Unsaved changes" if self._dirty else "Saved"
 
     # --- Cue editing ------------------------------------------------------
     def _on_cue_data_changed(self, *_args) -> None:
@@ -3201,11 +4493,19 @@ class AppBridge(QObject):
 
     @Slot(int, str)
     def setCueText(self, row: int, text: str) -> None:
-        """Write one cue's translation (the Review inspector's text area)."""
+        """Write one cue's translation (the Review inspector's text area).
+
+        Re-runs the quality checks immediately so the issue chips under the
+        editor, the row's severity bar and the Quality counts all move as the
+        edit lands. Without this the flags stayed frozen at the values the last
+        run produced, so fixing a cue left it looking broken (UI review 5.4).
+        """
         source_row = self._source_row(row)
         if source_row < 0:
             return
-        self.cue_model.setData(self.cue_model.index(source_row, 0), text, Qt.EditRole)
+        if not self.cue_model.setData(self.cue_model.index(source_row, 0), text, Qt.EditRole):
+            return
+        self._refresh_quality_from_cues(announce=False)
 
     @Slot(int)
     def revertCue(self, row: int) -> None:
@@ -3371,32 +4671,56 @@ class AppBridge(QObject):
                 "Total cues", "Untranslated", "Errors", "Warnings",
                 "Avg CPS", "Max line chars", "Strict gate",
             )
-            return [{"value": "\u2014", "label": t, "tone": "mute", "hint": ""} for t in labels]
+            return [
+                {"value": "\u2014", "label": t, "tone": "mute", "hint": "",
+                 "breakdown": []}
+                for t in labels
+            ]
 
         summary = self._quality_summary
         untranslated = self.qualityUntranslated
-        errors = self.qualityErrors
-        warnings = self.qualityWarnings
+        # These two tiles sit directly above the Issues table and click through
+        # to it, so they must count what it lists: issue **rows**, not the cues
+        # those rows belong to. A cue can carry two errors (a blank cue is both
+        # `empty_text` and `cps_error`), and using the cue-level `qualityErrors`
+        # here made the "Errors" tile and the "Errors" filter chip over the same
+        # table disagree. `qualityErrors` keeps its cue-level meaning for the
+        # icon-rail badge and the Review page, which count cues.
+        issue_counts = self.quality_issues_model.counts
+        errors = int(issue_counts.get("errors", 0))
+        warnings = int(issue_counts.get("warnings", 0))
         gate = self._result_strict_state
+        total = int(summary.get("cue_count", 0))
         return [
-            {"value": str(summary.get("cue_count", 0)), "label": "Total cues", "tone": "", "hint": ""},
+            {"value": str(total), "label": "Total cues", "tone": "", "hint": "",
+             "breakdown": [
+                 {"k": "Translated", "v": max(0, total - untranslated)},
+                 {"k": "Untranslated", "v": untranslated},
+             ]},
             {"value": str(untranslated), "label": "Untranslated",
              "tone": "err" if untranslated else "ok",
-             "hint": "Cues the translator failed to fill in."},
+             "hint": "Cues the translator failed to fill in.",
+             "breakdown": []},
             {"value": str(errors), "label": "Errors",
              "tone": "err" if errors else "ok",
-             "hint": "Cues with an error-level quality issue."},
+             "hint": "Error-level issues listed in the table below.",
+             # The same rows the Issues table lists, grouped by kind.
+             "breakdown": self.quality_issues_model.breakdown("error")},
             {"value": str(warnings), "label": "Warnings",
              "tone": "warn" if warnings else "ok",
-             "hint": "Cues with a warning-level quality issue."},
+             "hint": "Warning-level issues listed in the table below.",
+             "breakdown": self.quality_issues_model.breakdown("warning")},
             {"value": self.qualityAverageCpsText, "label": "Avg CPS", "tone": "",
-             "hint": "Average characters per second across all cues."},
+             "hint": "Average characters per second across all cues.",
+             "breakdown": []},
             {"value": str(self.qualityMaxLineChars), "label": "Max line chars", "tone": "",
-             "hint": "Longest rendered subtitle line."},
+             "hint": "Longest rendered subtitle line.",
+             "breakdown": []},
             {"value": "PASS" if gate == "pass" else "FAIL" if gate == "fail" else "OFF",
              "label": "Strict gate",
              "tone": "err" if gate == "fail" else "ok" if gate == "pass" else "mute",
-             "hint": "Whether the strict quality gate would let this run through."},
+             "hint": "Whether the strict quality gate would let this run through.",
+             "breakdown": []},
         ]
 
     @Property("QVariantMap", notify=resultReadyChanged)
@@ -3467,30 +4791,51 @@ class AppBridge(QObject):
             cps_buckets[min(9, int(cps / cps_width))] += 1
             dur_buckets[min(8, int(duration / dur_width))] += 1
 
-        def _bars(counts, width, over):
+        def _bars(counts, width, warn_over, error_over=None):
+            """Bucket counts as 0..1 bars, toned by the *real* thresholds.
+
+            The legend names these numbers, so the bars have to be toned from
+            the same constants — a hand-tuned cutoff here would make the legend
+            a caption for a chart that says something else (UI review 5.10).
+            """
             peak = max(counts) or 1
             out = []
             for index, count in enumerate(counts):
                 centre = (index + 0.5) * width
-                out.append({
-                    "v": count / peak,
-                    "tone": "warn" if centre > over else "",
-                })
+                if error_over is not None and centre > error_over:
+                    tone = "err"
+                elif centre > warn_over:
+                    tone = "warn"
+                else:
+                    tone = ""
+                out.append({"v": count / peak, "tone": tone})
             return out
 
         cps_sorted = sorted(cps_values)
         p95 = cps_sorted[min(len(cps_sorted) - 1, int(0.95 * len(cps_sorted)))]
+        # The last bucket of each histogram is an overflow bucket: values above
+        # `(n - 0.5) * width` are clamped into it. Labelling it with its centre
+        # made a 9.0 s cue appear under an axis tick reading "6.8" (Appendix A
+        # probe 2), so the final tick is marked open-ended.
         result = {
             "cps": {
-                "bars": _bars(cps_buckets, cps_width, subtitle_quality.CPS_WARNING),
-                "labels": [f"{int((i + 0.5) * cps_width)}" for i in range(10)],
+                "bars": _bars(cps_buckets, cps_width,
+                              subtitle_quality.CPS_WARNING,
+                              subtitle_quality.CPS_ERROR),
+                "labels": [
+                    f"{int((i + 0.5) * cps_width)}" + ("+" if i == 9 else "")
+                    for i in range(10)
+                ],
                 "summary": (
                     f"avg {sum(cps_values) / len(cps_values):.1f} \u00b7 p95 {p95:.1f}"
                 ),
             },
             "duration": {
                 "bars": _bars(dur_buckets, dur_width, subtitle_quality.MAX_DURATION_WARNING),
-                "labels": [f"{(i + 0.5) * dur_width:.1f}" for i in range(9)],
+                "labels": [
+                    f"{(i + 0.5) * dur_width:.1f}" + ("+" if i == 8 else "")
+                    for i in range(9)
+                ],
                 "summary": (
                     f"avg {sum(durations) / len(durations):.1f} s "
                     f"\u00b7 max {max(durations):.1f} s"
@@ -3607,6 +4952,72 @@ class AppBridge(QObject):
             self._selected_run_index = index
             self.runHistoryChanged.emit()
 
+    @Slot(int)
+    def selectRun(self, index: int) -> None:
+        """Select a history entry **and** load its result into Review/Quality.
+
+        Selecting without loading left the Log screen as a list of rows that
+        could be highlighted but never opened — the review's complaint that the
+        history is decorative. Loading is best-effort and says why when it
+        cannot: a failed run wrote no result, and an entry whose archive has
+        been pruned (or whose cache folder was cleared) has nothing to read.
+        """
+        self.selectedRunIndex = index
+        if self._selected_run_index < 0:
+            self._reset_result_state()
+            return
+        entry = self._history_entries()[self._selected_run_index]
+
+        # The entry's own archive first. The CLI's live output file is only a
+        # fallback for an entry recorded before results were archived, and only
+        # when that entry actually succeeded — after a failed run the live file
+        # still holds the *previous* run's result, so trusting it would show the
+        # wrong run under the right row.
+        name = str(entry.get("resultJson") or "")
+        directory = _run_result_dir()
+        if name and directory:
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and self._load_result_json(path):
+                self._set_status(f"Loaded {entry.get('title', 'the run')}.")
+                return
+        if (self._selected_run_index == 0 and entry.get("exitCode") == 0
+                and self._load_result_json()):
+            self._set_status("Showing the most recent run.")
+            return
+
+        self._reset_result_state()
+        self._set_status(self.selectedRunProblem)
+
+    @Property(bool, notify=runHistoryChanged)
+    def selectedRunOpenable(self) -> bool:
+        """Whether the selected entry can still be opened in Review/Quality."""
+        history = self._history_entries()
+        index = self._selected_run_index
+        if index < 0 or index >= len(history):
+            return False
+        entry = history[index]
+        name = str(entry.get("resultJson") or "")
+        directory = _run_result_dir()
+        if name and directory and os.path.isfile(os.path.join(directory, name)):
+            return True
+        return bool(index == 0 and entry.get("exitCode") == 0
+                    and os.path.isfile(_result_json_path()))
+
+    @Property(str, notify=runHistoryChanged)
+    def selectedRunProblem(self) -> str:
+        """Why the selected entry cannot be opened; empty when it can."""
+        history = self._history_entries()
+        index = self._selected_run_index
+        if index < 0 or index >= len(history):
+            return ""
+        if self.selectedRunOpenable:
+            return ""
+        entry = history[index]
+        if entry.get("exitCode") != 0:
+            return (f"That run {entry.get('status', 'did not finish')}, so it left "
+                    f"no result to review.")
+        return "That run's result is no longer stored on disk."
+
     @Property("QVariantList", notify=runHistoryChanged)
     def selectedRunRows(self) -> list:
         history = self._history_entries()
@@ -3620,7 +5031,10 @@ class AppBridge(QObject):
             PIPELINE_MODE_OFFLINE: "Offline",
         }.get(entry.get("mode", ""), entry.get("mode", "\u2014"))
         return [
-            {"k": "Mode", "v": mode_label},
+            {"k": "Source", "v": str(entry.get("sourceLabel") or mode_label)},
+            {"k": "Engine", "v": str(entry.get("engineLabel") or mode_label)},
+            {"k": "Started", "v": str(entry.get("started", "\u2014")), "mono": True},
+            {"k": "Duration", "v": str(entry.get("duration", "\u2014")), "mono": True},
             {"k": "Exit code", "v": str(entry.get("exitCode", "\u2014")),
              "tone": "ok" if entry.get("exitCode") == 0 else "err", "mono": True},
             {"k": "Preset", "v": str(entry.get("preset", "\u2014")), "mono": True},
@@ -3637,6 +5051,7 @@ class AppBridge(QObject):
     def clearRunHistory(self) -> None:
         self._run_history_json = "[]"
         self._selected_run_index = -1
+        self._prune_run_results([])
         self._persist_fields()
         self.runHistoryChanged.emit()
         self._set_status("Run history cleared.")
@@ -3678,39 +5093,125 @@ class AppBridge(QObject):
 
     @Property(str, notify=formChanged)
     def modelsUsedText(self) -> str:
-        folder = _gguf_dir()
+        """Disk used by model files across every search folder.
+
+        Only ``*.gguf`` counts: the folder next to the executable is searched
+        too, and summing everything in it would add the .exe and the whole
+        ``_internal`` tree to a number that claims to be "models".
+        """
         total = 0
         try:
-            for name in os.listdir(folder):
-                path = os.path.join(folder, name)
-                if os.path.isfile(path):
-                    total += os.path.getsize(path)
+            for folder in _model_search_dirs():
+                if not os.path.isdir(folder):
+                    continue
+                for name in os.listdir(folder):
+                    if not name.lower().endswith(".gguf"):
+                        continue
+                    path = os.path.join(folder, name)
+                    if os.path.isfile(path):
+                        total += os.path.getsize(path)
         except OSError:
             return "\u2014"
         return _format_bytes(total)
 
+    @Property("QVariantList", constant=True)
+    def modelSearchPaths(self) -> list:
+        """Folders the app looks in for models, in order, as display rows.
+
+        Shown in Settings so a client machine can be told *where* to put the
+        ``.gguf`` files instead of guessing.
+        """
+        rows = []
+        for directory in _model_search_dirs():
+            exists = os.path.isdir(directory)
+            rows.append({
+                "path": directory,
+                "exists": exists,
+                "writable": _is_writable_dir(directory),
+                "primary": os.path.normcase(directory) == os.path.normcase(_gguf_dir()),
+            })
+        return rows
+
     @Property("QVariantList", notify=formChanged)
     def modelsInventory(self) -> list:
-        """The Models & storage table: every file the app can download."""
+        """The Models & storage table: every file the app can download.
+
+        Two review bugs live here (UI review 5.4):
+
+        * **SIZE is bytes only.** It used to append ``· dist\\gg`` (the folder
+          tail), which painted over the PURPOSE column — a cell must not paint
+          over its neighbour. Where the file lives and why a copy was rejected
+          now travel in ``note``, which the row renders on its own line.
+        * **The verb comes from here, not from QML.** The cache row had
+          ``action: "tm"`` with no branch in the view, so it fell through to
+          "Download" — you do not download a cache the app builds. Every row now
+          carries ``actionLabel`` / ``actionEnabled`` / ``actionHint`` decided in
+          Python, where it is testable.
+        """
         folder = _gguf_dir()
         rows: list[dict] = []
 
         def _entry(filename: str, purpose: str, action: str) -> dict:
-            path = os.path.join(folder, filename)
-            present = os.path.isfile(path) and os.path.getsize(path) > 0
+            # Prefer a copy the app can actually use, so the table agrees with
+            # the readiness tick. A broken copy that a good one shadows is
+            # reported alongside it rather than as the row's state — otherwise
+            # the row reads "Incomplete" for a model the run will happily use.
+            path = ""
+            shadowed = ""
+            for directory in _model_search_dirs():
+                candidate = os.path.join(directory, filename)
+                if not os.path.isfile(candidate):
+                    continue
+                if gguf_check.is_usable_gguf(candidate):
+                    path = candidate
+                    break
+                shadowed = shadowed or candidate
+            if not path:
+                path, shadowed = shadowed, ""
+            present = bool(path)
             size = "missing"
+            note = ""
             if present:
                 try:
                     size = _format_bytes(os.path.getsize(path))
                 except OSError:
                     size = "\u2014"
+            if not present:
+                state, tone = "Missing", "warn"
+                action_label, action_enabled = "Download", True
+                action_hint = ""
+            else:
+                ok, reason = gguf_check.inspect_gguf(path)
+                if ok:
+                    state, tone = "Verified", "ok"
+                    action_label, action_enabled = "Re-download", True
+                    action_hint = ""
+                    if os.path.dirname(path) != folder:
+                        # Say *where*: "Verified" with an empty models folder
+                        # otherwise reads like a bug. This is the note, not the
+                        # size, so it cannot collide with the next column.
+                        note = "found in " + os.path.dirname(path)
+                    if shadowed:
+                        note = (note + " \u00b7 " if note else "") \
+                            + "a broken copy is also present"
+                else:
+                    # A file that exists but cannot be parsed is not "present":
+                    # say so, so the user can act on it.
+                    state, tone = "Incomplete", "warn"
+                    action_label, action_enabled = "Repair", True
+                    action_hint = ""
+                    note = reason
             return {
                 "file": filename,
                 "size": size,
+                "note": note,
                 "purpose": purpose,
-                "state": "Verified" if present else "Missing",
-                "tone": "ok" if present else "warn",
+                "state": state,
+                "tone": tone,
                 "action": action,
+                "actionLabel": action_label,
+                "actionEnabled": action_enabled,
+                "actionHint": action_hint,
             }
 
         rows.append(_entry(_LOCAL_MODEL, "Translation", "local"))
@@ -3730,12 +5231,30 @@ class AppBridge(QObject):
         rows.append({
             "file": os.path.basename(tm_path),
             "size": tm_size if tm_present else "not created",
+            "note": "" if tm_present else "built from your own runs, not downloaded",
             "purpose": "Cache",
             "state": "Healthy" if tm_present else "Not created",
             "tone": "ok" if tm_present else "mute",
             "action": "tm",
+            # You do not download a local cache the app builds. When it exists
+            # the only sensible verb is Purge; before that the honest answer is
+            # "it gets built on the first run", not a disabled Download button.
+            "actionLabel": "Purge" if tm_present else "Build",
+            "actionEnabled": tm_present,
+            "actionHint": "" if tm_present
+                else "The cache is created automatically on the first run.",
         })
         return rows
+
+    @Slot(str)
+    def runModelRowAction(self, action: str) -> None:
+        """Dispatch a Models & storage row button from its ``action`` id."""
+        if action == "asr":
+            self.downloadAsrModels()
+        elif action == "local":
+            self.downloadLocalModel()
+        elif action == "tm":
+            self.purgeTranslationMemory()
 
     @Slot()
     def openModelsFolder(self) -> None:
@@ -3775,6 +5294,7 @@ class AppBridge(QObject):
 
     @Property("QVariantList", constant=True)
     def environmentRows(self) -> list:
+        """Raw internals. Rendered **only** through `Copy diagnostics`."""
         return [
             {"k": "App version", "v": self._APP_VERSION, "mono": True},
             {"k": "Frozen build", "v": "yes" if getattr(sys, "frozen", False) else "no", "mono": True},
@@ -3785,6 +5305,17 @@ class AppBridge(QObject):
             {"k": "Result JSON", "v": _result_json_path(), "mono": True},
             {"k": "Settings store", "v": self._settings.fileName() or "QSettings", "mono": True},
         ]
+
+    @Property(str, constant=True)
+    def environmentSummary(self) -> str:
+        """One-line, jargon-free replacement for the raw paths (UI review 5.6).
+
+        A user hunting a setting does not need the install path, the registry
+        key, or the Python version. They need to know their settings are safe
+        and where their files go.
+        """
+        return ("Settings saved locally \u00b7 models live in your app folder \u00b7 "
+                "offline mode makes no network calls")
 
     @Slot()
     def openDebugLog(self) -> None:

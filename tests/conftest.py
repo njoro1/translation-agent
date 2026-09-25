@@ -71,3 +71,38 @@ def qml_main(gui_app):
 def app_bridge():
     bridge = AppBridge()
     yield bridge
+
+
+@pytest.fixture()
+def qml_shown(qml_main, monkeypatch):
+    """`qml_main` with the window actually shown, so layout geometry is real.
+
+    Offscreen Qt never polishes an invisible window: every `height` reads 0 and
+    every `visible` reads False for a child of a non-current page. Tests about
+    layout (constant panel height, shared header baseline) and about category
+    gating therefore need the window shown and an event loop turn or two.
+
+    `_persist_fields` is stubbed out for the duration. Showing the window lets
+    the 400 ms autosave debounce actually fire during `processEvents()`, and a
+    test must never rewrite the developer's real `QSettings`.
+    """
+    monkeypatch.setattr(
+        qml_main.bridge, "_persist_fields", lambda: None, raising=False
+    )
+    qml_main.root.setProperty("width", 1400)
+    qml_main.root.setProperty("height", 900)
+    qml_main.root.setProperty("visible", True)
+    pump_events()
+    yield qml_main
+
+
+def pump_events(turns: int = 4) -> None:
+    """Run the event loop just long enough for bindings and layouts to settle."""
+    for _ in range(turns):
+        QGuiApplication.processEvents()
+
+
+@pytest.fixture()
+def pump():
+    """Callable form of :func:`pump_events`, for tests that need their own turn."""
+    return pump_events

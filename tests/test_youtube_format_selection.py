@@ -144,6 +144,56 @@ class TestDropdownPicksReachTheBridge:
         assert res.property("currentIndex") == idx
 
 
+class TestPickersKeepMirroringTheStore:
+    """RC-1 regression for the two format pickers.
+
+    They used to declare ``currentIndex: Math.max(0, indexOfValue(appBridge.…))``.
+    That is a declarative binding, and ``ComboBox`` assigns ``currentIndex``
+    internally on activation — so from the second pick onward the dropdown
+    stopped following the store. ``BoundComboBox`` re-applies the index
+    imperatively, which is what these two tests pin down.
+    """
+
+    def test_codec_picker_follows_an_external_change_after_a_pick(self, panel):
+        bridge, codec, _res, _warnings = panel
+        _pick(codec, _index_of(codec, "h264"))
+
+        bridge.youtubeSelectedCodec = "vp9"
+
+        assert codec.property("currentIndex") == _index_of(codec, "vp9"), (
+            "the codec picker stopped mirroring appBridge.youtubeSelectedCodec "
+            "after the user picked once"
+        )
+
+    def test_resolution_picker_follows_an_external_change_after_a_pick(self, panel):
+        bridge, codec, res, _warnings = panel
+        _pick(codec, _index_of(codec, "h264"))
+        _pick(res, _index_of(res, "360"))
+
+        bridge.youtubeSelectedResolution = "1080"
+
+        assert res.property("currentIndex") == _index_of(res, "1080"), (
+            "the resolution picker stopped mirroring "
+            "appBridge.youtubeSelectedResolution after the user picked once"
+        )
+
+    def test_resolution_picker_resyncs_when_the_codec_changes_its_model(
+        self, panel
+    ):
+        """The resolution list is codec-aware, so the model itself changes."""
+        bridge, codec, res, _warnings = panel
+        _pick(codec, _index_of(codec, "h264"))
+        _pick(res, _index_of(res, "1080"))
+        assert bridge.youtubeSelectedResolution == "1080"
+
+        # vp9 does not serve 1080p: the store resets to "best" and the picker
+        # must show that, not a height the new codec cannot produce.
+        _pick(codec, _index_of(codec, "vp9"))
+
+        assert bridge.youtubeSelectedResolution == "best"
+        assert res.property("currentIndex") == _index_of(res, "best")
+
+
 class TestUnavailablePairIsReported:
     def test_unavailable_resolution_has_no_selector(self, panel):
         """h264 serves no 2160p: the option must be empty so the download can

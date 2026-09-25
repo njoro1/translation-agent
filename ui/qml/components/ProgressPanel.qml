@@ -22,29 +22,32 @@ ColumnLayout {
     readonly property string currentStageName: windowCount > 0
                                                ? appBridge.stageList[windowCount - 1].name : ""
 
-    Connections {
-        target: appBridge
-        function onIsRunningChanged() {
-            if (appBridge.isRunning) {
-                root.timer.restart()
-            } else {
-                root.timer.stop()
-                root._liveElapsed = appBridge.currentStageElapsed
-                root._liveEta = appBridge.estimatedRemainingSec
-                root._runElapsed = appBridge.runElapsedSec
-            }
-        }
-    }
-
+    // `running` is declarative rather than driven by `restart()` / `stop()`
+    // from a `Connections` handler. The handler could fire while this Timer had
+    // not been created yet — "Cannot read property 'stop' of undefined" — which
+    // stayed invisible until the window was actually shown.
     Timer {
         id: timer
         interval: 1000
         repeat: true
         triggeredOnStart: true
+        running: appBridge.isRunning
         onTriggered: {
             root._liveElapsed = appBridge.currentStageElapsed
             root._liveEta = appBridge.estimatedRemainingSec
             root._runElapsed = appBridge.runElapsedSec
+        }
+    }
+
+    Connections {
+        target: appBridge
+        function onIsRunningChanged() {
+            // Freeze the readouts on the final values once the run ends.
+            if (!appBridge.isRunning) {
+                root._liveElapsed = appBridge.currentStageElapsed
+                root._liveEta = appBridge.estimatedRemainingSec
+                root._runElapsed = appBridge.runElapsedSec
+            }
         }
     }
 

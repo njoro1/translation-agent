@@ -25,12 +25,16 @@ QtObject {
     // --- Accent presets ---------------------------------------------------
     // The Settings page shows these as swatches. ``accentName`` is persisted by
     // the bridge; everything else derives from it.
+    // Every swatch clears WCAG AA (4.5:1) against `accentInk`, in its own theme
+    // — that is what makes one ink token legal for all five. `tests/
+    // test_theme_contrast.py` re-derives the ratios from this table, so a
+    // "prettier" hex that dips below the bar fails the build.
     readonly property var accentChoices: [
-        { id: "iris",   label: "Iris",   dark: "#7C5CFF", light: "#5B3DF5" },
-        { id: "azure",  label: "Azure",  dark: "#4EA8FF", light: "#1F6FD0" },
-        { id: "mint",   label: "Mint",   dark: "#3DD68C", light: "#12945C" },
-        { id: "amber",  label: "Amber",  dark: "#F5A623", light: "#B26A00" },
-        { id: "rose",   label: "Rose",   dark: "#FF5F6D", light: "#D0303F" }
+        { id: "iris",   label: "Iris",   dark: "#8A6BFF", light: "#5B3DF5" },
+        { id: "azure",  label: "Azure",  dark: "#4EA8FF", light: "#1D69C5" },
+        { id: "mint",   label: "Mint",   dark: "#3DD68C", light: "#0E7948" },
+        { id: "amber",  label: "Amber",  dark: "#F5A623", light: "#985B00" },
+        { id: "rose",   label: "Rose",   dark: "#FF5F6D", light: "#C72E3C" }
     ]
     property string accentName: "iris"
 
@@ -39,16 +43,21 @@ QtObject {
             if (accentChoices[i].id === name)
                 return dark ? accentChoices[i].dark : accentChoices[i].light
         }
-        return dark ? "#7C5CFF" : "#5B3DF5"
+        return dark ? "#8A6BFF" : "#5B3DF5"
     }
 
     // --- Spacing scale (4px base) ----------------------------------------
+    // Density reaches the spacing scale as well as the type scale. Without
+    // this, "Comfortable" only grew the text and the controls, so a
+    // comfortable window was *tighter* than a compact one — more pixels of
+    // glyph in the same gaps. `xs` stays at 4px: it is used for hairline
+    // gaps inside a single control, which must not move.
     readonly property int xs: 4
-    readonly property int sm: 8
-    readonly property int md: 12
-    readonly property int lg: 16
-    readonly property int xl: 24
-    readonly property int xxl: 32
+    readonly property int sm: comfortable ? 10 : 8
+    readonly property int md: comfortable ? 14 : 12
+    readonly property int lg: comfortable ? 20 : 16
+    readonly property int xl: comfortable ? 28 : 24
+    readonly property int xxl: comfortable ? 38 : 32
 
     // --- Radii ------------------------------------------------------------
     readonly property int radiusXs: 6
@@ -69,7 +78,7 @@ QtObject {
     // --- Surfaces ---------------------------------------------------------
     readonly property color background: isDark ? "#0A0C11" : "#F5F6FA"
     readonly property color backgroundGlow: isDark
-        ? Qt.rgba(0.486, 0.361, 1.0, 0.07) : Qt.rgba(0.357, 0.239, 0.961, 0.06)
+        ? Qt.rgba(0.541, 0.420, 1.0, 0.07) : Qt.rgba(0.357, 0.239, 0.961, 0.06)
     readonly property color surface: isDark ? "#12161E" : "#FFFFFF"
     readonly property color surfaceAlt: isDark ? "#161B25" : "#F3F5FA"
     readonly property color surfaceRaised: isDark ? "#1C2230" : "#E9EDF6"
@@ -78,27 +87,48 @@ QtObject {
     // to it breaks.
     readonly property color headerBackground: isDark ? "#12161E" : "#FFFFFF"
     readonly property color border: isDark ? "#242B3A" : "#DCE1EC"
-    readonly property color borderSoft: isDark ? "#1B2130" : "#E7EBF3"
+    // `borderSoft` is the hairline under a card header. It has to survive the
+    // WCAG 1.4.11 non-text bar (>= 1.2:1 against `surface`) or it is not a
+    // border, it is a rumour.
+    readonly property color borderSoft: isDark ? "#212938" : "#E1E6F0"
     readonly property color borderStrong: isDark ? "#2E3749" : "#C6CEDE"
 
     // --- Text -------------------------------------------------------------
+    // Three steps of the same ramp. All three are read as running text, so all
+    // three clear AA (4.5:1) on the *lightest* surface they can land on —
+    // `surfaceRaised` in dark, `background` in light. `textMuted` is the
+    // helper/placeholder step and is the tightest of the three.
     readonly property color text: isDark ? "#E9ECF3" : "#11141B"
     readonly property color textDim: isDark ? "#A7B0C2" : "#4B5468"
-    readonly property color textMuted: isDark ? "#6E7891" : "#7C8698"
+    readonly property color textMuted: isDark ? "#828DA6" : "#5E6779"
 
     // --- Brand / semantics ------------------------------------------------
     readonly property color accent: _accentFor(accentName, isDark)
     readonly property color accentHover: Qt.lighter(accent, isDark ? 1.18 : 1.12)
-    readonly property color accentInk: "#FFFFFF"
+    // The label painted *on top of* a filled accent surface — the primary
+    // action, the active segment, the error badge. Dark-theme accents are
+    // bright pastels (so they read as text on a near-black page), which means
+    // white ink lands at 2.0–4.3:1 on them; a near-black ink clears AA on every
+    // swatch and on `error` too. Hence the flip rather than a fixed white.
+    readonly property color accentInk: isDark ? "#0A0C11" : "#FFFFFF"
     // Legacy alias used by older call sites.
     readonly property color accentText: accentInk
     readonly property color accentSoft: Qt.rgba(accent.r, accent.g, accent.b, isDark ? 0.14 : 0.10)
     readonly property color accentLine: Qt.rgba(accent.r, accent.g, accent.b, isDark ? 0.38 : 0.35)
 
-    readonly property color success: isDark ? "#3DD68C" : "#12945C"
-    readonly property color warning: isDark ? "#F5A623" : "#B26A00"
-    readonly property color error: isDark ? "#FF5F6D" : "#D0303F"
-    readonly property color info: isDark ? "#4EA8FF" : "#1F6FD0"
+    // Kept in step with the `mint` / `amber` accent swatches, and dark enough
+    // in light theme to be legible as running text (an error title, a warning
+    // row), not just as a fill.
+    //
+    // The light values are set by `surfaceRaised` — the *lightest* surface a
+    // status colour lands on, because `Chip` uses it as the background for a
+    // toned chip. At the previous values every light status colour sat at
+    // 4.2–4.3:1 there, i.e. just under AA. The dark theme has no equivalent
+    // problem: its status colours clear 7.8:1 on their worst surface.
+    readonly property color success: isDark ? "#3DD68C" : "#0E7948"
+    readonly property color warning: isDark ? "#F5A623" : "#985B00"
+    readonly property color error: isDark ? "#FF5F6D" : "#C72E3C"
+    readonly property color info: isDark ? "#4EA8FF" : "#1D69C5"
 
     readonly property color errorHover: Qt.lighter(error, 1.12)
     readonly property color warningHover: Qt.lighter(warning, 1.12)
@@ -154,6 +184,24 @@ QtObject {
         if (status === "untranslated" || status === "empty") return errorTint
         if (status === "warning") return warningTint
         return successTint
+    }
+
+    // --- Ring treatment for the two "no verdict" states -------------------
+    // `unchecked` is an open ring (we have not looked yet). `na` is a closed
+    // muted ring with a dash (this mode never uses it). They are different
+    // facts and must not collapse into one grey dash — that collapse is what
+    // made the readiness denominator disagree with the visible rows, so the
+    // pair lives here rather than being re-invented per page.
+    function statusRing(status) {
+        if (status === "unchecked") return borderStrong
+        if (status === "na") return border
+        return "transparent"
+    }
+
+    function statusRingWidth(status) {
+        if (status === "unchecked") return 1.5
+        if (status === "na") return 1
+        return 0
     }
 
     // Tone name -> colour / tint. Used by pills, chips, tiles and badges so the

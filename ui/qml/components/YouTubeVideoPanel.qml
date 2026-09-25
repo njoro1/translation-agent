@@ -232,7 +232,11 @@ ColumnLayout {
         spacing: Theme.sm
 
         Label { text: "Codec"; Layout.preferredWidth: 52; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-        CompactComboBox {
+        // BoundComboBox, not `currentIndex: indexOfValue(…)`: that binding is
+        // destroyed by ComboBox's own internal assignment on the first pick,
+        // after which the picker stops following the store (RC-1). The string
+        // coercion that used to live here is now inside `applyStoreValue()`.
+        BoundComboBox {
             id: codecCombo
             objectName: "youtubeCodecCombo"
             Layout.fillWidth: true
@@ -240,15 +244,9 @@ ColumnLayout {
             textRole: "label"
             valueRole: "id"
             label: "Video codec"
-            // indexOfValue() keeps the picker in sync without hand-rolled string
-            // coercion loops (a "720" vs 720 mismatch used to make the picker
-            // snap back to "Best" and discard the pick).
-            currentIndex: Math.max(0, indexOfValue(appBridge.youtubeSelectedCodec))
-            onActivated: {
-                var items = appBridge.youtubeCodecs
-                if (currentIndex >= 0 && currentIndex < items.length)
-                    appBridge.youtubeSelectedCodec = String(items[currentIndex].id)
-            }
+            selectFirstWhenMissing: true
+            readValue: function() { return String(appBridge.youtubeSelectedCodec) }
+            writeValue: function(v) { appBridge.youtubeSelectedCodec = String(v) }
         }
     }
 
@@ -258,7 +256,7 @@ ColumnLayout {
         spacing: Theme.sm
 
         Label { text: "Res."; Layout.preferredWidth: 52; color: Theme.textMuted; font.pixelSize: Theme.fontSmall }
-        CompactComboBox {
+        BoundComboBox {
             id: resCombo
             objectName: "youtubeResolutionCombo"
             Layout.fillWidth: true
@@ -266,14 +264,9 @@ ColumnLayout {
             textRole: "label"
             valueRole: "value"
             label: "Video resolution"
-            // The model's values and the stored selection are both strings
-            // ("720" / "best"), so indexOfValue() matches exactly.
-            currentIndex: Math.max(0, indexOfValue(appBridge.youtubeSelectedResolution))
-            onActivated: {
-                var items = appBridge.youtubeResolutions
-                if (currentIndex >= 0 && currentIndex < items.length)
-                    appBridge.youtubeSelectedResolution = String(items[currentIndex].value)
-            }
+            selectFirstWhenMissing: true
+            readValue: function() { return String(appBridge.youtubeSelectedResolution) }
+            writeValue: function(v) { appBridge.youtubeSelectedResolution = String(v) }
         }
     }
 

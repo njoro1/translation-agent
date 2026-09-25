@@ -65,6 +65,24 @@ def _is_known_source_code(code: str | None) -> bool:
     return code in _SPECIFIC_SOURCE_CODES or base in ("zh", "ja", "ko", "yue")
 
 
+def default_output_path(source_file: str | None, title: str, fmt: str) -> str:
+    """Where subtitles go when ``--out`` is not given.
+
+    A local input file wins: the subtitle belongs next to the video it came
+    from (``C:\\clips\\talk.mp4`` -> ``C:\\clips\\talk.srt``). That is what a
+    user expects, and it keeps the pair together when the folder is moved or
+    copied. A YouTube run has no local file, so it keeps the old
+    title-named output in the current directory.
+    """
+    ext = "." + (fmt or "srt").strip().lstrip(".")
+    if source_file:
+        source = os.path.abspath(os.path.expanduser(str(source_file)))
+        stem = os.path.splitext(os.path.basename(source))[0]
+        return os.path.join(os.path.dirname(source), sanitize_filename(stem) + ext)
+    stem = sanitize_filename(title) if title else "subtitles"
+    return output_path_for(stem, ext)
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Translate a YouTube video's subtitles into English and "
@@ -80,7 +98,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--model", help="Override the OPENAI_MODEL from env/.env")
     parser.add_argument(
         "--out",
-        help="Output SRT path (default: <video_title>.srt in the current directory)",
+        help="Output SRT path (default: next to the input file, sharing its name — "
+        "<video>.srt beside <video>.mp4. YouTube runs without a local file use "
+        "<video_title>.srt in the current directory.)",
     )
     parser.add_argument(
         "--format",
@@ -585,8 +605,7 @@ def _run_pipeline(
     # --- Resolve output format & path ---------------------------------------
     fmt = (args.format or "srt").strip().lower()
     if not args.out:
-        stem = sanitize_filename(title) if title else "subtitles"
-        out_path = output_path_for(stem, f".{fmt}")
+        out_path = default_output_path(args.file, title, fmt)
     else:
         out_path = args.out
         # If the user gave an explicit --out but no --format, infer from extension.

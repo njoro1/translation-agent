@@ -59,52 +59,58 @@ ApplicationWindow {
     }
 
     // --- Global keyboard shortcuts ---------------------------------------
-    Shortcut { sequence: "Ctrl+1"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(0) }
-    Shortcut { sequence: "Ctrl+2"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(1) }
-    Shortcut { sequence: "Ctrl+3"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(2) }
-    Shortcut { sequence: "Ctrl+4"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(3) }
-    Shortcut { sequence: "Ctrl+L"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(3) }
-    Shortcut { sequence: "Ctrl+,"; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(4) }
+    // Sequences come from the store, so the Settings ▸ Shortcuts remap editor
+    // actually changes behaviour (UI review 5.5). `shortcutMap` notifies on
+    // every change, so a rebound key takes effect immediately. An empty string
+    // disables that Shortcut, which is what clearing a binding should do.
+    readonly property var keys: appBridge.shortcutMap
+
+    Shortcut { sequence: window.keys["goto_run"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(0) }
+    Shortcut { sequence: window.keys["goto_review"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(1) }
+    Shortcut { sequence: window.keys["goto_quality"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(2) }
+    Shortcut { sequence: window.keys["goto_log"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(3) }
+    Shortcut { sequence: window.keys["goto_settings"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(4) }
     Shortcut {
-        sequence: "Ctrl+K"
+        sequence: window.keys["palette"] || ""
         context: Qt.ApplicationShortcut
         onActivated: palette.toggle()
     }
     Shortcut {
-        sequence: "Ctrl+Return"
+        sequence: window.keys["run"] || ""
         context: Qt.ApplicationShortcut
         onActivated: if (!appBridge.isRunning) appBridge.runTranslation()
     }
+    // Ctrl+Enter is a second binding for the same action: many keyboards do not
+    // have a distinct Return, and users reach for either. Not remappable.
     Shortcut {
         sequence: "Ctrl+Enter"
         context: Qt.ApplicationShortcut
         onActivated: if (!appBridge.isRunning) appBridge.runTranslation()
     }
     Shortcut {
-        sequence: "Ctrl+."
+        sequence: window.keys["cancel"] || ""
         context: Qt.ApplicationShortcut
         onActivated: if (appBridge.isRunning) appBridge.cancelRun()
     }
     Shortcut {
-        sequence: "Ctrl+S"
+        sequence: window.keys["save"] || ""
         context: Qt.ApplicationShortcut
         onActivated: appBridge.saveEditedSubtitlesToDefault()
     }
     Shortcut {
-        sequence: "Ctrl+F"
+        sequence: window.keys["search"] || ""
         context: Qt.ApplicationShortcut
         onActivated: {
             window.switchToTab(1)
             reviewPage.focusSearch()
         }
     }
-    Shortcut {
-        sequence: "Ctrl+R"
-        context: Qt.ApplicationShortcut
-        onActivated: if (!appBridge.isRunning) appBridge.runTranslation()
-    }
+    Shortcut { sequence: "Ctrl+R"; context: Qt.ApplicationShortcut; onActivated: if (!appBridge.isRunning) appBridge.runTranslation() }
 
     onClosing: {
+        // Flush the autosave debounce first: a change made in the last 400 ms
+        // before closing would otherwise be lost.
+        appBridge.saveSettings()
         appBridge.saveWindowState(
             Math.round(x) + "," + Math.round(y) + ","
             + Math.round(width) + "," + Math.round(height)
@@ -131,7 +137,6 @@ ApplicationWindow {
             onExportLogRequested: appBridge.exportLog()
             onSaveSubtitlesRequested: appBridge.saveEditedSubtitlesToDefault()
             onRecheckRequested: appBridge.recheckQuality()
-            onSaveSettingsRequested: appBridge.saveSettings()
         }
 
         // ========================================================= WORKSPACE =
@@ -183,7 +188,6 @@ ApplicationWindow {
 
                 SettingsPage {
                     id: settingsPage
-                    searchQuery: commandBar.settingsQuery
                     onNavigateRequested: (page) => window.switchToTab(page)
                 }
             }
@@ -193,8 +197,22 @@ ApplicationWindow {
         StatusBar {
             Layout.fillWidth: true
             currentIndex: window.currentPage
-            onOpenLog: window.switchToTab(3)
         }
+    }
+
+    // ========================================================= AUTOSAVE TOAST
+    // The persistent Save button is gone; this is the only visible confirmation
+    // that an edit was committed (UI review 3.4).
+    Toast {
+        id: savedToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.statusbarHeight + 16
+    }
+
+    Connections {
+        target: appBridge
+        function onSavedToast() { savedToast.show("Saved \u2713") }
     }
 
     // ==================================================== COMMAND PALETTE ==
@@ -204,5 +222,10 @@ ApplicationWindow {
         onNavigateRequested: (page) => window.switchToTab(page)
         onExportReportRequested: appBridge.exportQualityReport()
         onExportLogRequested: appBridge.exportLog()
+        // The palette names a setting, not a location; SettingsPage resolves it.
+        onSettingsRequested: (section, target, dialog) => {
+            window.switchToTab(4)
+            settingsPage.jumpTo(section, target, dialog)
+        }
     }
 }

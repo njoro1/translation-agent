@@ -92,7 +92,20 @@ def _newest_source_mtime() -> float:
 def launched():
     """Start the exe once for the module; hand back (proc, output, log)."""
     if DEBUG_LOG.exists():
-        DEBUG_LOG.unlink()
+        # Start from a clean log: the assertions below look for the *absence* of
+        # "Traceback", which a stale log from an earlier run would trip.
+        try:
+            DEBUG_LOG.unlink()
+        except KeyboardInterrupt:
+            raise
+        except BaseException:  # noqa: BLE001
+            # A delete can be refused (sandbox policy, a locked file). Truncating
+            # keeps the intent; letting it raise aborts this module-scoped
+            # fixture and turns one hiccup into nine errors.
+            try:
+                DEBUG_LOG.write_text("", encoding="utf-8")
+            except OSError:
+                pass
     proc = _launch(EXE)
     deadline = time.time() + STARTUP_GRACE_SECONDS
     while time.time() < deadline:

@@ -145,6 +145,12 @@ def resolve_llama_server(name: str = "llama-server") -> str | None:
     bundled = _resolve_bundled(exe, "llama")
     if bundled:
         return bundled
+    # A client machine may get llama-server.exe copied next to the app rather
+    # than inside vendor\llama — accept that layout too before giving up.
+    for base in _resource_base_dirs():
+        flat = os.path.join(base, exe)
+        if os.path.isfile(flat):
+            return flat
     found = shutil.which(name)
     return found if found else None
 

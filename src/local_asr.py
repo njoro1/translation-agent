@@ -132,6 +132,7 @@ def _funasr_dirs() -> list[Path]:
     dirs = [
         Path("vendor/funasr"),
         Path("vendor/funasr/Release"),
+        Path(sys.executable).parent,
         Path(sys.executable).parent / "vendor" / "funasr",
     ]
 
@@ -173,6 +174,39 @@ def _find_exe(explicit: str | None, env_var: str, base_name: str) -> str | None:
     return None
 
 
+def _app_model_dirs() -> list[Path]:
+    """Folders a GGUF may be dropped into, best-first.
+
+    Mirrors ``backend.bridge._model_search_dirs`` (which cannot be imported
+    here without a cycle): the executable's own folder first, so shipping the
+    ``.gguf`` files next to ``TranslationAgent.exe`` works, then the ``gguf`` /
+    ``models`` subfolders beside it, then a per-user folder for installs where
+    the app folder is read-only.
+    """
+    dirs: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+    else:
+        exe_dir = Path(__file__).resolve().parent.parent
+    dirs.extend([exe_dir, exe_dir / "gguf", exe_dir / "models"])
+
+    if os.name == "nt":
+        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+    elif sys.platform == "darwin":
+        root = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "share"
+        )
+    if root:
+        dirs.append(Path(root) / "TranslationAgent" / "gguf")
+
+    if hasattr(sys, "_MEIPASS"):
+        dirs.append(Path(sys._MEIPASS))
+
+    return dirs
+
+
 def _resolve_model(explicit: str | None, env_var: str, default: str) -> str:
     if explicit:
         p = Path(explicit).expanduser()
@@ -187,10 +221,11 @@ def _resolve_model(explicit: str | None, env_var: str, default: str) -> str:
             return str(p)
         return env
 
-    candidates = [
-        Path(default),
-        Path("dist") / default,
-    ]
+    name = Path(default).name
+    candidates = [Path(default), Path("dist") / default]
+    for directory in _app_model_dirs():
+        candidates.append(directory / name)
+        candidates.append(directory / default)
 
     if hasattr(sys, "_MEIPASS"):
         candidates.append(Path(sys._MEIPASS) / default)

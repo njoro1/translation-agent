@@ -3,12 +3,21 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 
-// Bottom status bar: one-line state + the log ticker + the shortcuts that matter.
+// Bottom status bar (UI review 3.2).
+//
+// Each item is EITHER a button (hover/press affordance) OR a hint (flat,
+// non-interactive). The old bar mixed clickable chips with legend chips
+// indistinguishably, and repeated the Log/Commands entry points the left rail
+// and the palette already own.
+//
+// The bar is now status + contextual hints only. Navigation is the rail's job;
+// launching things is the palette's job.
 Rectangle {
     id: root
 
+    objectName: "chrome.statusBar"
+
     property int currentIndex: 0
-    signal openLog()
 
     implicitHeight: Theme.statusbarHeight
     color: Theme.surface
@@ -35,11 +44,9 @@ Rectangle {
         if (currentIndex === 0)
             return [["Ctrl Enter", "Run"], ["Ctrl .", "Cancel"], ["Ctrl K", "Commands"]]
         if (currentIndex === 1)
-            return [["↑ ↓", "Navigate"], ["Ctrl S", "Save"], ["Ctrl F", "Search"]]
+            return [["\u2191 \u2193", "Navigate"], ["Ctrl S", "Save"], ["Ctrl F", "Search"]]
         if (currentIndex === 2)
             return [["Ctrl L", "Log"], ["Ctrl K", "Commands"]]
-        if (currentIndex === 3)
-            return [["Ctrl K", "Commands"]]
         return [["Ctrl K", "Commands"]]
     }
 
@@ -53,9 +60,10 @@ Rectangle {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 14
-        anchors.rightMargin: 10
+        anchors.rightMargin: 14
         spacing: 10
 
+        // --- Status (read-only) ---------------------------------------------
         Rectangle {
             Layout.preferredWidth: 6
             Layout.preferredHeight: 6
@@ -86,6 +94,17 @@ Rectangle {
             elide: Text.ElideRight
         }
 
+        // --- Hints (flat, non-interactive, no border, no hover) --------------
+        // The key cap keeps the monospace chip look because it reads as a key,
+        // but nothing here responds to the pointer, and the leading "Shortcuts"
+        // label makes that unambiguous.
+        Label {
+            text: "Shortcuts"
+            color: Theme.textMuted
+            font.pixelSize: 10
+            font.letterSpacing: 0.6
+        }
+
         Repeater {
             model: root.hints
 
@@ -97,15 +116,14 @@ Rectangle {
                     implicitWidth: hintText.implicitWidth + 12
                     implicitHeight: 18
                     radius: 5
-                    color: Theme.surfaceRaised
-                    border.color: Theme.border
-                    border.width: 1
+                    // Flat surface, no border: a legend, not a button.
+                    color: Theme.surfaceAlt
 
                     Label {
                         id: hintText
                         anchors.centerIn: parent
                         text: modelData[0]
-                        color: Theme.textDim
+                        color: Theme.textMuted
                         font.pixelSize: 10
                         font.family: Theme.monoFont
                     }
@@ -117,15 +135,6 @@ Rectangle {
                     font.pixelSize: Theme.fontTiny
                 }
             }
-        }
-
-        AppButton {
-            text: "Log"
-            small: true
-            variant: "ghost"
-            iconName: "terminal"
-            onClicked: root.openLog()
-            Accessible.name: "Open the log"
         }
     }
 }

@@ -24,6 +24,17 @@ Item {
     readonly property var counts: appBridge.cueCounts
     readonly property int count: listView.count
 
+    // Spelled out next to the row count so the count is never ambiguous about
+    // *what* it is counting.
+    readonly property string filterName: {
+        const mode = root.proxy.filterMode
+        if (mode === "ok") return "OK only"
+        if (mode === "warnings") return "warnings only"
+        if (mode === "failed") return "failed only"
+        if (mode === "errors") return "problems only"
+        return ""
+    }
+
     implicitHeight: layout.implicitHeight
 
     // Step the selection by ``delta`` rows (drives the cue inspector's
@@ -34,6 +45,21 @@ Item {
         const next = Math.max(0, Math.min(listView.count - 1, root.selectedRow + delta))
         listView.positionViewAtIndex(next, ListView.Contain)
         root.selectRow(next)
+    }
+
+    // Expand the ASS line separator for display.
+    //
+    // `src/postprocess.py::break_lines` emits a literal `\N`, and only the
+    // writers normalise it: the SRT writer converts it to a real newline
+    // (`translate.py:637`) and the ASS writer converts a real newline back to
+    // `\N` (`ass_io.py:161`). Both forms are therefore valid in the store, and
+    // the result JSON keeps whichever one the pipeline produced — so a wrapped
+    // cue printed "first line\Nsecond line" as one visible line in the table.
+    //
+    // This is a *rendering* helper only. `transField` still receives the raw
+    // text so an edit round-trips byte-for-byte.
+    function displayText(raw) {
+        return String(raw === undefined || raw === null ? "" : raw).replace(/\\N/g, "\n")
     }
 
     function beginEdit(row) {
@@ -78,26 +104,41 @@ Item {
         return -1
     }
 
-    // Quality -> Review jump: reveal the requested cue even when the current
-    // filter would hide it.
+    // Quality -> Review and Timeline -> Review jump: reveal the requested cue
+    // even when the current filter would hide it.
+    function selectCue(cueNumber) {
+        const target = Math.max(1, cueNumber)
+        let row = root._indexForCueNumber(target)
+        if (row < 0) {
+            root.proxy.filterMode = "all"
+            root.proxy.searchText = ""
+            root.proxy.clearCueRange()
+            row = root._indexForCueNumber(target)
+        }
+        if (row >= 0 && row < listView.count) {
+            listView.positionViewAtIndex(row, ListView.Center)
+            root.flashIndex = row
+            flashTimer.restart()
+            root.selectRow(row)
+        }
+    }
+
+    function filterToCueRange(first, last) {
+        root.proxy.setCueRange(first, last)
+    }
+
+    function clearCueRange() {
+        root.proxy.clearCueRange()
+    }
+
+    // Quality -> Review jump.
     Connections {
         target: appBridge
         function onFocusCueIndexChanged() {
             const idx = appBridge.focusCueIndex
             if (idx < 0)
                 return
-            let row = root._indexForCueNumber(idx + 1)
-            if (row < 0) {
-                proxy.filterMode = "all"
-                proxy.searchText = ""
-                row = root._indexForCueNumber(idx + 1)
-            }
-            if (row >= 0 && row < listView.count) {
-                listView.positionViewAtIndex(row, ListView.Center)
-                root.flashIndex = row
-                flashTimer.restart()
-                root.selectRow(row)
-            }
+            root.selectCue(idx + 1)
         }
     }
 
@@ -163,17 +204,35 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            AppSwitch {
-                text: "Only problems"
-                checked: root.proxy.filterMode === "errors"
-                accessibleName: "Only show cues with problems"
-                onToggled: function (checked) {
-                    root.proxy.filterMode = checked ? "errors" : "all"
-                }
+            // The timeline drag sets a cue range; it has to be visible and
+            // removable from here, or the table silently shows a subset
+            // (UI review 5.3).
+            Chip {
+                objectName: "cues.rangeChip"
+                visible: root.proxy.hasCueRange
+                text: root.proxy.cueRangeLabel
+                tone: "acc"
+                mono: true
+            }
+            AppButton {
+                objectName: "cues.clearRange"
+                visible: root.proxy.hasCueRange
+                text: "Clear range"
+                small: true
+                variant: "ghost"
+                iconName: "x"
+                onClicked: root.clearCueRange()
             }
 
+            // The "Only problems" switch is gone. It wrote the same
+            // `proxy.filterMode` the four chips above own, so it could silently
+            // disagree with them — the chips would still show "All" selected
+            // while the table showed errors. Two editors, one store, no
+            // reconciliation (UI review 1.2 / T-5.2).
             Label {
+                objectName: "cues.showingCount"
                 text: "Showing " + listView.count + " of " + appBridge.qualityTotalCues
+                      + (root.proxy.filterMode === "all" ? "" : " \u00b7 " + root.filterName)
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontSmall
             }
@@ -232,14 +291,28 @@ Item {
                 delegate: Rectangle {
                     id: row
                     width: listView.width
-                    height: 32
+                    height: 38
                     radius: Theme.radiusXs
+                    // Severity is not allowed to live in the row's *fill*:
+                    // tinting the background under body copy costs contrast on
+                    // every row, and it made a warning row harder to read than
+                    // an OK one. It goes on the left edge instead, and the
+                    // STATUS cell keeps the icon + word (§2.1 / T-5.1).
                     color: {
                         if (root.flashIndex === index) return Theme.accentSoft
                         if (root.selectedRow === index) return Theme.surfaceRaised
-                        if (statusText === "untranslated" || statusText === "empty") return Theme.errorTint
-                        if (statusText === "warning") return Theme.warningTint
                         return rowHover.hovered ? Theme.surfaceAlt : "transparent"
+                    }
+
+                    Rectangle {
+                        objectName: "cueRow.severityBar"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 3
+                        height: parent.height - 10
+                        radius: 1.5
+                        color: statusText === "ok" ? "transparent"
+                                                   : Theme.statusColor(statusText)
                     }
 
                     RowLayout {
@@ -269,12 +342,20 @@ Item {
                             font.pixelSize: Theme.fontTiny
                             font.family: Theme.monoFont
                         }
-                        Label {
-                            text: String(model.sourceText).replace(/\n/g, " ")
+
+                        // Source and translation both wrap to two lines in-cell
+                        // and elide past that, full text on hover. A two-line
+                        // cue is the common case, and clipping it to one line
+                        // hid the half that carried the meaning (T-5.1).
+                        Text {
                             Layout.fillWidth: true
+                            text: String(model.sourceText).replace(/\n/g, " ")
                             color: Theme.textDim
                             font.pixelSize: Theme.fontBody
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 2
                             elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
                             ToolTip.visible: truncated && sourceHover.hovered
                             ToolTip.delay: 400
                             ToolTip.text: model.sourceText
@@ -283,21 +364,43 @@ Item {
 
                         Rectangle {
                             Layout.fillWidth: true
-                            implicitHeight: 26
+                            implicitHeight: parent.height - 10
                             radius: Theme.radiusXs
                             color: (root.editingIndex === index) ? Theme.inset : "transparent"
                             border.width: (root.editingIndex === index) ? 1 : 0
                             border.color: Theme.accentLine
+
+                            // Read mode is a wrapping Text, not a read-only
+                            // TextInput: a TextInput is single-line by
+                            // construction, which is why translations clipped.
+                            Text {
+                                id: transLabel
+                                anchors.fill: parent
+                                anchors.leftMargin: 5
+                                anchors.rightMargin: 5
+                                visible: root.editingIndex !== index
+                                text: root.displayText(model.translationText)
+                                color: model.cueEdited ? Theme.accent : Theme.text
+                                font.pixelSize: Theme.fontBody
+                                wrapMode: Text.WordWrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                verticalAlignment: Text.AlignVCenter
+                                ToolTip.visible: truncated && transHover.hovered
+                                ToolTip.delay: 400
+                                ToolTip.text: root.displayText(model.translationText)
+                                HoverHandler { id: transHover }
+                            }
 
                             TextInput {
                                 id: transField
                                 anchors.fill: parent
                                 anchors.leftMargin: 5
                                 anchors.rightMargin: 5
+                                visible: root.editingIndex === index
                                 text: model.translationText
-                                color: model.cueEdited ? Theme.accent : Theme.text
+                                color: Theme.accent
                                 font.pixelSize: Theme.fontBody
-                                readOnly: root.editingIndex !== index
                                 selectByMouse: true
                                 verticalAlignment: TextInput.AlignVCenter
                                 clip: true
@@ -310,10 +413,6 @@ Item {
                                     text = model.translationText
                                     root.cancelEdit()
                                 }
-                                ToolTip.visible: truncated && transHover.hovered && readOnly
-                                ToolTip.delay: 400
-                                ToolTip.text: model.translationText
-                                HoverHandler { id: transHover }
                             }
                         }
 

@@ -76,12 +76,21 @@ Rectangle {
                 }
 
                 Label {
+                    id: noteLabel
                     visible: root.note !== ""
                     Layout.fillWidth: true
                     text: root.note
                     color: Theme.textMuted
                     font.pixelSize: Theme.fontSmall
                     elide: Text.ElideRight
+
+                    // The note is the card's only free-text slot, so it is the
+                    // one thing here that can overflow. Elide, but keep the
+                    // whole string on hover (UI review D4).
+                    ToolTip.text: root.note
+                    ToolTip.visible: noteHover.hovered && noteLabel.truncated
+                    ToolTip.delay: 400
+                    HoverHandler { id: noteHover }
                 }
 
                 Item {

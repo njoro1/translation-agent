@@ -288,6 +288,14 @@ Item {
                         required property var modelData
                         text: String(modelData).replace(/_/g, " ")
                         tone: String(modelData).indexOf("_error") >= 0 || modelData === "empty_text" ? "err" : "warn"
+                        // The flags are a deep link into the Quality issue list,
+                        // not a decoration: this is the "why" behind the row's
+                        // severity bar, and it now leads to the full message and
+                        // the threshold that produced it (T-5.6).
+                        clickable: true
+                        onClicked: appBridge.revealIssueForCue(root.cueNumber)
+                        Accessible.name: String(modelData).replace(/_/g, " ")
+                                             + " — open this issue in Quality"
                     }
                 }
             }

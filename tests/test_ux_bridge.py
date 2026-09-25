@@ -40,12 +40,51 @@ def test_classify_falls_back_to_generic_error():
     assert code == "UNKNOWN"
 
 
+READINESS_STATES = ("ok", "todo", "na", "unchecked")
+
+
 def test_readiness_rows_shape(app_bridge):
     rows = app_bridge.readinessRows
     assert isinstance(rows, list) and rows
     for r in rows:
-        assert {"id", "label", "state", "hint"}.issubset(r.keys())
-        assert r["state"] in ("ok", "todo", "n/a")
+        assert {"id", "label", "state", "hint", "actionable"}.issubset(r.keys())
+        assert r["state"] in READINESS_STATES
+        assert isinstance(r["actionable"], bool)
+
+
+def test_readiness_states_are_four_not_three(app_bridge):
+    """`na` and `unchecked` are different facts and must not be merged.
+
+    `na`  — the check does not apply in this mode (ASR in YouTube mode).
+    `unchecked` — the check applies but has no input yet (no output path
+                  resolved). Rendering both as `n/a` is what made the badge
+                  denominator disagree with the rows on screen (review §6.4).
+    """
+    rows = app_bridge.readinessRows
+    assert all(r["state"] != "n/a" for r in rows), (
+        "the overloaded `n/a` state is back; use `na` or `unchecked`"
+    )
+
+
+def test_readiness_badge_denominator_equals_actionable_rows(app_bridge):
+    rows = app_bridge.readinessRows
+    actionable = [r for r in rows if r["actionable"]]
+    assert app_bridge.readinessActionableCount == len(actionable), (
+        "the badge denominator must count exactly the rows the user can act on"
+    )
+    ready = [r for r in rows if r["actionable"] and r["state"] == "ok"]
+    assert app_bridge.readinessReadyCount == len(ready)
+    na = [r for r in rows if r["state"] == "na"]
+    assert app_bridge.readinessNotApplicableCount == len(na)
+
+
+def test_readiness_actionable_rows_are_never_na(app_bridge):
+    """A row that cannot apply must not be counted in the denominator."""
+    for row in app_bridge.readinessRows:
+        if row["state"] == "na":
+            assert not row["actionable"], (
+                f"{row['id']} is `na` but still counted as actionable"
+            )
 
 
 def test_quality_cps_text_no_result(app_bridge):
@@ -180,23 +219,54 @@ def test_youtube_selected_option_honors_av1_720(app_bridge):
     assert "2160" not in sel
 
 
-def test_resolution_combo_uses_value_role():
-    """Regression guard for the 720p selection bug: the combo looked the pick
-    up with a hand-rolled strict comparison between an int model value (720)
-    and a string selection ('720'), which never matched, so the picker snapped
-    back to 'Best'. Selection must go through ``valueRole`` + ``indexOfValue``
-    on string values.
-    """
+def _read(rel: str) -> str:
     from pathlib import Path
 
-    panel = (
-        Path(__file__).resolve().parent.parent
-        / "ui" / "qml" / "components" / "YouTubeVideoPanel.qml"
+    return (
+        Path(__file__).resolve().parent.parent / "ui" / "qml" / rel
+    ).read_text(encoding="utf-8")
+
+
+def test_resolution_combo_uses_value_role():
+    """Regression guard for the 720p selection bug, kept in two parts.
+
+    The original failure was a hand-rolled strict comparison between an int
+    model value (720) and a string selection ('720'), which never matched, so
+    the picker snapped back to 'Best'. Two things must therefore hold:
+
+    1. selection goes through ``valueRole``, never a hand-written ``===`` over
+       the model in the panel; and
+    2. the comparison itself coerces to string, so an int model value can still
+       match a string store value.
+    """
+    panel = _read("components/YouTubeVideoPanel.qml")
+    assert 'valueRole: "value"' in panel
+    assert "items[i].value === sel" not in panel
+    assert 'readValue: function() { return String(appBridge.youtubeSelectedResolution) }' in panel
+
+    bound = _read("components/BoundComboBox.qml")
+    assert "String(v) === want" in bound, (
+        "BoundComboBox must compare model values and store values as strings; "
+        "a strict comparison reintroduces the 720-vs-'720' snap-back"
     )
-    text = panel.read_text(encoding="utf-8")
-    assert 'valueRole: "value"' in text
-    assert "indexOfValue(appBridge.youtubeSelectedResolution)" in text
-    assert "items[i].value === sel" not in text
+
+
+def test_format_pickers_are_bound_combos_not_current_index_bindings():
+    """A `currentIndex:` binding is destroyed by ComboBox's own activation.
+
+    These two pickers were the last RC-1 sites in the app: they had been missed
+    because they live in a panel component rather than a page.
+    """
+    panel = _read("components/YouTubeVideoPanel.qml")
+    assert "currentIndex: Math.max(0, indexOfValue(" not in panel, (
+        "the codec/resolution pickers went back to a declarative `currentIndex` "
+        "binding, which stops mirroring the store after the first pick"
+    )
+    assert panel.count("BoundComboBox {") == 2, (
+        "expected exactly two BoundComboBox pickers (codec + resolution)"
+    )
+    for name in ("youtubeCodecCombo", "youtubeResolutionCombo"):
+        assert f'objectName: "{name}"' in panel
 
 
 def test_youtube_resolution_values_are_strings(app_bridge):
@@ -442,3 +512,27 @@ class TestCjkFromCues:
 
         assert detect_cjk_from_cues([]) is None
         assert detect_cjk_from_cues([C(None), C("")]) is None
+
+
+# --- The security promise the Settings screen makes (T-2.5, §5.7) -----------
+
+def test_the_api_key_is_never_persisted():
+    """The API-key field says "Never persisted to disk", inline, on the secret.
+
+    That is a promise to the user and nothing else in the suite checks it.
+    `_PERSISTED` is the only thing `_persist_fields` writes, so membership in it
+    *is* persistence — to `QSettings`, i.e. the Windows registry, surviving a
+    restart. The key is a session-only attribute; keep it that way.
+    """
+    persisted_attrs = {attr for attr, _key, _default in AppBridge._PERSISTED}
+    assert "_api_key" not in persisted_attrs, (
+        "the API key is in _PERSISTED, which writes it to QSettings and breaks "
+        "the 'Never persisted to disk' promise shown on the field"
+    )
+    settings_keys = {key for _attr, key, _default in AppBridge._PERSISTED}
+    leaked = [
+        k for k in settings_keys
+        if "apikey" in k.lower().replace("/", "").replace("_", "")
+        or "secret" in k.lower()
+    ]
+    assert not leaked, f"these QSettings keys look like a secret: {leaked}"

@@ -1,13 +1,23 @@
 # YouTube Subtitle Translator
 
-A command-line tool that takes a YouTube URL, fetches its subtitles, and writes
-an English SRT/ASS file named after the video while preserving the original
-timing. Subtitle selection is **English-first**: if YouTube already provides an
-English track (manual or auto-generated), it is used verbatim and translation is
-skipped; only when no English track exists does the tool fall back to the
-video's original-language track (manual if available, auto-generated as
-fallback) and translate it **faithfully into English** using an
-OpenAI-compatible LLM.
+> **Last updated:** 2026-09-25 — the UI redesign is complete (single store with
+> binding-safe editors, autosave, real Settings category gating, a two-axis Run screen, and
+> a run history whose rows reopen a run). 1096 tests collected. The developer reference is
+> `AGENT_DOCUMENTATION.md`.
+
+Takes a YouTube URL or a local video/audio file and writes an English SRT/ASS
+file named after the video while preserving the original timing. It ships as both
+a **command-line tool** and a **desktop GUI** (PySide6 + QML, Windows).
+
+Subtitle selection is **English-first**: if YouTube already provides an English
+track (manual or auto-generated), it is used verbatim and translation is
+skipped; only when no English track exists does the tool fall back to the video's
+original-language track (manual if available, auto-generated as fallback) and
+translate it **faithfully into English** using an OpenAI-compatible LLM.
+
+There are exactly three pipeline modes: **YouTube Cloud**, **Local Cloud**
+(local ASR + cloud translation) and **Offline** (local ASR + local llama.cpp).
+Local translation never silently falls back to the cloud — you pick per run.
 
 ## Install
 
@@ -44,17 +54,19 @@ python translate.py --file my_video.mp4 --asr-lang ja --local
   (`--format ass` writes an Aegisub-compatible `.ass` instead).
 - `--out` overrides the output path (a `.ass`/`.srt` extension overrides `--format`).
 - `--model` overrides `OPENAI_MODEL`.
-- `--batch` sets the maximum cues per translation window (default 8; capped at
-  8 per window for the local Hy-MT2 model).
+- `--batch` sets the maximum cues per translation window (default 8; the local
+  Hy-MT2 model never puts more than 8 cues in a window, the cloud path 12).
 - `--content-preset auto|drama|anime|music|documentary|variety|lecture` tunes
   ASR segmentation, FFmpeg preprocessing, translation context, and prompt style
   for the content type. Explicit flags always override preset values.
 - `--context-mode off|light|standard|deep` controls how much surrounding context
   each translation window carries (default: preset/backend).
+- `--prompt-profile general|drama|anime|music|documentary|variety|lecture`
+  appends one scoped prompt addendum (`general` adds nothing).
 - `--asr-preprocess auto|none|basic|loudnorm|denoise` selects FFmpeg audio
   conditioning before ASR; duration-safe with automatic fallback.
 - `--result-json <path>` writes a machine-readable result file (cues + quality)
-  used by the GUI Review/Quality tabs.
+  used by the GUI Review/Quality pages.
 - `--json-progress` emits machine-readable `{"type":"progress",...}` lines for the
   GUI (progress bars) without changing the final `Wrote N cues to ...` line.
 - ASS output picks a CJK-capable font from the detected source language by default;
@@ -63,35 +75,75 @@ python translate.py --file my_video.mp4 --asr-lang ja --local
   (`ja`, `zh`, `zh-TW`, `ko`, `yue`, `en`). A non-English value overrides the
   English-first shortcut and fetches that language's track (manual preferred,
   auto-generated fallback); an error is raised if no track exists in that language.
+  For local files it acts as a translation source-language hint when `--asr-lang`
+  is left at `auto` or ASR returns an unknown language.
 - When `--asr-lang` is left at `auto` for local files, the source CJK language
   (zh/ja/ko) is auto-detected from the transcript and forwarded to the translation
   prompt.
 
+### Downloading the video / subtitle itself
+
+```bash
+python translate.py "<youtube_url>" --download-video            # best available
+python translate.py "<youtube_url>" --download-video av1        # or vp9 / h264
+python translate.py "<youtube_url>" --download-subtitle         # English track
+```
+
+`--download-video` takes an optional codec (`best`, `av1`, `vp9`, `h264`). The
+codec/resolution pair is honoured exactly or refused with a reason — there is
+deliberately no "closest match" substitution. Downloads need `yt-dlp` + `ffmpeg`;
+the video and audio streams are merged into one file.
+
 ## GUI (Windows)
 
-A modern desktop frontend built with **PySide6 + QML** wraps the same CLI. The
-interface is now split cleanly into a declarative QML view layer and a Python
-`QObject` bridge that streams pipeline output back into the UI:
+A desktop frontend built with **PySide6 + QML** wraps the same CLI. The interface
+is split into a declarative QML view layer and a Python `QObject` bridge that
+streams pipeline output back into the UI:
 
 ```bash
 pip install -r requirements-gui.txt   # installs PySide6
 python main.py
 ```
 
-`python gui.py` still works as a compatibility launcher, but it now forwards to the
+`python gui.py` still works as a compatibility launcher, but it forwards to the
 same PySide6 entry point.
 
-The frontend is a compact professional workspace: a header bar with the pipeline
-mode (YouTube Cloud / Local Cloud / Offline), content preset, source language,
-Run button, and status pill; **Run**, **Review**, and **Quality** tabs; and a
-collapsible bottom log drawer. The Review tab shows every final cue (filter by
-failed/warnings, search, double-click to copy); the Quality tab summarizes the
-quality report with an issue list. Progress comes from parsed JSON progress
-lines, and results load from the CLI's `--result-json` output. Advanced settings
-(batch, context mode, preprocessing, ASR tuning, glossary, TM mode, strict
-quality, cloud credentials) live in a collapsed drawer. **Run** executes the
-pipeline on a background worker; **Open Output Folder** opens the generated
-subtitle location when done.
+### Layout
+
+A 56 px command bar, a 64 px icon rail, a flexible workspace and a 30 px status
+bar. Five screens, all kept alive:
+
+| Screen | What it does |
+| --- | --- |
+| **Run** | Three columns on one scroll. **Source** — two independent selectors, *Source* (YouTube URL / local media file) and *Engine* (cloud LLM / local model), then the URL + preview or the local drop zone. The panel keeps a constant height, so switching source swaps content, not layout. **Processing** — output path/format, model state, context mode, batch, glossary, translation memory, the strict-quality gate, the content-preset chips, the `Source → Transcribe → Translate → Gate → Write` stage strip, and model downloads as secondary actions. **Inspector** — the readiness checklist (a validator, not a numbered step), error card, progress ring + stage stepper, last-run summary, live log. |
+| **Review** | Virtualized cue table (filter All / OK / Warnings / Failed with live counts, search, inline editing), a cue timeline synced to the table selection, a master–detail cue inspector with ±50 ms timing nudges and auto-fix, and find & replace (optional regex, live match count). Edits can be saved back to `.srt`/`.ass`. |
+| **Quality** | Score ring + labelled metric chips (click one for its breakdown), the issue list with severity filters (click an issue to jump to that cue), CPS and duration histograms, the strict-quality gate, the active thresholds, the run context, and JSON/CSV exports. |
+| **Log** | Run history — timestamp, source, engine and outcome per run — beside a full-height console with tone filters and copy/export/clear. **Clicking a run loads it back into Review and Quality**, so a previous run is readable, not just listed. |
+| **Settings** | Seven categories — Appearance, Translation, Transcription, Models & storage, Shortcuts, Data & privacy, About — with real gating: only the selected category renders, and the in-category filter searches just that category. Destructive actions live in a separated danger zone that requires typing what will be erased. |
+
+Other things worth knowing:
+
+- **Command palette** — `Ctrl+K` exposes 42 entries in four namespaces: **Navigate** (the
+  five screens, plus a deep link into every Settings category), **Actions** (run, cancel,
+  export, re-check, open, purge…), **Toggles** (theme, strict gate, rolling summary, reduce
+  motion — each showing its current value, not just its name), and **Jump-to-setting**
+  (typing `api key`, `batch` or `model path` lands on the exact field and focuses it).
+- **Keyboard** — `Ctrl+1…4` screens, `Ctrl+,` Settings, `Ctrl+K` palette, `Ctrl+R` run,
+  `Ctrl+.` cancel, `Ctrl+S` save edited subtitles, `Ctrl+F` search cues, `Ctrl+L` log.
+- **Settings save themselves.** There is no Save button; a change is written shortly after
+  you stop editing, and the top bar says whether anything is still pending.
+- **Themes** — dark (default) and light, five accent colours, a comfortable density mode
+  and a reduced-motion toggle. All of it persists across launches.
+- **Model state is honest** — every model file is validated (GGUF header + tensor table),
+  so a half-finished download reads as *corrupt* rather than *ready*, and the Run button
+  states why it is disabled instead of launching a doomed run. Downloads are offered from
+  the Processing panel.
+- **Failures are explained** — a failed run produces a structured card with a code, a plain
+  title, the offending log line and a remedy button (check credentials, retry, download a
+  model, install a dependency, …).
+- **Offline mode never receives credentials.**
+- **Stop is cooperative** — the run stops at the next batch boundary, no output file is
+  written, and the next run starts cleanly.
 
 ### Building a Windows executable
 
@@ -104,11 +156,13 @@ build_exe.bat          # or run the pyinstaller command inside it directly
 ```
 
 This produces an onedir bundle at `dist/TranslationAgent/TranslationAgent.exe`
-(deliberately not `--onefile`: the ~350 MB bundle would re-extract to `%TEMP%` on
-every launch, which is what caused the `Failed to extract Crypto…` error). The
-PyInstaller build bundles the QML
-files from `ui/qml`, and at runtime the app writes a rotating `debug.log` in the
-**same directory as the exe** (startup info, the exact `argv` each run uses,
+(deliberately not `--onefile`: re-extracting the bundle to `%TEMP%` on every launch is
+what caused the `Failed to extract Crypto…` error). The bundle is roughly 850 MB on
+disk, and the build deletes and rewrites it, so have about 1 GB free.
+
+The PyInstaller build bundles the QML files from `ui/`, the vendored FunASR and
+llama.cpp binaries, and a CPU ffmpeg. At runtime the app writes a rotating `debug.log`
+in the **same directory as the exe** (startup info, the exact `argv` each run uses,
 pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder so
 `debug.log` and any relative model paths resolve correctly.
 
@@ -137,7 +191,7 @@ pipeline stdout/stderr, and any crash tracebacks). Run the exe from that folder 
    injected into the system prompt.
 5. Translation failures (empty replies, source echoes, CJK residue) are never
    silently shipped — failed cues are marked `[untranslated]`, counted, logged
-   with their source text, and surfaced in the quality report and GUI Review tab.
+   with their source text, and surfaced in the quality report and the GUI Review page.
 6. A post-processing pass runs line breaking (English word-boundary splitting),
    overlap snapping, translator-note placement, fused-English repair, residual
    CJK stripping, and literal-gloss cleanup.
@@ -360,7 +414,7 @@ python translate.py --file clip.mkv --local --translation-memory-db ./cache/tm.s
 
 - `--translation-memory auto` (default): on for local Hy-MT2, off for cloud.
 - `--translation-memory on` / `off`: force it.
-- `TRANSLATION_MEMORY_DB` (default `./cache/translation_memory.sqlite3`).
+- `--translation-memory-db` / `TRANSLATION_MEMORY_DB` (default `./cache/translation_memory.sqlite3`).
 - Cache keys include the source language, model, and glossary hash, so a glossary
   or model change invalidates stale entries.
 - A window whose cues are all exact cache hits is served entirely from the
@@ -398,7 +452,7 @@ Cloud rescue was removed by product decision. There is no mixed mode where local
 translation silently falls back to a cloud model: you choose cloud translation
 or local translation per run (the three pipeline modes are YouTube Cloud, Local
 Cloud, and Offline). Failed cues are clearly marked `[untranslated]`, counted in
-the quality report, and visible in the GUI Review tab instead.
+the quality report, and visible in the GUI Review page instead.
 
 ### Subtitle quality diagnostics
 
@@ -456,22 +510,32 @@ errors. Results are JSON so they can be diffed between runs.
 | `TRANSLATION_GLOSSARY` | unset | Glossary file path |
 | `TRANSLATION_MEMORY_MODE` | `auto` | `auto` \| `on` \| `off` |
 | `TRANSLATION_MEMORY_DB` | `./cache/translation_memory.sqlite3` | TM database path |
-| `HY_MT2_MAX_BATCH_CUES` | `12` | Hy-MT2 max window cues |
-| `HY_MT2_MAX_BATCH_CHARS_CJK` | `700` | Hy-MT2 max window chars (CJK) |
-| `HY_MT2_MAX_BATCH_CHARS_NON_CJK` | `1000` | Hy-MT2 max window chars (non-CJK) |
-| `FUNASR_PREPROCESS` | unset | Preprocessing profile override (auto preset only) |
 | `TRANSLATION_CONTEXT_MODE` | unset | Context mode override (auto preset only) |
 | `TRANSLATION_PROMPT_PROFILE` | unset | Prompt profile override (auto preset only) |
-| `LLAMA_SERVER_THREADS` | `0` | Local server threads |
-| `LLAMA_SERVER_MLOCK` | `0` | Local server mlock (1 = on) |
+| `FUNASR_PREPROCESS` | unset | Preprocessing profile override (auto preset only) |
+| `FUNASR_THREADS` | CPU-derived (`max(2, min(4, cores))`) | ASR CPU threads |
 | `FUNASR_MAX_CUE_CHARS_CJK` | `48` | CJK max cue chars |
 | `FUNASR_KEEP_TAGS` | `0` | Keep ASR tags (1 = on) |
 | `FUNASR_INCOMPLETE_WARN_SECONDS` | `8.0` | Min uncovered tail to warn about |
 | `FUNASR_FORCE_FFMPEG_VAD` | `0` | Force ffmpeg VAD (skip binary VAD) |
+| `FFMPEG_BIN` / `FFPROBE_BIN` | on PATH | ffmpeg / ffprobe binary override |
+| `IMAGEIO_FFMPEG_EXE` | unset | Alternative ffmpeg path |
+| `LLAMA_SERVER_THREADS` | `0` | Local server threads |
+| `LLAMA_SERVER_MLOCK` | `0` | Local server mlock (1 = on) |
+| `YT_DLP_BIN` | unset | Explicit yt-dlp executable |
+| `YT_DLP_INPROC` | unset | Force the in-process yt-dlp path |
 
 Removed variables (do not reintroduce): `CLOUD_RESCUE_ENABLED`,
 `CLOUD_RESCUE_MODEL`, `CLOUD_RESCUE_BATCH`, `CLOUD_RESCUE_API_KEY`,
 `CLOUD_RESCUE_BASE_URL`. Cloud rescue was removed by product decision.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — the subtitle file was written |
+| `1` | Runtime error (fetch, transcription, translation or write failure; `--strict-quality` violation) |
+| `2` | Configuration error (missing key/model, bad preset, neither a URL nor `--file`) **or** the run was cancelled |
 
 ## Model note
 
@@ -494,4 +558,30 @@ it:
 If the stderr mentions an unsupported quantization, ensure you're using the
 app's bundled `llama-server` (under `vendor/llama/`), which supports the Q8_0
 quantization used by the default local model.
+
+The GUI's **Settings → Models & storage** section shows the state of every model
+file (`ready` / `missing` / `corrupt`) and offers a one-click re-download — a
+truncated file is detected before a run starts, not 60 seconds into one.
+
+## Development
+
+```bash
+python -m pytest -q --basetemp="C:/Users/<you>/AppData/Local/Temp/ta_pytest"
+python tools/check_srt.py output.srt
+```
+
+1096 tests collected. No network, API keys or vendor binaries are needed. Three
+tests in `tests/test_packaged_exe_smoke.py::TestBuildIsCurrent` fail until
+`dist/TranslationAgent/` is rebuilt — that is the intended signal that the
+shipped bundle predates the current sources, not a code defect; the other
+packaged-exe tests skip themselves when the bundle is absent. Always pass a
+Windows `--basetemp` path — without it pytest's temp cleanup is blocked by the
+sandbox and the run dies before printing a summary.
+
+`AGENT_DOCUMENTATION.md` is the consolidated developer reference: repository
+layout, module-by-module API, the full CLI/env/QSettings tables, build details,
+design invariants and known issues. Read it before changing anything structural.
+
+`mockups/` holds the static HTML design proposal the current UI was built from
+(open `mockups/index.html`); it is documentation, not application code.
 

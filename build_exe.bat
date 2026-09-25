@@ -30,7 +30,19 @@ if errorlevel 1 (
     )
 )
 
-echo [2/3] Removing previous build output...
+echo [2/3] Removing previous build output (keeping downloaded models)...
+REM The models folder and the run cache live INSIDE the bundle folder, so a
+REM plain "rmdir /s /q dist\TranslationAgent" throws away the multi-GB GGUF the
+REM user already downloaded and makes them fetch it again after every build.
+REM Park both beside the bundle, rebuild, then move them back.
+if exist "dist\TranslationAgent\gguf" (
+    if exist "dist\_keep_gguf" rmdir /s /q "dist\_keep_gguf"
+    move /y "dist\TranslationAgent\gguf" "dist\_keep_gguf" >nul
+)
+if exist "dist\TranslationAgent\cache" (
+    if exist "dist\_keep_cache" rmdir /s /q "dist\_keep_cache"
+    move /y "dist\TranslationAgent\cache" "dist\_keep_cache" >nul
+)
 if exist "dist\TranslationAgent" rmdir /s /q "dist\TranslationAgent"
 if exist "dist\TranslationAgent.exe" del /f /q "dist\TranslationAgent.exe"
 
@@ -122,6 +134,7 @@ python -m PyInstaller --noconfirm --onedir --windowed --name TranslationAgent ^
     --hidden-import src ^
     --hidden-import src.config ^
     --hidden-import src.fetch_subs ^
+    --hidden-import src.gguf_check ^
     --hidden-import src.translate ^
     --hidden-import src.youtube_media ^
     --hidden-import src.ytdlp ^
@@ -137,6 +150,7 @@ python -m PyInstaller --noconfirm --onedir --windowed --name TranslationAgent ^
 if errorlevel 1 (
     echo.
     echo BUILD FAILED. See output above for details.
+    call :restore_models
     pause
     exit /b 1
 )
@@ -144,9 +158,12 @@ if errorlevel 1 (
 if not exist "dist\TranslationAgent\TranslationAgent.exe" (
     echo.
     echo BUILD FAILED: dist\TranslationAgent\TranslationAgent.exe was not produced.
+    call :restore_models
     pause
     exit /b 1
 )
+
+call :restore_models
 
 REM Stamp a do-not-edit banner onto the spec PyInstaller just regenerated.
 REM This step is why the banner belongs here rather than in the spec itself:
@@ -163,3 +180,21 @@ echo ================================================================
 echo  BUILD SUCCEEDED: dist\TranslationAgent\TranslationAgent.exe
 echo ================================================================
 pause
+exit /b 0
+
+REM ================================================================
+REM  Put the parked models / cache back inside the fresh bundle.
+REM  Runs on success AND on failure, so a broken build never leaves the
+REM  user's downloaded models stranded in dist\_keep_gguf.
+REM ================================================================
+:restore_models
+if exist "dist\_keep_gguf" (
+    if exist "dist\TranslationAgent\gguf" rmdir /s /q "dist\TranslationAgent\gguf"
+    move /y "dist\_keep_gguf" "dist\TranslationAgent\gguf" >nul
+    echo Restored downloaded models into dist\TranslationAgent\gguf
+)
+if exist "dist\_keep_cache" (
+    if exist "dist\TranslationAgent\cache" rmdir /s /q "dist\TranslationAgent\cache"
+    move /y "dist\_keep_cache" "dist\TranslationAgent\cache" >nul
+)
+exit /b 0

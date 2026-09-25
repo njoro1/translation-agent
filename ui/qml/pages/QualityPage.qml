@@ -12,8 +12,35 @@ Item {
     id: root
 
     readonly property var issues: appBridge.qualityIssuesModel
+    // Row index the Review -> Quality cross-link asked us to land on, or -1.
+    property int flashIssueRow: -1
 
     signal navigateRequested(int page)
+
+    // A cue's quality flags in the Review inspector deep-link here (T-5.6).
+    // The model widens its own filter first, so the row we were sent to is
+    // guaranteed to be in the visible set.
+    Connections {
+        target: appBridge.qualityIssuesModel
+        function onFocusCueChanged() {
+            const cue = appBridge.qualityIssuesModel.focusCue
+            if (cue <= 0)
+                return
+            const row = appBridge.qualityIssuesModel.row_for_cue(cue)
+            if (row < 0)
+                return
+            issueList.positionViewAtIndex(row, ListView.Center)
+            root.flashIssueRow = row
+            flashTimer.restart()
+        }
+    }
+
+    Timer {
+        id: flashTimer
+        interval: 1400
+        repeat: false
+        onTriggered: root.flashIssueRow = -1
+    }
 
     Flickable {
         id: flick
@@ -30,6 +57,11 @@ Item {
             y: 18
             width: flick.width - 36
             spacing: 16
+            // Every card below renders the *report*. With no report there is
+            // nothing to render, and the placeholders ("—", "No report",
+            // `warn 18 · error 22` against zero cues) were numbers the user
+            // could not trust (UI review D4 / T-4.6).
+            visible: appBridge.resultReady
 
             // ==================================================== SCORE ROW ==
             AppCard {
@@ -100,19 +132,28 @@ Item {
                     }
 
                     // --- Seven headline numbers -----------------------------
-                    RowLayout {
+                    // `OverflowRow`, not `RowLayout`: seven cells across a
+                    // fixed band forced every label to elide mid-word
+                    // ("MAX LINE CH…", "STRICT G…"). This wraps to a second
+                    // line instead of shortening the words (UI review D4).
+                    OverflowRow {
+                        id: metricRow
+                        objectName: "quality.metricRow"
                         Layout.fillWidth: true
-                        spacing: 8
+                        minCellWidth: 148
 
                         Repeater {
                             model: appBridge.qualityTiles
 
-                            delegate: StatTile {
+                            delegate: MetricChip {
                                 required property var modelData
+                                width: metricRow.cellWidth
                                 value: modelData.value
                                 label: modelData.label
                                 tone: modelData.tone
                                 hint: modelData.hint
+                                breakdown: modelData.breakdown === undefined
+                                           ? [] : modelData.breakdown
                             }
                         }
                     }
@@ -152,18 +193,21 @@ Item {
 
                                 FilterChip {
                                     text: "All"
+                                    count: String(root.issues.counts.all)
                                     checked: root.issues.filterMode === "all"
                                     onClicked: root.issues.filterMode = "all"
                                 }
                                 FilterChip {
                                     text: "Errors"
                                     iconName: "x"
+                                    count: String(root.issues.counts.errors)
                                     checked: root.issues.filterMode === "errors"
                                     onClicked: root.issues.filterMode = "errors"
                                 }
                                 FilterChip {
                                     text: "Warnings"
                                     iconName: "alert"
+                                    count: String(root.issues.counts.warnings)
                                     checked: root.issues.filterMode === "warnings"
                                     onClicked: root.issues.filterMode = "warnings"
                                 }
@@ -195,7 +239,29 @@ Item {
 
                                     Label { text: "CUE"; Layout.preferredWidth: 46; color: Theme.textMuted; font.pixelSize: 10; font.bold: true }
                                     Label { text: "TYPE"; Layout.preferredWidth: 190; color: Theme.textMuted; font.pixelSize: 10; font.bold: true }
-                                    Label { text: "SEVERITY"; Layout.preferredWidth: 104; color: Theme.textMuted; font.pixelSize: 10; font.bold: true }
+                                    // Clickable: toggles errors-first vs cue
+                                    // order. The arrow states which is active
+                                    // rather than leaving the order implicit
+                                    // (T-5.7).
+                                    Label {
+                                        objectName: "quality.severitySort"
+                                        text: "SEVERITY " + (root.issues.severitySort ? "\u25be" : "\u25b4")
+                                        Layout.preferredWidth: 104
+                                        color: Theme.textMuted
+                                        font.pixelSize: 10
+                                        font.bold: true
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.issues.set_severity_sort(
+                                                           !root.issues.severitySort)
+                                        }
+                                        Accessible.role: Accessible.Button
+                                        Accessible.name: root.issues.severitySort
+                                            ? "Sorted by severity, errors first"
+                                            : "Sorted by cue order"
+                                    }
                                     Label { text: "MESSAGE"; Layout.fillWidth: true; color: Theme.textMuted; font.pixelSize: 10; font.bold: true }
                                     Label { text: ""; Layout.preferredWidth: 100; color: Theme.textMuted; font.pixelSize: 10 }
                                 }
@@ -220,12 +286,25 @@ Item {
                                     required property string message
 
                                     readonly property bool isError: issueRow.severity === "error"
+                                    readonly property bool isFlashing: root.flashIssueRow === index
 
                                     width: issueList.width
                                     height: 32
                                     radius: Theme.radiusXs
-                                    color: issueRow.isError ? Theme.errorTint
-                                                            : (issueHover.hovered ? Theme.surfaceAlt : Theme.warningTint)
+                                    // Severity tints the row *and* the leading
+                                    // status chip carries an icon + word, so the
+                                    // tint is reinforcement rather than the only
+                                    // signal (§2.1 / T-5.7).
+                                    color: issueRow.isFlashing ? Theme.accentSoft
+                                         : issueRow.isError ? Theme.errorTint
+                                         : (issueHover.hovered ? Theme.surfaceAlt : Theme.warningTint)
+
+                                    // The whole row is the target: the previous
+                                    // "Fix in Review" button was a 100px hit box
+                                    // at the far right of a 1000px row (T-5.6).
+                                    TapHandler {
+                                        onTapped: appBridge.revealCue(issueRow.cueNumber)
+                                    }
 
                                     RowLayout {
                                         anchors.fill: parent
@@ -331,15 +410,36 @@ Item {
                                 RowLayout {
                                     spacing: 14
 
+                                    // The legend names the number it is talking
+                                    // about. "over the warning threshold" made
+                                    // the reader go and find the threshold
+                                    // (UI review 5.10).
                                     RowLayout {
                                         spacing: 5
                                         Rectangle { implicitWidth: 9; implicitHeight: 9; radius: 2; color: Theme.accent }
-                                        Label { text: "in range"; color: Theme.textMuted; font.pixelSize: Theme.fontTiny }
+                                        Label {
+                                            text: "\u2264 " + appBridge.qualityLimits.cpsWarn + " cps"
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontTiny
+                                        }
                                     }
                                     RowLayout {
                                         spacing: 5
                                         Rectangle { implicitWidth: 9; implicitHeight: 9; radius: 2; color: Theme.warning }
-                                        Label { text: "over the warning threshold"; color: Theme.textMuted; font.pixelSize: Theme.fontTiny }
+                                        Label {
+                                            text: "> " + appBridge.qualityLimits.cpsWarn + " cps (warn)"
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontTiny
+                                        }
+                                    }
+                                    RowLayout {
+                                        spacing: 5
+                                        Rectangle { implicitWidth: 9; implicitHeight: 9; radius: 2; color: Theme.error }
+                                        Label {
+                                            text: "> " + appBridge.qualityLimits.cpsError + " cps (error)"
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontTiny
+                                        }
                                     }
                                 }
                             }
@@ -378,12 +478,21 @@ Item {
                                     RowLayout {
                                         spacing: 5
                                         Rectangle { implicitWidth: 9; implicitHeight: 9; radius: 2; color: Theme.accent }
-                                        Label { text: "in range"; color: Theme.textMuted; font.pixelSize: Theme.fontTiny }
+                                        Label {
+                                            text: appBridge.qualityLimits.durationMin + "\u2013"
+                                                  + appBridge.qualityLimits.durationMax + " s"
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontTiny
+                                        }
                                     }
                                     RowLayout {
                                         spacing: 5
                                         Rectangle { implicitWidth: 9; implicitHeight: 9; radius: 2; color: Theme.warning }
-                                        Label { text: "outside the target duration"; color: Theme.textMuted; font.pixelSize: Theme.fontTiny }
+                                        Label {
+                                            text: "outside that window"
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fontTiny
+                                        }
                                     }
                                 }
                             }
@@ -459,11 +568,31 @@ Item {
                     AppCard {
                         Layout.fillWidth: true
                         title: "Thresholds"
-                        note: "from the active preset"
+                        // The values below are `src/subtitle_quality` module
+                        // constants, not derived from the preset. The old note
+                        // claimed "from the active preset", which was untrue —
+                        // and a threshold whose origin is misstated is worse
+                        // than one whose origin is merely fixed. Editing them
+                        // would require plumbing overrides through
+                        // `analyze_cues`, so they are presented as what they
+                        // are (UI review 5.9).
+                        note: "built-in defaults"
 
                         ColumnLayout {
                             width: parent.width
                             spacing: 7
+
+                            KeyValue {
+                                key: "Content preset"
+                                value: appBridge.contentPreset
+                                mono: true
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 1
+                                color: Theme.borderSoft
+                            }
 
                             Repeater {
                                 model: appBridge.qualityThresholds
@@ -532,5 +661,19 @@ Item {
                 }
             }
         }
+    }
+
+    // Empty = a prompt and nothing else.
+    EmptyState {
+        objectName: "quality.emptyState"
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 80, 460)
+        visible: !appBridge.resultReady
+        iconName: "gauges"
+        title: "No quality report yet"
+        body: "Run a translation and the score, the seven headline numbers, the "
+              + "issue list and the distributions fill in here."
+        actionLabel: "Go to Run"
+        onActionTriggered: root.navigateRequested(0)
     }
 }

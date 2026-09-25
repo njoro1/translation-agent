@@ -22,6 +22,11 @@ Item {
         ColumnLayout {
             Layout.preferredWidth: 288
             Layout.minimumWidth: 240
+            // A nested layout containing `fillWidth` children reports a greedy
+            // size policy to its parent RowLayout, which then hands it every
+            // spare pixel and collapses the sibling column to ~0. The maximum
+            // pins the column to its preferred width.
+            Layout.maximumWidth: 288
             Layout.fillHeight: true
             spacing: 16
 
@@ -75,15 +80,13 @@ Item {
                             anchors.rightMargin: 11
                             spacing: 4
 
+                            // Title + outcome. The compact `YT`/`LC`/`OFF` code
+                            // that used to sit here was a legend the user had to
+                            // be taught; the source and engine are spelled out on
+                            // the line below instead (§2.2).
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 8
-
-                                Chip {
-                                    text: runItem.modelData.modeCode
-                                    tone: runItem.modelData.modeCode === "YT" ? "acc" : ""
-                                    mono: true
-                                }
 
                                 Label {
                                     Layout.fillWidth: true
@@ -93,19 +96,6 @@ Item {
                                     font.bold: true
                                     elide: Text.ElideMiddle
                                 }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 8
-
-                                Label {
-                                    text: runItem.modelData.started + " \u00b7 " + runItem.modelData.duration
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontTiny
-                                }
-
-                                Item { Layout.fillWidth: true }
 
                                 Chip {
                                     text: runItem.modelData.resultText
@@ -115,12 +105,38 @@ Item {
                                     mono: true
                                 }
                             }
+
+                            // Timestamp (the review's §9 "each entry = timestamp,
+                            // source, engine, outcome").
+                            Label {
+                                text: runItem.modelData.started + " \u00b7 "
+                                      + runItem.modelData.duration
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontTiny
+                                font.family: Theme.monoFont
+                            }
+
+                            Label {
+                                id: runMeta
+                                Layout.fillWidth: true
+                                text: (runItem.modelData.sourceLabel || "\u2014")
+                                      + " \u00b7 " + (runItem.modelData.engineLabel || "\u2014")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontTiny
+                                elide: Text.ElideRight
+                                ToolTip.visible: runHover.hovered
+                                ToolTip.delay: 700
+                                ToolTip.text: runMeta.text
+                            }
                         }
 
                         HoverHandler { id: runHover }
 
+                        // Selecting a row also *opens* it: Review and Quality
+                        // follow the selection, or the history is a list of rows
+                        // that can be highlighted but never read (§9).
                         TapHandler {
-                            onTapped: appBridge.selectedRunIndex = runItem.index
+                            onTapped: appBridge.selectRun(runItem.index)
                         }
 
                         Accessible.role: Accessible.ListItem
@@ -164,6 +180,28 @@ Item {
                         }
                     }
 
+                    // Opening a run can fail (a failed run wrote no result, or
+                    // its archive was pruned). Saying so beats a row that
+                    // silently refuses to load.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: !appBridge.selectedRunOpenable
+                        spacing: 7
+
+                        StatusMark {
+                            status: "todo"
+                            Layout.alignment: Qt.AlignTop
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: appBridge.selectedRunProblem
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontTiny
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 1
@@ -172,10 +210,12 @@ Item {
 
                     AppButton {
                         Layout.fillWidth: true
-                        text: "Re-run with the same settings"
+                        text: "Re-run the most recent run"
                         small: true
                         iconName: "refresh"
-                        enabled: !appBridge.isRunning
+                        // The settings snapshot is only kept for the newest run,
+                        // so this is offered only while that is the one selected.
+                        enabled: !appBridge.isRunning && appBridge.selectedRunIndex === 0
                         onClicked: appBridge.rerunLastRun()
                     }
                 }
@@ -191,10 +231,11 @@ Item {
             title: "Console"
 
             headerExtra: [
-                Chip {
-                    text: appBridge.logText !== "" ? "session log" : "empty"
-                    mono: true
-                },
+                // No "empty" chip here. It sat among the level filters and read
+                // as one, so the review filed it as an unexplained filter
+                // (§9 #36). It carried no filtering behaviour and duplicated
+                // both the console's empty prompt and the "0 of 0 lines"
+                // counter, so it was removed rather than relabelled.
                 FilterChip {
                     text: "All"
                     count: String(consoleView.counts.all)
