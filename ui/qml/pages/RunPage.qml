@@ -958,6 +958,19 @@ Item {
                                     }
                                 }
                             }
+
+                            // The old control explained itself in a tooltip on
+                            // hover; a chip row has nowhere to hover, so the
+                            // sentence lives here instead (parity with
+                            // PresetPicker.qml's ToolTip.text).
+                            Label {
+                                objectName: "run.presetHint"
+                                Layout.fillWidth: true
+                                text: "A preset tunes ASR hints, preprocessing, context and prompt style."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontTiny
+                                wrapMode: Text.WordWrap
+                            }
                         }
 
                         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.borderSoft }

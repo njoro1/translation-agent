@@ -69,6 +69,16 @@ ApplicationWindow {
     Shortcut { sequence: window.keys["goto_review"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(1) }
     Shortcut { sequence: window.keys["goto_quality"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(2) }
     Shortcut { sequence: window.keys["goto_log"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(3) }
+    // Ctrl+4 reached the fourth screen positionally before the redesign. It is
+    // kept as an alias so that muscle memory still works, but it stands down as
+    // soon as the user rebinds "Go to Log" onto Ctrl+4 itself — otherwise Qt
+    // would see two live Shortcuts on one sequence and drop both.
+    Shortcut {
+        objectName: "chrome.shortcut.goto_log_alt"
+        sequence: window.keys["goto_log"] === "Ctrl+L" ? "Ctrl+4" : ""
+        context: Qt.ApplicationShortcut
+        onActivated: window.switchToTab(3)
+    }
     Shortcut { sequence: window.keys["goto_settings"] || ""; context: Qt.ApplicationShortcut; onActivated: window.switchToTab(4) }
     Shortcut {
         sequence: window.keys["palette"] || ""

@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-09-25 — the UI redesign is complete (single store with
 > binding-safe editors, autosave, real Settings category gating, a two-axis Run screen, and
-> a run history whose rows reopen a run). 1096 tests collected. The developer reference is
+> a run history whose rows reopen a run). 1103 tests collected. The developer reference is
 > `AGENT_DOCUMENTATION.md`.
 
 Takes a YouTube URL or a local video/audio file and writes an English SRT/ASS
@@ -130,6 +130,8 @@ Other things worth knowing:
   (typing `api key`, `batch` or `model path` lands on the exact field and focuses it).
 - **Keyboard** — `Ctrl+1…4` screens, `Ctrl+,` Settings, `Ctrl+K` palette, `Ctrl+R` run,
   `Ctrl+.` cancel, `Ctrl+S` save edited subtitles, `Ctrl+F` search cues, `Ctrl+L` log.
+  `Ctrl+1…3` open Run, Review and Quality; `Ctrl+4` and `Ctrl+L` both open the Log. All of
+  them are remappable under Settings ▸ Shortcuts.
 - **Settings save themselves.** There is no Save button; a change is written shortly after
   you stop editing, and the top bar says whether anything is still pending.
 - **Themes** — dark (default) and light, five accent colours, a comfortable density mode
@@ -570,7 +572,7 @@ python -m pytest -q --basetemp="C:/Users/<you>/AppData/Local/Temp/ta_pytest"
 python tools/check_srt.py output.srt
 ```
 
-1096 tests collected. No network, API keys or vendor binaries are needed. Three
+1103 tests collected. No network, API keys or vendor binaries are needed. Three
 tests in `tests/test_packaged_exe_smoke.py::TestBuildIsCurrent` fail until
 `dist/TranslationAgent/` is rebuilt — that is the intended signal that the
 shipped bundle predates the current sources, not a code defect; the other

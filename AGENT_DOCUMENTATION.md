@@ -2,7 +2,7 @@
 
 > **Audience:** AI agents, coding assistants, and automated refactoring tools.
 > **Goal:** Provide complete, precise, actionable context so an agent can understand, modify, test, and extend this codebase without guessing.
-> **Last updated:** 2026-09-25 — the UI redesign (`IMPLEMENTATION_PLAN.md` / `tasks.md`, Phases 0–6) is complete: one store with binding-safe editors (§4.25), autosave instead of a Save button, a five-fact status vocabulary, real Settings category gating, a two-axis Run screen, and a Log history whose rows open. The suite is **1096 tests** (§18.2).
+> **Last updated:** 2026-09-25 — the UI redesign (`IMPLEMENTATION_PLAN.md` / `tasks.md`, Phases 0–6) is complete: one store with binding-safe editors (§4.25), autosave instead of a Save button, a five-fact status vocabulary, real Settings category gating, a two-axis Run screen, and a Log history whose rows open. The suite is **1103 tests** (§18.2).
 >
 > **Canonical source of truth:** This file is the consolidated developer/AI reference. It supersedes the
 > now-archived `PROJECT.md`, `CLAUDE.md`, `TASKS.md`, and `updated implementation plan.md` (their content has
@@ -13,7 +13,7 @@
 > editors (§4.24, §4.25); `ModePicker` / `PresetPicker` were deleted and the Run screen now exposes two
 > independent axes (§4.24); `SettingsPage` moved from a one-blob scroll to seven gated categories; the
 > command palette gained Navigate / Actions / Toggles / Jump-to-setting namespaces; the Log screen's run
-> history now loads a run into Review/Quality. The test suite went from 682 to **1096** collected tests.
+> history now loads a run into Review/Quality. The test suite went from 682 to **1103** collected tests.
 >
 > **2026-09-16 alignment pass (historical):** the QML frontend was rewritten (§4.24 —
 > `DashboardView`/`SettingsView` are gone, replaced by a five-page shell); `backend/bridge.py` grew a
@@ -140,7 +140,7 @@ translation-agent/
 │   ├── screenshot_ui.py        # Offscreen UI screenshot helper (STALE — see §9)
 │   └── stamp_spec_header.py    # Applies the "GENERATED FILE" banner to TranslationAgent.spec
 │
-├── tests/                      # pytest suite (41 test modules; 1096 tests collected)
+├── tests/                      # pytest suite (42 test modules; 1103 tests collected)
 │   ├── conftest.py, gguf_fixtures.py
 │   ├── test_srt_io.py, test_translate_parsing.py, test_translate_validation.py
 │   ├── test_batching.py, test_glossary.py, test_translation_memory.py
@@ -152,6 +152,7 @@ translation-agent/
 │   ├── test_youtube_media.py, test_youtube_format_selection.py, test_ytdlp.py
 │   ├── test_build_contract.py, test_packaged_exe_smoke.py
 │   └── test_ui_models.py, test_ux_bridge.py, test_ui_hygiene.py, test_qml_smoke.py
+│       test_ui_parity.py
 │
 ├── benchmark/
 │   ├── README.md               # How to add test media
@@ -1109,7 +1110,7 @@ ApplicationWindow
 - **Navigation is `window.currentPage` (int 0–4)** — not a `StackView`, not a tab bar. All five pages are instantiated once and kept alive. `switchToTab(index)` guards the range.
 - Navigation sources: `IconRail.navigate(index)`, `CommandPalette.navigateRequested(index)`, keyboard shortcuts, and bridge-initiated `Connections` (`requestTab`, `requestAdvanced`, `focusCueIndexChanged`).
 - **Icon rail items:** 0 Run (`play`), 1 Review (`list`, warning badge = `qualityErrors + qualityWarnings`), 2 Quality (`shield`), 3 Log (`terminal`), 4 Settings (`settings`).
-- **Shortcuts:** `Ctrl+1..4` pages, `Ctrl+,` Settings, `Ctrl+K` palette, `Ctrl+Return`/`Ctrl+Enter`/`Ctrl+R` run, `Ctrl+.` cancel, `Ctrl+S` save edited subtitles, `Ctrl+F` Review + focus search, `Ctrl+L` Log.
+- **Shortcuts:** `Ctrl+1`/`Ctrl+2`/`Ctrl+3` Run/Review/Quality, `Ctrl+L` **and `Ctrl+4`** Log, `Ctrl+,` Settings, `Ctrl+K` palette, `Ctrl+Return`/`Ctrl+Enter`/`Ctrl+R` run, `Ctrl+.` cancel, `Ctrl+S` save edited subtitles, `Ctrl+F` Review + focus search. Every sequence except the two aliases comes from the store, so Settings ▸ Shortcuts remaps them live. `Ctrl+Enter` is a second binding for *run* (many keyboards have no distinct Return); `Ctrl+4` is a second binding for *Log*, kept because it was the pre-redesign positional key. The `Ctrl+4` alias stands down when the user rebinds *Go to Log* onto `Ctrl+4` itself — two live `Shortcut`s on one sequence makes Qt drop both.
 - Window geometry is bound to `appBridge.windowX/windowY/windowWidth/windowHeight`; `onClosing` calls `appBridge.saveWindowState(...)`.
 - Theme push: `Binding { target: Theme; … }` for `themeName`, `comfortable`, `reducedMotion`, `accentName` (a singleton cannot read the `appBridge` context property directly).
 
@@ -1732,7 +1733,8 @@ from `backend/models/results.py:250` — see §9.
 | `test_packaged_exe_smoke.py` | launches the built exe (14 tests) |
 | `test_ui_models.py` | `CueResultModel` (editable), the All/Failed/Warnings/Errors proxy, `QualityIssuesModel` roles |
 | `test_ux_bridge.py` | failure classification, honest readiness rows, null-safe CPS text, the Quality→Review jump, log counters, theme toggle, subtitle save-back |
-| `test_ui_hygiene.py` | encoding/legibility hygiene — guards the mojibake (double-encoded UTF-8) and BOM regressions the UX pass cleaned up |
+| `test_ui_hygiene.py` | encoding/legibility hygiene — guards the mojibake (double-encoded UTF-8) and BOM regressions the UX pass cleaned up; also fails on any `_`-prefixed scratch file inside the scanned tree |
+| `test_ui_parity.py` | old-UI parity — the executable half of the "nothing was dropped" audit against commit `f6860e6` (the `Ctrl+4` Log alias, the out-path hint, the content-preset explanation) |
 | `test_qml_smoke.py` | loads `Main.qml` with a live `AppBridge` offscreen — a single QML error fails it, so it guards every component at once |
 | `conftest.py` | one session-wide offscreen `QGuiApplication` + fresh `AppBridge` fixtures |
 | `gguf_fixtures.py` | builders for tiny synthetic GGUF files (correct header + real tensor table) |
@@ -1923,12 +1925,23 @@ cleanup. **Kept:** `requirements.txt`, `requirements-gui.txt`, `requirements-loc
 
 ### 18.2 Current verified state (2026-09-25)
 
-- **1096 tests collected; 1093 pass, 3 fail by design.** Verified 2026-09-25 with
-  `python -m pytest -q --basetemp=… --junitxml=…` (104 s). The three failures are all
+- **1103 tests collected; 1101 pass, 2 fail by design.** Verified 2026-09-25 with
+  `python -m pytest -q --basetemp=… --junitxml=…` (104 s). Both failures are
   `tests/test_packaged_exe_smoke.py::TestBuildIsCurrent` — the on-disk
   `dist/TranslationAgent/` bundle predates the UI rework. That is the intended signal, not
   a regression: rebuilding is a separate, ~1 GB operation (`build_exe.bat` deletes the old
   bundle first). Rebuild before shipping, not as part of a UI change.
+- **Run the suite with the sandbox disabled, or per file.** A single whole-suite
+  `pytest tests/` process dies part-way through with an access violation and writes no
+  JUnit XML at all: the log simply stops mid-progress-bar. It is the QML test modules
+  that crash (`test_qml_smoke`, `test_ui_bindings`, `test_ui_chrome`, `test_ui_parity`,
+  `test_ui_run_layout`, `test_ui_settings_ia`, `test_ui_stage_strip`), plus
+  `test_model_integrity`, `test_pipeline_modes` and `test_youtube_format_selection`,
+  which fail with a bare `SystemExit: 1`. Every one of them passes when its file is run
+  on its own outside the sandbox. The reliable recipe is a per-file sweep with a
+  **fresh, pre-created `--basetemp`** per file and `-p no:randomly`, then aggregate the
+  JUnit XMLs (the root is sometimes `<testsuite>`, sometimes `<testsuites>`: sum over
+  the children).
 - **Exactly three pipeline modes**: `youtube_cloud`, `local_cloud`, `offline`. Cloud rescue
   is **removed** — no `--cloud-rescue*` flag, no `CLOUD_RESCUE_*` env var, no `src/rescue.py`,
   no GUI control. The only surviving mention in the tree is a stale string in

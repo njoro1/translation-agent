@@ -56,6 +56,22 @@ _SOURCES = [p for p in _iter_sources() if _live(p)]
 
 # --- Rules that apply to every source ---------------------------------------
 
+def test_no_scratch_file_lives_inside_the_scanned_tree():
+    """Ad-hoc probes are named `_foo.*` and belong at the repo root.
+
+    `ui/qml/_repro.qml` — a 19-line red/blue `Rectangle` layout probe — was
+    committed by accident and then shipped inside the bundle, policed by every
+    rule in this module as though it were product code. Dunder names are the
+    Python convention and are exempt.
+    """
+    strays = [
+        p.relative_to(ROOT).as_posix()
+        for p in _SOURCES
+        if p.name.startswith("_") and not p.name.startswith("__")
+    ]
+    assert not strays, f"scratch files inside the scanned tree: {strays}"
+
+
 @pytest.mark.parametrize("path", _SOURCES, ids=lambda p: str(p.relative_to(ROOT)))
 def test_no_byte_order_mark(path):
     data = path.read_bytes()

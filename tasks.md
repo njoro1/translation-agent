@@ -1309,3 +1309,53 @@ limitation instead of a bare tick; they are marked inline.
       removed. (`§9`) — `tests/test_ui_log_history.py`
 - [x] Commands palette navigates / acts / toggles / jumps-to-setting, with toggles
       showing live bound state. (`§4.2`) — `tests/test_ui_palette.py`
+## Post-completion: old-UI parity audit
+
+Requested after the plan was finished: *"Ensure that NO functionality got
+lost/dropped from the old UI."* The baseline is commit `f6860e6` ("New UI"), the
+last commit before the redesign. The old tree was extracted with
+`git archive f6860e6 ui/qml` and diffed against the working tree on four axes:
+appBridge members referenced, invocation sites, interaction primitives, and every
+distinct label literal.
+
+- [x] **appBridge members.** Old-but-not-new were `copySummaryText`,
+      `environmentRows`, `setPipelineMode`, `toggleTheme`. All four are either
+      still on the bridge or were refactored call sites — diagnostics are copied
+      through `copyToDiagnostics()`. Nothing lost.
+- [x] **Interaction primitives.** `DropArea`, `FileDialog`, `FolderDialog`,
+      `TapHandler`, `HoverHandler`, `MouseArea`, `Keys.onPressed`, `ToolTip`,
+      `ListView`, `TextArea`, `selectByMouse` — none fell to zero. `Dialog` went
+      2→1 because the clear-settings confirmation became the typed-confirmation
+      `DangerZone`; no confirmation was weakened. `ScrollView` went 6→3 because
+      RunPage's three per-column scrolls became one whole-screen `Flickable`.
+- [x] **Labels.** Re-verified by extracting every `text` / `placeholderText` /
+      `ToolTip.text` / `Accessible.name` / `label` literal from both trees: 292
+      distinct labels in the old tree, 46 with no exact match in the new one.
+      Every one was traced and none is a loss — renames (`Only problems` → the
+      All/OK/Warnings/Failed chips, `Clear stored settings` → the `DangerZone`
+      action, `Spoken language the ASR transcribes (auto = detect).` → kept,
+      `from .env when blank` → `inherit from .env`), repurpositions (the six
+      preset names are now lowercase chip labels; `Offline` → `Local model`),
+      or deliberate removals with a comment at the call site (`Save`/`Saved`,
+      the StatusBar `Log` launcher, `Search settings…`).
+- [x] **`Ctrl+4` reached the Log screen positionally.** The redesign put Log on
+      `Ctrl+L` and left `Ctrl+4` dead. Restored as the non-remappable alias
+      `chrome.shortcut.goto_log_alt`, which stands down if the user rebinds
+      *Go to Log* onto `Ctrl+4` itself (two live `Shortcut`s on one sequence makes
+      Qt drop both). — `tests/test_ui_parity.py`
+- [x] **`'Auto-named from the title'`** (the out-path placeholder). The new field
+      says `Saved next to the video` and adds the store-backed `outPathHint` line
+      underneath, so the affordance is intact and stronger. —
+      `tests/test_ui_parity.py`
+- [x] **`'Content preset tunes ASR, preprocessing, context and prompt style.'`**
+      was a `ToolTip` on the old `PresetPicker`. The chip row has nothing to
+      hover, so the sentence moved to the `run.presetHint` line under the chips. —
+      `tests/test_ui_parity.py`
+- [x] **`ui/qml/_repro.qml`** — a 19-line red/blue `Rectangle` layout probe,
+      committed by accident in `4d0e2f2` and referenced by nothing. It was inside
+      the shipped bundle and inside the hygiene scan. Deleted, and
+      `tests/test_ui_hygiene.py` now fails on any `_`-prefixed file inside the
+      scanned tree.
+- [x] **`Ctrl+R` was checked and is unchanged.** The pre-redesign shell bound it
+      to `runTranslation()` too — it was never a navigation key, because `Ctrl+1`
+      already owned *go to Run*.
