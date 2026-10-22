@@ -42,6 +42,14 @@ def test_local_cloud_uses_file_and_never_local_translation():
 
 
 def test_offline_uses_local_translation_and_strips_cloud_environment(monkeypatch):
+    # The offline path refuses to build a run without a usable local model,
+    # and the model search looks at the real models folder. Stub the search
+    # out: this test is about the argv and the environment, not about whether
+    # a 1.8 GB GGUF happens to be on this machine.
+    monkeypatch.setattr(
+        "backend.bridge._find_local_model",
+        lambda: "models/Hy-MT2-1.8B-Q8_0.gguf",
+    )
     bridge = _bridge()
     bridge.pipelineMode = PIPELINE_MODE_OFFLINE
     bridge.filePath = "video.mp4"

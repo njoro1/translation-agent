@@ -30,6 +30,19 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = ROOT / "build_exe.bat"
 SPEC = ROOT / "TranslationAgent.spec"
 
+#: The spec is a *build artifact*: PyInstaller writes it out from the flags in
+#: ``build_exe.bat`` and it is git-ignored (it carries the absolute paths of
+#: whichever machine last built). A fresh clone therefore has none, and the
+#: checks that read it can only run after a build — the same rule the
+#: packaged-exe smoke tests follow.
+requires_spec = pytest.mark.skipif(
+    not SPEC.is_file(),
+    reason=(
+        "TranslationAgent.spec is a git-ignored build artifact; "
+        "run build_exe.bat to produce it"
+    ),
+)
+
 
 def _script_text() -> str:
     assert BUILD_SCRIPT.is_file(), "build_exe.bat is missing"
@@ -187,6 +200,7 @@ class TestSpecIsGeneratedNotAuthored:
             f"now wrong. Offending invocation: {invocation.strip()}"
         )
 
+    @requires_spec
     def test_spec_header_warns_that_it_is_generated(self):
         assert SPEC.is_file()
         head = SPEC.read_text(encoding="utf-8", errors="replace")[:600]
@@ -194,6 +208,7 @@ class TestSpecIsGeneratedNotAuthored:
             "the spec needs its do-not-hand-edit header")
         assert "do not hand-edit" in head
 
+    @requires_spec
     def test_spec_is_still_valid_python(self):
         """A marker comment must never break PyInstaller's re-parse."""
         ast.parse(SPEC.read_text(encoding="utf-8", errors="replace"))
@@ -278,6 +293,7 @@ class TestStampSpecHeaderTool:
     def test_missing_argument_is_a_usage_error(self, stamper):
         assert stamper.main(["stamp_spec_header.py"]) == 1
 
+    @requires_spec
     def test_live_spec_carries_the_banner(self, stamper):
         """End-to-end on the real file, without rewriting it."""
         text = SPEC.read_text(encoding="utf-8", errors="replace")
