@@ -1,8 +1,13 @@
 .env
 implementation_plan.md
 
-# Local model files (downloaded/placed by the user)
-models/
+# Local virtual environment
+.venv/
+
+# Local model files (downloaded/placed by the user).
+# Anchored to the repo root: an unanchored "models/" also matched
+# backend/models/, which is source code — it was silently never committed.
+# /models/
 *.gguf
 __pycache__/
 

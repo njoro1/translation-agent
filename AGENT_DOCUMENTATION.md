@@ -55,7 +55,7 @@ translation-agent/
 ├── requirements-gui.txt        # Just PySide6 (subset of requirements.txt)
 ├── requirements-local.txt      # Optional: llama-cpp-python[server]
 ├── pytest.ini                  # testpaths = tests, pythonpath = .
-├── .gitignore                  # ignores dist/, build/, *.spec, *.gguf, models/, ui_shots/, debug.log, .env
+├── .gitignore                  # ignores dist/, build/, *.spec, *.gguf, /models/, ui_shots/, debug.log, .env
 ├── .env.example                # Credential template
 ├── .env                        # Actual secrets (git-ignored)
 │
